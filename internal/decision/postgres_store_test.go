@@ -63,29 +63,36 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 	}
 
 	// The normalized columns used for idempotency and lookups must remain
-	// byte-for-byte consistent with the immutable JSONB DecisionRecord.
-	mismatchCases := []struct {
-		name, tenantID, invocationID, decisionID, requestSHA string
-	}{
-		{"tenant", "other-tenant", record.InvocationID, record.DecisionID, record.RequestSHA256},
-		{"invocation", record.TenantID, "other-invocation", record.DecisionID, record.RequestSHA256},
-		{"decision", record.TenantID, record.InvocationID, "dec_"+strings.Repeat("f", 64), record.RequestSHA256},
-		{"request digest", record.TenantID, record.InvocationID, record.DecisionID, strings.Repeat("f", 64)},
-	}
-	for i, tc := range mismatchCases {
-		t.Run("json_identity_"+tc.name, func(t *testing.T) {
-			invocationID := fmt.Sprintf("mismatch-%d", i)
-			decisionID := "dec_" + strings.Repeat(string(rune('1'+i)), 64)
+	// consistent with the immutable JSONB DecisionRecord.
+	mismatchCases := []string{"tenant", "invocation", "decision", "request digest"}
+	for i, field := range mismatchCases {
+		t.Run("json_identity_"+strings.ReplaceAll(field, " ", "_"), func(t *testing.T) {
+			rowTenant := record.TenantID
+			rowInvocation := fmt.Sprintf("mismatch-%d", i)
+			rowDecision := "dec_" + strings.Repeat(string(rune('1'+i)), 64)
+			rowDigest := record.RequestSHA256
+			jsonTenant, jsonInvocation := rowTenant, rowInvocation
+			jsonDecision, jsonDigest := rowDecision, rowDigest
+			switch field {
+			case "tenant":
+				jsonTenant = "other-tenant"
+			case "invocation":
+				jsonInvocation = "other-invocation"
+			case "decision":
+				jsonDecision = "dec_" + strings.Repeat("f", 64)
+			case "request digest":
+				jsonDigest = strings.Repeat("f", 64)
+			}
 			_, err := db.ExecContext(ctx, `INSERT INTO decision_records (
 				tenant_id, invocation_id, decision_id, request_sha256, record, created_at
 			) VALUES ($1, $2, $3, $4,
 				jsonb_build_object(
 					'tenant_id', $5, 'invocation_id', $6, 'decision_id', $7, 'request_sha256', $8
 				), now())`,
-				record.TenantID, invocationID, decisionID, record.RequestSHA256,
-				tc.tenantID, tc.invocationID, tc.decisionID, tc.requestSHA)
+				rowTenant, rowInvocation, rowDecision, rowDigest,
+				jsonTenant, jsonInvocation, jsonDecision, jsonDigest)
 			if err == nil {
-				t.Fatal("mismatched JSONB identity must be rejected by the database constraint")
+				t.Fatalf("database accepted mismatched %s between relational columns and JSONB", field)
 			}
 		})
 	}
