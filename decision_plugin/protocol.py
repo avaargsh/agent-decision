@@ -28,4 +28,4 @@ class DecisionTurn:
 def decide(turn: DecisionTurn) -> dict:
     # Deterministic reference adapter: no tools, outbound requests or credentials.
     return {'protocol_version': 'v0.1', 'invocation_id': turn.invocation_id,
-            'kind': 'final', 'text': f'Accepted: {turn.user_input}'}
+            'kind': 'final_response', 'text': f'Accepted: {turn.user_input}'}
