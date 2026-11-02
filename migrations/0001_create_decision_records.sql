@@ -17,5 +17,12 @@ CREATE TABLE IF NOT EXISTS decision_records (
 CREATE INDEX IF NOT EXISTS idx_decision_records_tenant_created
     ON decision_records (tenant_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_decision_records_run
-    ON decision_records (tenant_id, (record->>'run_id'));
+CREATE INDEX IF NOT EXISTS idx_decision_records_ledger_scope
+    ON decision_records (
+        tenant_id,
+        (record->>'agent_id'),
+        (record->>'session_id'),
+        (record->>'run_id'),
+        created_at DESC,
+        decision_id DESC
+    );
