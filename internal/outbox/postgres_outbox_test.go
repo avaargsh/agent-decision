@@ -178,6 +178,9 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts, 0, outbox.ReasonPublishFailed); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("previous attempt same worker must not Retry current lease: %v", err)
 	}
+	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", sameWorkerReclaim[0].Attempts, 0, "authorization header bearer secret-sentinel"); err == nil {
+		t.Fatal("raw publisher error text must be rejected as a retry reason")
+	}
 	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", sameWorkerReclaim[0].Attempts, 0, outbox.ReasonPublishFailed); err != nil {
 		t.Fatalf("retry event: %v", err)
 	}
