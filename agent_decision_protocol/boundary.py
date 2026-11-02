@@ -145,6 +145,8 @@ def validate_request(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     data = strict_json_loads(payload)
+    if isinstance(data, dict) and data.get("protocol_version") != "0.1":
+        raise BoundaryError("UNSUPPORTED_PROTOCOL_VERSION", "unknown protocol version")
     _schema_validate("request", data)
 
     observed = datetime.now(timezone.utc) if now is None else now
@@ -195,6 +197,8 @@ def validate_response(
     capability_registry: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> dict[str, Any]:
     data = strict_json_loads(payload)
+    if isinstance(data, dict) and data.get("protocol_version") != "0.1":
+        raise BoundaryError("UNSUPPORTED_PROTOCOL_VERSION", "unknown protocol version")
     _schema_validate("response", data)
     if data["invocation_id"] != request["invocation_id"]:
         raise BoundaryError("INVOCATION_ID_MISMATCH", "response is from another invocation")
@@ -227,6 +231,7 @@ def validate_response(
 # Stable external error vocabulary; never leak private parser/registry diagnostics.
 _PUBLIC_ERROR_CODES = {
     "INVALID_REQUEST": "INVALID_REQUEST",
+    "UNSUPPORTED_PROTOCOL_VERSION": "UNSUPPORTED_PROTOCOL_VERSION",
     "INVALID_JSON": "INVALID_REQUEST",
     "INVALID_CONTEXT_REF": "INVALID_REQUEST",
     "INVALID_TRACE_CONTEXT": "INVALID_REQUEST",
@@ -243,6 +248,7 @@ _PUBLIC_ERROR_CODES = {
 }
 _PUBLIC_ERROR_MESSAGES = {
     "INVALID_REQUEST": "Request validation failed",
+    "UNSUPPORTED_PROTOCOL_VERSION": "Unsupported protocol version",
     "UNSUPPORTED_CONTEXT_SCHEMA_VERSION": "Unsupported context schema version",
     "UNSUPPORTED_CAPABILITY_VERSION": "Unsupported capability version",
     "PAYLOAD_TOO_LARGE": "Payload size exceeds the configured limit",
