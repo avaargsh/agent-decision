@@ -25,6 +25,274 @@ paths:
           description: Process is alive
         '405':
           description: Method not allowed
+  /v1/decisions/{decision_id}:
+    get:
+      operationId: getDecision
+      summary: Read one decision record
+      description: Returns a record only when its tenant, agent, and session identities match the authenticated principal.
+      parameters:
+        - in: path
+          name: decision_id
+          required: true
+          schema:
+            type: string
+            pattern: '^dec_[a-f0-9]{64}    post:
+      operationId: createDecision
+      summary: Create or replay a decision
+      description: |
+        Produces a deterministic read-only investigation plan or an explicit
+        abstention. A first successful persistence returns 201. An exact
+        idempotent replay returns the stored record with 200. Reusing the same
+        tenant-scoped idempotency key with a different authenticated request
+        fingerprint returns 409.
+
+        The caller principal is resolved out-of-band. The deployment MUST
+        configure a trusted PrincipalResolver and authoritative snapshot verifier.
+        Unknown JSON properties and duplicate object keys are rejected.
+      x-max-request-body-bytes: 1048576
+      x-principal-source: trusted-deployment-resolver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '200':
+          description: Existing DecisionRecord returned for an exact idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '201':
+          description: DecisionRecord persisted for the first time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid JSON, unknown or duplicate property, or request contract validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal is missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Authenticated principal does not match request identity or authoritative verification rejected the references
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Tenant-scoped idempotency key was reused with a different request fingerprint
+          x-error-code: IDEMPOTENCY_CONFLICT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Content-Type must be application/json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          description: Unexpected internal processing failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Authoritative verifier or decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  schemas:
+    DecisionRequest:
+      $ref: './schemas/decision-request.schema.json'
+    DecisionRecord:
+      $ref: './schemas/decision-record.schema.json'
+    Problem:
+      $ref: './schemas/problem.schema.json'
+    DecisionPage:
+      $ref: './schemas/decision-page.schema.json'
+
+      responses:
+        '200':
+          description: DecisionRecord found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid decision identifier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Decision record not found in the caller's tenant, agent, and session scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/runs/{run_id}/decisions:
+    get:
+      operationId: listRunDecisions
+      summary: List decisions for a run
+      description: Returns a descending, cursor-paginated list scoped to the authenticated tenant, agent, and session.
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}    post:
+      operationId: createDecision
+      summary: Create or replay a decision
+      description: |
+        Produces a deterministic read-only investigation plan or an explicit
+        abstention. A first successful persistence returns 201. An exact
+        idempotent replay returns the stored record with 200. Reusing the same
+        tenant-scoped idempotency key with a different authenticated request
+        fingerprint returns 409.
+
+        The caller principal is resolved out-of-band. The deployment MUST
+        configure a trusted PrincipalResolver and authoritative snapshot verifier.
+        Unknown JSON properties and duplicate object keys are rejected.
+      x-max-request-body-bytes: 1048576
+      x-principal-source: trusted-deployment-resolver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '200':
+          description: Existing DecisionRecord returned for an exact idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '201':
+          description: DecisionRecord persisted for the first time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid JSON, unknown or duplicate property, or request contract validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal is missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Authenticated principal does not match request identity or authoritative verification rejected the references
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Tenant-scoped idempotency key was reused with a different request fingerprint
+          x-error-code: IDEMPOTENCY_CONFLICT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Content-Type must be application/json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          description: Unexpected internal processing failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Authoritative verifier or decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  schemas:
+    DecisionRequest:
+      $ref: './schemas/decision-request.schema.json'
+    DecisionRecord:
+      $ref: './schemas/decision-record.schema.json'
+    Problem:
+      $ref: './schemas/problem.schema.json'
+
+        - in: query
+          name: cursor
+          required: false
+          description: Opaque continuation cursor returned by the previous page.
+          schema:
+            type: string
+            maxLength: 2048
+        - in: query
+          name: limit
+          required: false
+          description: Maximum number of records in the page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Decision page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionPage'
+        '400':
+          description: Invalid run identifier, cursor, or page size
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /v1/decisions:
     post:
       operationId: createDecision
