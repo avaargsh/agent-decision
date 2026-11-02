@@ -28,7 +28,9 @@
             "IDEMPOTENCY_CONFLICT",
             "UNSUPPORTED_MEDIA_TYPE",
             "INVALID_JSON",
-            "INTERNAL_ERROR"
+            "INTERNAL_ERROR",
+            "NOT_FOUND",
+            "INVALID_CURSOR"
           ]
         },
         "message": {
