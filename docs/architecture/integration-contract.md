@@ -7,18 +7,28 @@
 
 | Concern | Authority | Agent Decision interaction |
 |---|---|---|
-| Tenant, canonical Agent / Session / Run IDs, desired state and lifecycle coordination | Agent Control Plane | Accept IDs as references; never mint or mutate them |
-| Run execution, workflow history, task/step semantics, retries, waits and checkpoints | Agent Runtime / Temporal | Receive an authenticated Runtime request; return a proposal or abstention |
+| Tenant, Project, Agent, Session, RunIntent IDs, desired state and policy bindings | Agent Control Plane | Accept Agent/Session/RunIntent references; never mint Run IDs |
+| Run, Task, RunAttempt and RunIntent-to-Run mapping | Agent Runtime / Temporal | Consume a Runtime-issued Run ID; return a proposal or abstention |
 | Capability catalog, immutable capability contracts and policy bindings | Agent Control Plane | Consume version-pinned read-only capability references |
 | Action normalization, authorization decision, approval, one-time permit, operation journal and trusted execution guard | EngageGuard | Never issue permits or claim an action is authorized |
 | Provider resource identity and side effects | Sandbox / Compute providers | Consume no provider credentials or executor configuration |
 | Decision strategy, evidence evaluation and immutable DecisionRecord | Agent Decision | Own this decision record only |
 
-The Agent Control Plane architecture baseline dated 2026-11-02 explicitly assigns canonical Agent, Session and Run identity to the Control Plane, while Runtime owns execution-plan semantics, workflow history and task/step scheduling. This is the contract Agent Decision follows.
+The cross-repository candidate in [agent-control-panel PR #4](https://github.com/avaargsh/agent-control-panel/pull/4), ADR-0001 and [agent-decision Issue #9](https://github.com/avaargsh/agent-decision/issues/9) proposes that ACP creates RunIntent while Runtime creates `run_id` and `workflow_id` after accepting that intent. PR #4 and ADR-0001 are explicitly **PROPOSED / NOT RATIFIED**; this document records the candidate boundary for integration work and does not claim owner sign-off. Until ratification, cross-repository integration remains a blocking gate.
 
-### Run identity wording conflict
+### Run identity and lifecycle authority
 
-The current `avaargsh/agent-runtime` README says Runtime “owns Run identity”. The Control Plane baseline says it owns canonical Session/Run identity and Runtime owns execution semantics. Until the Runtime repository clarifies that wording, treat the Control Plane's Run ID as canonical and distinguish it from Temporal Workflow IDs, Activity IDs, attempt IDs and runtime-local execution identifiers. This mismatch is an upstream integration gate, not permission for Decision to create another Run ID.
+Under the proposed v0.3 map, ACP owns `run_intent_id`; Runtime creates and owns `run_id`, `workflow_id`, Run state, Task and RunAttempt lifecycle, retry admission and recovery. Temporal owns workflow history and scheduling semantics, while Runtime owns the business mapping from accepted RunIntent to Run. Decision consumes a Runtime-issued `run_id`; it never creates or advances a Run.
+
+This candidate must be ratified by ACP and Runtime owners. Decision's production AuthorityVerifier must verify Run existence, tenant/Agent/Session binding and allowed state against Runtime authority, while verifying Agent/Session/policy/capability snapshots against ACP and evidence provenance against the evidence authority. An optional replan context must be checked against Runtime-authoritative retry admission, retryable disposition and budget; syntactic fields in a DecisionRequest are not proof of replan permission.
+
+Never conflate `run_intent_id`, `run_id`, `workflow_id`, `run_attempt_id`, Temporal Activity IDs or Decision IDs.
+
+## 2. Protocol ownership and compatibility
+
+The Go Decision Core endpoint `POST /v1/decisions` publishes the Decision Core request/record contract (`decision.v1`, `PROPOSED | ABSTAINED`) and owns the immutable DecisionRecord ledger. The legacy Python/TypeScript framework adapter surface named `DecisionTurn` is a separate protocol with different context and response discriminators. These contracts are **not wire-compatible** and must not share a version identifier or be silently coerced.
+
+A future framework adapter may provide bounded reasoning output to the Go Core under an independently versioned adapter contract. The Core must validate adapter output as untrusted strategy input; adapters do not write platform DecisionRecords, own Run identity, authorize capabilities, issue permits or execute actions. The retirement/migration policy for legacy adapter PRs remains open under Decision Issue #9.
 
 ## 2. Request identity and trust boundary
 
@@ -67,9 +77,9 @@ A future remediation proposal must remain a separate typed object. Runtime/Contr
 
 ## 6. End-to-end interaction
 
-1. Control Plane creates canonical Agent, Session and Run identities and publishes immutable context/capability snapshots.
-2. Runtime starts or resumes the durable workflow and obtains the authenticated Runtime principal.
-3. Runtime calls Agent Decision with the canonical identity references, snapshot references, capability references and evidence references.
+1. Control Plane creates Tenant/Agent/Session and RunIntent identities and publishes immutable context/capability snapshots.
+2. Runtime accepts the RunIntent, creates the authoritative Run ID/workflow mapping, starts or resumes the durable workflow and obtains the authenticated Runtime principal.
+3. Runtime calls Agent Decision with the Runtime-issued Run ID, canonical Agent/Session references, snapshot references, capability references and evidence references.
 4. Agent Decision validates the request, binds Agent/Session to the Principal, and asks the authoritative verifier to verify Run ownership and snapshot/evidence authority.
 5. Agent Decision persists a deterministic DecisionRecord or explicit abstention and returns it to Runtime.
 6. Runtime interprets the proposal as workflow input. Any privileged or mutating action remains subject to Control Plane policy and EngageGuard authorization/execution.
@@ -77,7 +87,8 @@ A future remediation proposal must remain a separate typed object. Runtime/Contr
 
 ## 7. Open integration gates
 
-- Resolve the Runtime README's “owns Run identity” wording against the Control Plane canonical identity contract.
+- Ratify the proposed ACP RunIntent → Runtime Run identity mapping and confirm the Runtime authority API used by Decision's verifier.
+- Freeze separate versioned contracts for the Go Decision Core and any Python/TypeScript DecisionTurn adapter; define optional adapter invocation and provenance.
 - Implement the production AuthorityVerifier adapter against Control Plane identity/snapshot authority and the evidence store.
 - Align the versioned Evidence Envelope v1 with producers and Control Plane before implementing freshness scoring, coverage or hypotheses.
 - Add and verify PostgreSQL tenant row-level security, or document an independently reviewed equivalent isolation proof.
