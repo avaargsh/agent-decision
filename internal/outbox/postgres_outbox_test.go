@@ -104,7 +104,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	}
 
 	time.Sleep(40 * time.Millisecond)
-	reclaimed, err := store.Claim(ctx, "worker-b", 10, time.Second)
+	reclaimed, err := store.Claim(ctx, "worker-b", 10, 25*time.Millisecond)
 	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID || reclaimed[0].Attempts != 2 {
 		t.Fatalf("expired lease reclaim: events=%+v err=%v", reclaimed, err)
 	}
@@ -114,11 +114,24 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", 0, "stale owner"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner retry=%v, want ErrLeaseLost", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", 0, "publisher timeout"); err != nil {
+	// A stable worker identity can be reused after a lease expires. The
+	// prior attempt must not be able to ACK or Retry its successor's lease.
+	time.Sleep(40 * time.Millisecond)
+	sameWorkerReclaim, err := store.Claim(ctx, "worker-b", 10, time.Second)
+	if err != nil || len(sameWorkerReclaim) != 1 || sameWorkerReclaim[0].Attempts != 3 {
+		t.Fatalf("same-worker next attempt claim: events=%+v err=%v", sameWorkerReclaim, err)
+	}
+	if err := store.Ack(ctx, reclaimed[0].ID, "worker-b"); !errors.Is(err, outbox.ErrLeaseLost) {
+		t.Fatalf("previous attempt same worker must not ACK current lease: %v", err)
+	}
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", 0, "stale same-worker attempt"); !errors.Is(err, outbox.ErrLeaseLost) {
+		t.Fatalf("previous attempt same worker must not Retry current lease: %v", err)
+	}
+	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", 0, "publisher timeout"); err != nil {
 		t.Fatalf("retry event: %v", err)
 	}
 	retried, err := store.Claim(ctx, "worker-c", 10, time.Second)
-	if err != nil || len(retried) != 1 || retried[0].Attempts != 3 {
+	if err != nil || len(retried) != 1 || retried[0].Attempts != 4 {
 		t.Fatalf("claim retried event: events=%+v err=%v", retried, err)
 	}
 	if err := store.Ack(ctx, retried[0].ID, "worker-c"); err != nil {
