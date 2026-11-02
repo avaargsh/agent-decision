@@ -17,7 +17,7 @@ func TestDecisionLedgerQueriesAreTenantAndSessionScoped(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		req := validRequest()
-		req.IdempotencyKey = fmt.Sprintf("ledger-%d", i)
+		req.InvocationID = fmt.Sprintf("ledger-%d", i)
 		service.now = func() time.Time {
 			return time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 		}
