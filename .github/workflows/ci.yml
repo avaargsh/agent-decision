@@ -48,6 +48,10 @@ jobs:
             echo "unsafe Kubernetes fixture unexpectedly passed policy validation"
             exit 1
           fi
+          if docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/unsafe-initcontainer.yaml; then
+            echo "unsafe init-container fixture unexpectedly passed policy validation"
+            exit 1
+          fi
       - name: Test
         run: go test -race ./...
       - name: Vet
