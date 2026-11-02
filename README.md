@@ -56,4 +56,4 @@ A starter OPA/Rego policy bundle checks rendered Deployment candidates for privi
 docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/hardened-deployment.yaml
 ```
 
-The policy bundle is currently a standalone deterministic preflight artifact. It is not yet invoked by the Decision API, and it does not calculate probabilistic risk or expected loss.
+CI also verifies that an unsafe init container is rejected even when the regular application container is compliant. The policy bundle is currently a standalone deterministic preflight artifact. It is not yet invoked by the Decision API, and it does not calculate probabilistic risk or expected loss.
