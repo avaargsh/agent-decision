@@ -20,7 +20,7 @@ func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db}
 func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
 	if s == nil || s.db == nil { return Record{}, false, ErrStoreUnavailable }
 	if err := ctx.Err(); err != nil { return Record{}, false, err }
-	if record.TenantID == "" || record.IdempotencyKey == "" || record.DecisionID == "" ||
+	if record.TenantID == "" || record.InvocationID == "" || record.DecisionID == "" ||
 		!digestRe.MatchString(record.RequestSHA256) {
 		return Record{}, false, fmt.Errorf("invalid record for persistence")
 	}
@@ -29,8 +29,8 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 	if err != nil { return Record{}, false, fmt.Errorf("marshal decision record: %w", err) }
 
 	result, err := s.db.ExecContext(ctx,
-		"INSERT INTO decision_records (tenant_id, idempotency_key, decision_id, request_sha256, record, created_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
-		record.TenantID, record.IdempotencyKey, record.DecisionID, record.RequestSHA256, payload, record.CreatedAt)
+		"INSERT INTO decision_records (tenant_id, invocation_id, decision_id, request_sha256, record, created_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (tenant_id, invocation_id) DO NOTHING",
+		record.TenantID, record.InvocationID, record.DecisionID, record.RequestSHA256, payload, record.CreatedAt)
 	if err != nil { return Record{}, false, fmt.Errorf("insert decision record: %w", err) }
 	rows, err := result.RowsAffected()
 	if err != nil { return Record{}, false, fmt.Errorf("read insert result: %w", err) }
@@ -40,8 +40,8 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 	var storedFingerprint string
 	var storedPayload []byte
 	err = s.db.QueryRowContext(ctx,
-		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND idempotency_key = $2",
-		record.TenantID, record.IdempotencyKey).Scan(&storedFingerprint, &storedPayload)
+		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
+		record.TenantID, record.InvocationID).Scan(&storedFingerprint, &storedPayload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) { return Record{}, false, fmt.Errorf("idempotency row disappeared after conflict: %w", err) }
 		return Record{}, false, fmt.Errorf("load existing decision record: %w", err)
