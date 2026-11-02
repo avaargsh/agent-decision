@@ -8,7 +8,7 @@ VALID = dict(protocol_version='v0.1', invocation_id='inv-1', tenant_id='t-1',
 def test_final_result_is_stable():
     assert decide(DecisionTurn.parse(VALID)) == {
         'protocol_version': 'v0.1', 'invocation_id': 'inv-1',
-        'kind': 'final', 'text': 'Accepted: hello'}
+        'kind': 'final_response', 'text': 'Accepted: hello'}
 
 
 @pytest.mark.parametrize('field,value', [('protocol_version', 'v2'), ('user_input', ''),
