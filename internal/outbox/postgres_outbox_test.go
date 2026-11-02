@@ -1,4 +1,4 @@
-package outbox
+package outbox_test
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
+	"github.com/avaargsh/agent-decision/internal/outbox"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -78,10 +79,10 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID || reclaimed[0].Attempts != 2 {
 		t.Fatalf("expired lease reclaim: events=%+v err=%v", reclaimed, err)
 	}
-	if err := store.Ack(ctx, reclaimed[0].ID, "worker-a"); !errors.Is(err, ErrLeaseLost) {
+	if err := store.Ack(ctx, reclaimed[0].ID, "worker-a"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner ack=%v, want ErrLeaseLost", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", 0, "stale owner"); !errors.Is(err, ErrLeaseLost) {
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", 0, "stale owner"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner retry=%v, want ErrLeaseLost", err)
 	}
 	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", 0, "publisher timeout"); err != nil {
@@ -94,7 +95,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := store.Ack(ctx, retried[0].ID, "worker-c"); err != nil {
 		t.Fatalf("ack event: %v", err)
 	}
-	if err := store.Ack(ctx, retried[0].ID, "worker-c"); !errors.Is(err, ErrLeaseLost) {
+	if err := store.Ack(ctx, retried[0].ID, "worker-c"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("duplicate ack=%v, want ErrLeaseLost", err)
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE outbox_events SET payload = '{}'::jsonb WHERE event_id = $1", retried[0].ID); err == nil {
@@ -103,21 +104,21 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 }
 
 func TestDispatchOnceRetriesPublishFailure(t *testing.T) {
-	store := &fakeStore{events: []Event{{ID: "event-1"}}}
+	store := &fakeStore{events: []outbox.outbox.Event{{ID: "event-1"}}}
 	publisher := fakePublisher{err: errors.New("broker unavailable")}
-	published, err := DispatchOnce(context.Background(), store, publisher, "worker-a", 1, time.Minute, 5*time.Second)
+	published, err := outbox.DispatchOnce(context.Background(), store, publisher, "worker-a", 1, time.Minute, 5*time.Second)
 	if published != 0 || !errors.Is(err, publisher.err) || store.retries != 1 || store.acks != 0 {
 		t.Fatalf("DispatchOnce: published=%d err=%v retries=%d acks=%d", published, err, store.retries, store.acks)
 	}
 }
 
 type fakeStore struct {
-	events  []Event
+	events  []outbox.Event
 	acks    int
 	retries int
 }
 
-func (s *fakeStore) Claim(context.Context, string, int, time.Duration) ([]Event, error) {
+func (s *fakeStore) Claim(context.Context, string, int, time.Duration) ([]outbox.Event, error) {
 	return s.events, nil
 }
 func (s *fakeStore) Ack(context.Context, string, string) error {
@@ -131,4 +132,4 @@ func (s *fakeStore) Retry(context.Context, string, string, time.Duration, string
 
 type fakePublisher struct{ err error }
 
-func (p fakePublisher) Publish(context.Context, Event) error { return p.err }
+func (p fakePublisher) Publish(context.Context, outbox.Event) error { return p.err }
