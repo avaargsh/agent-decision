@@ -345,7 +345,6 @@
         },
         "steps": {
           "type": "array",
-          "maxItems": 3,
           "items": {
             "$ref": "#/$defs/PlanStep"
           }
