@@ -34,7 +34,7 @@ REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
   ON TABLE public.decision_records FROM agent_decision_app;
 ```
 
-The runtime repository uses scoped SQL for tenant/idempotency lookup. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
+The runtime repository uses scoped SQL for tenant/idempotency lookup. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
 
 ## 2. Secret and connection handling
 
@@ -46,7 +46,7 @@ The runtime repository uses scoped SQL for tenant/idempotency lookup. Database r
 
 ## 3. Backup and retention
 
-The v0.1 DecisionRecord ledger is append-only at the application API. No automatic deletion/retention job is defined.
+The v0.1 DecisionRecord ledger is append-only at both the SQL trigger and application-role privilege layers: UPDATE and DELETE are rejected by the table triggers, and the runtime role must not receive UPDATE, DELETE or TRUNCATE. No automatic deletion/retention job is defined.
 
 Minimum deployment policy to establish before production:
 - Nightly logical backup using a custom-format dump or a managed PostgreSQL backup service.
