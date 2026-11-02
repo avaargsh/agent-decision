@@ -370,7 +370,7 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		record.MaxReplans = req.Replan.MaxReplans
 	}
 	result := s.strategy.Plan(req, decisionID)
-	if err := validateStrategyResult(result); err != nil {
+	if err := validateStrategyResult(req, result); err != nil {
 		return Record{}, false, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
 	record.Status = result.Status
