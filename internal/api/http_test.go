@@ -26,7 +26,7 @@ func apiRequest() decision.Request {
 	return decision.Request{
 		SchemaVersion:decision.SchemaVersion,
 		Identity:decision.Identity{AgentID:"agent-1",SessionID:"session-1",RunID:"run-17"},
-		IdempotencyKey:"alert-17",
+		InvocationID:"alert-17",
 		Input:decision.Input{Objective:"sre_incident_triage",Service:"payment-api",Signal:"latency"},
 		Constraints:decision.Constraints{DeadlineMS:30000,MaxTokens:2048,MaxCostMicros:50000,MaxCandidates:3},
 		Versions:decision.VersionSet{CapabilityCatalogVersion:"catalog-12",StrategyVersion:decision.PolicyVersion,PromptVersion:"none",ModelProfile:"rule-only"},
@@ -82,7 +82,7 @@ func TestHTTPRejectsTenantFromBodyAndStrictJSON(t *testing.T) {
 	h:=testHandler(resolverFor(apiPrincipal()),apiAuthority{})
 	body:=validBody()
 	attackerTenant:=append([]byte(`{"tenant_id":"tenant-evil",`),body[1:]...)
-	duplicate:=bytes.Replace(body,[]byte(`"idempotency_key":"alert-17"`),[]byte(`"idempotency_key":"alert-17","idempotency_key":"other"`),1)
+	duplicate:=bytes.Replace(body,[]byte(`"invocation_id":"alert-17"`),[]byte(`"invocation_id":"alert-17","invocation_id":"other"`),1)
 	unknown:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"unexpected"`),1)
 	caseAlias:=bytes.Replace(body,[]byte(`"agent_id":"agent-1"`),[]byte(`"agent_id":"agent-1","AGENT_ID":"agent-2"`),1)
 	capitalized:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"Schema_Version"`),1)
