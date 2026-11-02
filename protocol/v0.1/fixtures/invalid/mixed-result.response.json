@@ -1,0 +1,24 @@
+{
+  "protocol_version": "0.1",
+  "invocation_id": "inv-001",
+  "result": {
+    "kind": "action_proposals",
+    "proposals": [
+      {
+        "proposal_id": "proposal-001",
+        "capability_id": "workspace.write",
+        "capability_version": "1.0.0",
+        "arguments": {
+          "relative_path": "reports/result.md",
+          "content": "Only execute after Guard authorization."
+        },
+        "target_resource_ref": {
+          "type": "workspace",
+          "id": "workspace-001"
+        },
+        "rationale_ref": "evidence://tenant-a/rationale/001"
+      }
+    ],
+    "text": "must-not-mix-union-variants"
+  }
+}

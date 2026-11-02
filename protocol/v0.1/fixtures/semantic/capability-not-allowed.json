@@ -1,0 +1,27 @@
+{
+  "description": "This response is schema-valid but requests a capability absent from the request allow-list. Runtime must reject the whole response before any Guard submission.",
+  "request_fixture": "../valid/decision-turn-request.json",
+  "response": {
+    "protocol_version": "0.1",
+    "invocation_id": "inv-001",
+    "result": {
+      "kind": "action_proposals",
+      "proposals": [
+        {
+          "proposal_id": "proposal-forbidden",
+          "capability_id": "workspace.delete",
+          "capability_version": "1.0.0",
+          "arguments": {
+            "relative_path": "reports/result.md"
+          },
+          "target_resource_ref": {
+            "type": "workspace",
+            "id": "workspace-001"
+          },
+          "rationale_ref": "evidence://tenant-a/rationale/forbidden"
+        }
+      ]
+    }
+  },
+  "expected": "REJECT_WHOLE_RESPONSE_NO_GUARD_SUBMISSION"
+}

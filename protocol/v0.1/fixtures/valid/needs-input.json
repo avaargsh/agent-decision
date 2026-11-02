@@ -1,0 +1,11 @@
+{
+  "protocol_version": "0.1",
+  "invocation_id": "inv-001",
+  "result": {
+    "kind": "needs_input",
+    "prompt": "Which report should be updated?",
+    "missing_fields": [
+      "report_id"
+    ]
+  }
+}

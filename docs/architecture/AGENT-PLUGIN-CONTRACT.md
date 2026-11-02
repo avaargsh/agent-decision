@@ -1,15 +1,85 @@
 # Agent Plugin Protocol v0.1
 
-Transport: HTTP JSON initially; gRPC only after measured streaming or throughput needs. OpenAPI/JSON Schema is canonical.
+Status: Proposed contract baseline. The schemas and fixtures under `protocol/v0.1/` are normative.
 
-Request: protocol_version, invocation_id, agent_id, bundle_digest, release_id, session_id, run_id, turn_id, context_projection, allowed_capabilities, deadline, trace_context.
+## Transport and execution
 
-Response union:
-- FinalResponse { text, structured_output?, evidence_refs[] }
-- ActionProposal { proposal_id, capability_id, capability_version, arguments, target_resource_ref, rationale_ref }
-- NeedsInput { prompt, missing_fields[] }
-- DecisionError { code, retryable, safe_message }
+- HTTP JSON is the v0.1 transport. Do not add gRPC until measured streaming or throughput requirements justify it.
+- One request is one bounded Decision Turn. The plugin returns a decision; it does not own Run, Task, Session, approval, Permit, or external operation lifecycle.
+- The plugin returns exactly one of `final_response`, `action_proposals`, or `needs_input`.
+- No plugin response can authorize an action, claim that an action was executed, or contain an executable credential.
 
-No response can contain an executable bearer credential or claim that an action was already authorized. Proposals are untrusted input and must be normalized and authorized by EngageGuard.
+## Request contract
 
-Limits: request/response bytes, wall-clock deadline, max output tokens, max proposals, concurrency and per-tenant rate. Plugin must propagate cancellation. Unknown schema or capability version fails closed.
+The normative request schema is `protocol/v0.1/schemas/decision-turn-request.schema.json`.
+
+- `invocation_id` is assigned by Runtime and remains unchanged across retries of the same logical invocation.
+- `run_id`, `turn_id`, `session_id`, `agent_id`, `release_id`, and `bundle_digest` identify the immutable decision context.
+- `user_input_ref` and `context_projection_ref` are immutable, content-addressed references. They include a digest, media type, and schema version. The plugin reads them through an authenticated, tenant-scoped, read-only context interface; it does not query Runtime storage directly.
+- `allowed_capabilities` is an allow-list of capability ID, exact version, and argument-schema digest. It is a proposal boundary, not an authorization grant.
+- `deadline` is an absolute UTC RFC 3339 timestamp. Runtime does not extend it when retrying an Activity.
+- `trace_context` follows W3C Trace Context. It is diagnostic only and must not carry credentials or sensitive baggage.
+
+Tenant and principal identity are derived from authenticated workload identity and trusted request context. They are not accepted as authoritative body fields. The plugin must not infer or elevate identity from prompt content.
+
+## Response contract
+
+The normative response schema is `protocol/v0.1/schemas/decision-turn-response.schema.json`.
+
+| Result kind | Required content | Runtime behavior |
+|---|---|---|
+| `final_response` | text, evidence_refs; optional structured_output | Complete the Decision Turn |
+| `action_proposals` | 1–16 ordered typed proposals | Validate the entire response, then submit proposals sequentially to EngageGuard |
+| `needs_input` | prompt and non-empty missing_fields | Pause for user input; do not execute actions |
+
+Each ActionProposal contains a unique-within-invocation `proposal_id`, capability ID/version, typed arguments, target resource reference, and rationale reference. Runtime validates the proposal against the exact capability descriptor and its argument schema digest. If any proposal is malformed or outside the request allow-list, reject the entire response before submitting any proposal.
+
+After whole-response validation, proposals are processed in order. A Guard denial or UNKNOWN operation stops later proposals. Earlier completed operations are not rolled back; v0.1 does not promise atomic multi-action transactions.
+
+The plugin must not return `tenant_id`, trusted `principal`, `permit_id`, Permit token, provider secret, executor credential, or an execution receipt as an authoritative field. Unknown response fields are rejected.
+
+## Invocation idempotency
+
+The request digest is SHA-256 over RFC 8785 JCS canonical JSON after removing only `trace_context`. All other request fields, including deadline and immutable context references, participate in the digest.
+
+For the same authenticated tenant and `invocation_id`:
+
+1. Same request digest and completed invocation: replay the stored response.
+2. Same request digest and running invocation: return `409 INVOCATION_IN_PROGRESS` with optional `retry_after_ms`.
+3. Different request digest: return `409 INVOCATION_ID_REUSED`.
+4. A worker crash before a response is durably committed may cause inference to run again after its lease expires. This may duplicate model-provider cost, but cannot duplicate protected side effects because the plugin has no privileged executor access.
+
+The HTTP worker remains stateless. A small invocation-result store may persist invocation digest, lease/state, and completed response; it is not canonical Run/Session state and is not a framework checkpoint.
+
+## Error contract
+
+The normative error schema is `protocol/v0.1/schemas/decision-turn-error.schema.json`. Do not expose a `retryable` boolean; Runtime owns retry policy.
+
+| HTTP | Error codes | Runtime handling |
+|---|---|---|
+| 400 | INVALID_REQUEST | Do not retry |
+| 401 / 403 | UNAUTHENTICATED / FORBIDDEN | Do not retry; security failure |
+| 409 | INVOCATION_ID_REUSED | Do not retry; contract violation |
+| 409 | INVOCATION_IN_PROGRESS | Bounded retry using retry_after_ms |
+| 413 | PAYLOAD_TOO_LARGE | Do not retry |
+| 422 | UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CAPABILITY_VERSION, OUTPUT_VALIDATION_FAILED | Fail closed; do not retry |
+| 429 | RATE_LIMITED | Bounded retry; honor retry_after_ms |
+| 500 | INTERNAL_ERROR | Bounded retry only if Runtime policy allows and deadline remains |
+| 503 | DEPENDENCY_UNAVAILABLE | Bounded retry with backoff |
+| 504 | DEADLINE_EXCEEDED | Stop retrying |
+
+Cancellation is propagated from Runtime to the plugin. A cancelled request must stop model/tool orchestration as soon as possible. Cancellation does not imply that a model-provider request was never billed; the plugin has no protected side effects to reconcile.
+
+## Limits and security
+
+- v0.1 schema caps proposals at 16 and bounds IDs, references, text, trace state, and object sizes. Deployments additionally configure request/response byte limits, token budgets, wall-clock deadlines, concurrency, and per-tenant rate limits.
+- Unknown protocol, capability, argument-schema, or context schema versions fail closed.
+- The plugin receives only projected context and capability descriptors. No provider secrets, Permit tokens, direct executor credentials, or unmediated protected-tool access.
+- ActionProposal is untrusted input. Runtime normalizes it and EngageGuard performs fresh authorization against the actual action and target.
+- Framework metadata is bounded diagnostic data, never authoritative platform state.
+
+## Compatibility
+
+- JSON Schema Draft 2020-12 is canonical.
+- Unknown fields are rejected in v0.1. Additive fields require a new compatible protocol revision and updated shared fixtures; changes to required fields, types, union semantics, or security meaning require a new protocol version.
+- Python and TypeScript adapters must pass the exact same fixtures. Runtime Go validation must pass them as well before integration is accepted.

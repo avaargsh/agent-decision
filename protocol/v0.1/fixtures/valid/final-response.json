@@ -1,0 +1,14 @@
+{
+  "protocol_version": "0.1",
+  "invocation_id": "inv-001",
+  "result": {
+    "kind": "final_response",
+    "text": "The requested document is ready.",
+    "structured_output": {
+      "status": "ready"
+    },
+    "evidence_refs": [
+      "evidence://tenant-a/doc/001"
+    ]
+  }
+}

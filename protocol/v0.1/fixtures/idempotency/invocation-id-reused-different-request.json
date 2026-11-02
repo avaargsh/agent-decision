@@ -1,0 +1,33 @@
+{
+  "protocol_version": "0.1",
+  "invocation_id": "inv-001",
+  "agent_id": "agent-001",
+  "bundle_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "release_id": "release-001",
+  "session_id": "session-001",
+  "run_id": "run-001",
+  "turn_id": "turn-001",
+  "user_input_ref": {
+    "ref": "context://tenant-a/input/001",
+    "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "media_type": "application/json",
+    "schema_version": "user-input.v1"
+  },
+  "context_projection_ref": {
+    "ref": "context://tenant-a/projection/001",
+    "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "media_type": "application/json",
+    "schema_version": "context-projection.v1"
+  },
+  "allowed_capabilities": [
+    {
+      "capability_id": "workspace.write",
+      "capability_version": "1.0.0",
+      "arguments_schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "deadline": "2030-01-01T00:00:00Z",
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+  }
+}

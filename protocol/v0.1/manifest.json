@@ -1,0 +1,41 @@
+{
+  "protocol_name": "avaargsh.agent-decision",
+  "protocol_version": "0.1",
+  "json_schema_draft": "2020-12",
+  "canonical_json": "RFC 8785",
+  "request_digest_excludes": [
+    "trace_context"
+  ],
+  "maximums": {
+    "max_proposals": 16,
+    "max_allowed_capabilities": 64,
+    "max_response_text_chars": 65536,
+    "max_evidence_refs": 128,
+    "max_request_reference_chars": 2048
+  },
+  "schemas": {
+    "request": "schemas/decision-turn-request.schema.json",
+    "response": "schemas/decision-turn-response.schema.json",
+    "error": "schemas/decision-turn-error.schema.json"
+  },
+  "fixtures": {
+    "valid": [
+      "fixtures/valid/decision-turn-request.json",
+      "fixtures/valid/final-response.json",
+      "fixtures/valid/action-proposals.json",
+      "fixtures/valid/needs-input.json"
+    ],
+    "invalid": [
+      "fixtures/invalid/unknown-protocol-version.request.json",
+      "fixtures/invalid/unknown-field.request.json",
+      "fixtures/invalid/mixed-result.response.json",
+      "fixtures/invalid/non-utc-deadline.request.json"
+    ],
+    "semantic": [
+      "fixtures/semantic/capability-not-allowed.json"
+    ],
+    "idempotency": [
+      "fixtures/idempotency/invocation-id-reused-different-request.json"
+    ]
+  }
+}

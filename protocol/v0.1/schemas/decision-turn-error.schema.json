@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:avaargsh:agent-decision:protocol:v0.1:error",
+  "title": "Agent Decision Error Envelope v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "error"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "0.1"
+    },
+    "invocation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "UNAUTHENTICATED",
+            "FORBIDDEN",
+            "UNSUPPORTED_PROTOCOL_VERSION",
+            "UNSUPPORTED_CAPABILITY_VERSION",
+            "INVOCATION_ID_REUSED",
+            "INVOCATION_IN_PROGRESS",
+            "PAYLOAD_TOO_LARGE",
+            "OUTPUT_VALIDATION_FAILED",
+            "RATE_LIMITED",
+            "DEADLINE_EXCEEDED",
+            "CANCELLED",
+            "DEPENDENCY_UNAVAILABLE",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "retry_after_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        }
+      }
+    }
+  }
+}
