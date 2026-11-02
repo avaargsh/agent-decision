@@ -310,7 +310,16 @@ type Service struct {
 }
 
 func NewService(store Store, authority AuthorityVerifier) *Service {
-	return &Service{store: store, authority: authority, strategy: SREReadOnlyStrategy{}, now: func() time.Time { return time.Now().UTC() }}
+	return NewServiceWithStrategy(store, authority, SREReadOnlyStrategy{})
+}
+
+// NewServiceWithStrategy injects a replaceable decision policy while keeping
+// persistence, identity, authority verification, and idempotency in the core.
+func NewServiceWithStrategy(store Store, authority AuthorityVerifier, strategy Strategy) *Service {
+	if strategy == nil {
+		strategy = SREReadOnlyStrategy{}
+	}
+	return &Service{store: store, authority: authority, strategy: strategy, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Service) Decide(ctx context.Context, principal Principal, req Request) (Record, bool, error) {
@@ -322,6 +331,9 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	}
 	if req.Identity.AgentID != principal.AgentID || req.Identity.SessionID != principal.SessionID {
 		return Record{}, false, ErrUnauthorized
+	}
+	if s.strategy == nil || req.Versions.StrategyVersion != s.strategy.Version() {
+		return Record{}, false, fmt.Errorf("%w: strategy version unavailable", ErrInvalidRequest)
 	}
 	if s.authority == nil {
 		return Record{}, false, ErrAuthorityUnavailable
@@ -358,6 +370,9 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		record.MaxReplans = req.Replan.MaxReplans
 	}
 	result := s.strategy.Plan(req, decisionID)
+	if err := validateStrategyResult(result); err != nil {
+		return Record{}, false, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
+	}
 	record.Status = result.Status
 	record.ReasonCodes = result.ReasonCodes
 	record.Plan.Steps = result.Steps
