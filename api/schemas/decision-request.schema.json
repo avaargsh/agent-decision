@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:avaargsh:agent-decision:decision-request:v1",
+  "title": "DecisionRequest",
+  "description": "Authenticated, version-pinned request for a deterministic read-only SRE investigation plan. Tenant and caller identity are supplied out-of-band by the trusted PrincipalResolver.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "identity",
+    "idempotency_key",
+    "input",
+    "constraints",
+    "versions",
+    "context_snapshot",
+    "capability_snapshot",
+    "capabilities",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "decision.v1"
+    },
+    "identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+    },
+    "input": {
+      "$ref": "#/$defs/Input"
+    },
+    "constraints": {
+      "$ref": "#/$defs/Constraints"
+    },
+    "versions": {
+      "$ref": "#/$defs/VersionSet"
+    },
+    "context_snapshot": {
+      "$ref": "#/$defs/SnapshotRef"
+    },
+    "capability_snapshot": {
+      "$ref": "#/$defs/SnapshotRef"
+    },
+    "capabilities": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityRef"
+          },
+          "maxItems": 32
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_refs": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "maxItems": 32
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "replan": {
+      "$ref": "#/$defs/ReplanContext"
+    }
+  },
+  "$defs": {
+    "Identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "session_id",
+        "run_id"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        }
+      }
+    },
+    "Input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objective",
+        "service",
+        "signal"
+      ],
+      "properties": {
+        "objective": {
+          "const": "sre_incident_triage"
+        },
+        "service": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        },
+        "signal": {
+          "type": "string",
+          "enum": [
+            "latency",
+            "errors",
+            "saturation"
+          ]
+        }
+      }
+    },
+    "Constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deadline_ms",
+        "max_tokens",
+        "max_cost_micros",
+        "max_candidates"
+      ],
+      "properties": {
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 120000
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "max_cost_micros": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      }
+    },
+    "VersionSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_catalog_version",
+        "strategy_version",
+        "prompt_version",
+        "model_profile"
+      ],
+      "properties": {
+        "capability_catalog_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy_version": {
+          "const": "sre-readonly-v1"
+        },
+        "prompt_version": {
+          "const": "none"
+        },
+        "model_profile": {
+          "const": "rule-only"
+        }
+      }
+    },
+    "SnapshotRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "sha256",
+        "source",
+        "attestation_ref",
+        "trust_level",
+        "issued_at",
+        "expires_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "attestation_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "trust_level": {
+          "const": "attested"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "source",
+        "source_version",
+        "sha256",
+        "attestation_ref",
+        "trust_level",
+        "observed_at",
+        "expires_at"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "attestation_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "trust_level": {
+          "const": "attested"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "CapabilityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "contract_sha256",
+        "input_schema_ref",
+        "output_schema_ref",
+        "effect_class",
+        "idempotency",
+        "tenant_scoped"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "input_schema_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "output_schema_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "effect_class": {
+          "const": "read_only"
+        },
+        "idempotency": {
+          "const": "safe"
+        },
+        "tenant_scoped": {
+          "const": true
+        }
+      }
+    },
+    "ReplanContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_decision_id",
+        "sequence",
+        "max_replans",
+        "trigger",
+        "prior_disposition"
+      ],
+      "properties": {
+        "parent_decision_id": {
+          "type": "string",
+          "pattern": "^dec_[a-f0-9]{64}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "max_replans": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "trigger": {
+          "const": "STEP_FAILED"
+        },
+        "prior_disposition": {
+          "const": "RETRYABLE_FAILURE"
+        }
+      }
+    }
+  }
+}
