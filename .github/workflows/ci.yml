@@ -38,6 +38,9 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      - name: Validate OpenAPI YAML
+        run: |
+          ruby -e 'require "yaml"; document = YAML.load_file("api/openapi.yaml"); abort "invalid OpenAPI structure" unless document["openapi"] == "3.1.0" && document.fetch("paths").key?("/v1/decisions")'
       - name: Test
         run: go test -race ./...
       - name: Vet
