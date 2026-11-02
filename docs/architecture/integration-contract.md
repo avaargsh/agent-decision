@@ -26,13 +26,16 @@ Never conflate `run_intent_id`, `run_id`, `workflow_id`, `run_attempt_id`, Tempo
 
 ## 2. Protocol ownership and compatibility
 
+Runtime creates a stable `invocation_id` for each logical Decision Turn and persists it before the first request. Agent Decision owns the immutable invocation result/DecisionRecord ledger and uses the unique key `(tenant_id, invocation_id)`. Temporal Activity retries must reuse the exact same `invocation_id` and normalized request digest. A changed digest for the same invocation is rejected with `409 INVOCATION_ID_REUSED`. This Core invocation contract is separate from the legacy Python/TypeScript DecisionTurn adapter protocol.
+
+
 The Go Decision Core endpoint `POST /v1/decisions` publishes the Decision Core request/record contract (`decision.v1`, `PROPOSED | ABSTAINED`) and owns the immutable DecisionRecord ledger. The legacy Python/TypeScript framework adapter surface named `DecisionTurn` is a separate protocol with different context and response discriminators. These contracts are **not wire-compatible** and must not share a version identifier or be silently coerced.
 
 A future framework adapter may provide bounded reasoning output to the Go Core under an independently versioned adapter contract. The Core must validate adapter output as untrusted strategy input; adapters do not write platform DecisionRecords, own Run identity, authorize capabilities, issue permits or execute actions. The retirement/migration policy for legacy adapter PRs remains open under Decision Issue #9.
 
 ## 2. Request identity and trust boundary
 
-`DecisionRequest.identity` carries `agent_id`, `session_id` and `run_id`. These values are references to Control Plane-owned identities; they are not caller authentication.
+`DecisionRequest.identity` carries `agent_id`, `session_id` and `run_id`. Agent and Session identities are ACP-owned references; `run_id` is created and owned by Runtime after accepting an ACP RunIntent. These values are not caller authentication.
 
 The trusted `PrincipalResolver` supplies tenant, subject, caller, Agent and Session identity out-of-band. For the v0.1 Runtime-only entry point, the caller is `agent-runtime`. The service binds the request Agent and Session to that Principal before planning.
 
