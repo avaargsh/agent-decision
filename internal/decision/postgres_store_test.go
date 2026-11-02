@@ -44,11 +44,7 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	store := NewPostgresStore(db)
@@ -131,11 +127,7 @@ func TestPostgresServiceReplaysCompletedInvocationAfterVerifierUnavailable(t *te
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,11 +174,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 
