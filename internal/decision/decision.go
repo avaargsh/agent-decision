@@ -310,6 +310,7 @@ type AuthorityVerifier interface {
 }
 
 type Store interface {
+	GetByInvocation(context.Context, string, string) (Record, error)
 	SaveOrGet(context.Context, Record) (Record, bool, error)
 	GetByDecisionID(context.Context, string, string, string, string) (Record, error)
 	ListByRun(context.Context, string, string, string, string, *DecisionCursor, int) ([]Record, error)
@@ -322,11 +323,29 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore { return &MemoryStore{byKey: make(map[string]Record)} }
 
+func memoryInvocationKey(tenantID, invocationID string) string {
+	return digest(struct{ TenantID, InvocationID string }{tenantID, invocationID})
+}
+
+func (s *MemoryStore) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	key := memoryInvocationKey(tenantID, invocationID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.byKey[key]
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+	return clone(record), nil
+}
+
 func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
-	key := digest(struct{ TenantID, InvocationID string }{r.TenantID, r.InvocationID})
+	key := memoryInvocationKey(r.TenantID, r.InvocationID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.byKey[key]; ok {
@@ -374,6 +393,30 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 			return Record{}, false, ErrUnauthorized
 		}
 	}
+	if s.store == nil {
+		return Record{}, false, ErrStoreUnavailable
+	}
+
+	fingerprint := digest(struct {
+		Principal Principal
+		Request Request
+	}{principal, req})
+
+	// Resolve a completed logical invocation before re-validating expiring
+	// evidence. The trusted Principal and request identity bindings above are
+	// still checked on every call; returning a stored proposal grants no
+	// authorization and cannot bypass EngageGuard.
+	existing, lookupErr := s.store.GetByInvocation(ctx, principal.TenantID, req.InvocationID)
+	if lookupErr == nil {
+		if existing.RequestSHA256 != fingerprint {
+			return Record{}, false, ErrConflict
+		}
+		return clone(existing), false, nil
+	}
+	if !errors.Is(lookupErr, ErrNotFound) {
+		return Record{}, false, lookupErr
+	}
+
 	if s.strategy == nil || req.Versions.StrategyVersion != s.strategy.Version() {
 		return Record{}, false, fmt.Errorf("%w: strategy version unavailable", ErrInvalidRequest)
 	}
@@ -386,14 +429,6 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		}
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
-	if s.store == nil {
-		return Record{}, false, ErrStoreUnavailable
-	}
-
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
 	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
