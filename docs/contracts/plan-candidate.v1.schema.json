@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avaargsh.github.io/agent-decision/contracts/plan-candidate.v1.schema.json",
+  "title": "PlanCandidate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["plan_id", "schema_version", "steps", "plan_hash"],
+  "properties": {
+    "plan_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "const": "decision.v1" },
+    "plan_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "steps": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["step_id", "kind", "capability", "target_ref", "input_schema_ref", "output_schema_ref", "read_only"],
+        "properties": {
+          "step_id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["OBSERVE_METRICS", "INSPECT_LOGS", "CORRELATE_CHANGE"] },
+          "capability": { "$ref": "decision-request.v1.schema.json#/$defs/capability" },
+          "target_ref": { "type": "string", "minLength": 1 },
+          "input_schema_ref": { "type": "string", "minLength": 1 },
+          "output_schema_ref": { "type": "string", "minLength": 1 },
+          "read_only": { "const": true }
+        }
+      }
+    }
+  }
+}
