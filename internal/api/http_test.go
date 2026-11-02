@@ -84,9 +84,11 @@ func TestHTTPRejectsTenantFromBodyAndStrictJSON(t *testing.T) {
 	attackerTenant:=append([]byte(`{"tenant_id":"tenant-evil",`),body[1:]...)
 	duplicate:=bytes.Replace(body,[]byte(`"idempotency_key":"alert-17"`),[]byte(`"idempotency_key":"alert-17","idempotency_key":"other"`),1)
 	unknown:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"unexpected"`),1)
+	caseAlias:=bytes.Replace(body,[]byte(`"agent_id":"agent-1"`),[]byte(`"agent_id":"agent-1","AGENT_ID":"agent-2"`),1)
+	capitalized:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"Schema_Version"`),1)
 	trailing:=append(append([]byte{},body...),[]byte("{}")...)
 	nestedDuplicate:=bytes.Replace(body,[]byte(`"agent_id":"agent-1"`),[]byte(`"agent_id":"agent-1","agent_id":"agent-2"`),1)
-	for i,candidate:=range [][]byte{attackerTenant,duplicate,unknown,trailing,nestedDuplicate} {
+	for i,candidate:=range [][]byte{attackerTenant,duplicate,unknown,trailing,nestedDuplicate,caseAlias,capitalized} {
 		w:=send(h,candidate,"application/json")
 		if w.Code!=http.StatusBadRequest { t.Errorf("case %d: expected 400 got %d",i,w.Code) }
 	}
