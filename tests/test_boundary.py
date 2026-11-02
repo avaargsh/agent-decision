@@ -103,6 +103,15 @@ class RequestBoundaryTests(unittest.TestCase):
             now=datetime(2031, 1, 1, tzinfo=timezone.utc),
         ))
 
+    def test_unsupported_request_protocol_version_has_stable_error(self) -> None:
+        bad = request()
+        bad["protocol_version"] = "0.2"
+        assert_code(self, "UNSUPPORTED_PROTOCOL_VERSION", lambda: validate_request(
+            wire(bad), tenant_id="tenant-a", capability_registry=REGISTRY,
+            context_versions=CONTEXT_VERSIONS,
+            now=datetime(2026, 11, 2, tzinfo=timezone.utc),
+        ))
+
     def test_unknown_capability_version_rejected(self) -> None:
         bad = request()
         bad["allowed_capabilities"][0]["capability_version"] = "9.9.9"
@@ -169,6 +178,13 @@ class ResponseBoundaryTests(unittest.TestCase):
     def test_forbidden_capability_rejects_entire_response(self) -> None:
         bad = fixture("semantic/capability-not-allowed.json")["response"]
         assert_code(self, "CAPABILITY_NOT_ALLOWED", lambda: validate_response(
+            wire(bad), request=accepted_request(), capability_registry=REGISTRY,
+        ))
+
+    def test_unsupported_response_protocol_version_has_stable_error(self) -> None:
+        bad = fixture("valid/final-response.json")
+        bad["protocol_version"] = "0.2"
+        assert_code(self, "UNSUPPORTED_PROTOCOL_VERSION", lambda: validate_response(
             wire(bad), request=accepted_request(), capability_registry=REGISTRY,
         ))
 
