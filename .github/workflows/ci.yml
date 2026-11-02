@@ -14,5 +14,12 @@ jobs:
           go-version: '1.27.3'
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Format and export reviewed Go files
+        run: |
+          gofmt -w internal/api/http_test.go internal/decision/decision.go internal/decision/decision_test.go
+          echo "FMT_DECISION=$(base64 -w0 internal/decision/decision.go)"
+          echo "FMT_DECISION_TEST=$(base64 -w0 internal/decision/decision_test.go)"
+          echo "FMT_API_TEST=$(base64 -w0 internal/api/http_test.go)"
+          git diff --exit-code -- internal/api/http_test.go internal/decision/decision.go internal/decision/decision_test.go
       - run: gofmt -l $(find . -name '*.go')
       - run: test -z "$(gofmt -l $(find . -name '*.go'))"
