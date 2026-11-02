@@ -159,6 +159,15 @@ type Request struct {
 	Replan *ReplanContext `json:"replan,omitempty"`
 }
 
+type EvidenceBinding struct {
+	SourceID string `json:"source_id"`
+	Ref string `json:"ref"`
+}
+
+func evidenceBindingKey(binding EvidenceBinding) string {
+	return binding.SourceID + "\\x00" + binding.Ref
+}
+
 type PlanStep struct {
 	StepID string `json:"step_id"`
 	Kind string `json:"kind"`
@@ -166,6 +175,7 @@ type PlanStep struct {
 	TargetRef string `json:"target_ref"`
 	InputSchemaRef string `json:"input_schema_ref"`
 	OutputSchemaRef string `json:"output_schema_ref"`
+	EvidenceRefs []EvidenceBinding `json:"evidence_refs"`
 	ReadOnly bool `json:"read_only"`
 }
 
@@ -504,5 +514,8 @@ func clone(record Record) Record {
 	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
 	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
 	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
+	for i := range record.Plan.Steps {
+		record.Plan.Steps[i].EvidenceRefs = append([]EvidenceBinding{}, record.Plan.Steps[i].EvidenceRefs...)
+	}
 	return record
 }
