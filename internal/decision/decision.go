@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -228,7 +227,7 @@ func (r Request) Validate() error {
 		r.Constraints.MaxTokens < 1 || r.Constraints.MaxTokens > 8192 ||
 		r.Constraints.MaxCostMicros < 0 || r.Constraints.MaxCostMicros > 10000000 ||
 		r.Constraints.MaxCandidates < 1 || r.Constraints.MaxCandidates > 3 ||
-		math.IsNaN(float64(r.Constraints.MaxCostMicros)) {
+		false {
 		return fmt.Errorf("%w: invalid resource constraints", ErrInvalidRequest)
 	}
 	if r.Versions.CapabilityCatalogVersion == "" || r.Versions.StrategyVersion != PolicyVersion ||
@@ -306,11 +305,12 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 type Service struct {
 	store Store
 	authority AuthorityVerifier
+	strategy Strategy
 	now func() time.Time
 }
 
 func NewService(store Store, authority AuthorityVerifier) *Service {
-	return &Service{store: store, authority: authority, now: func() time.Time { return time.Now().UTC() }}
+	return &Service{store: store, authority: authority, strategy: SREReadOnlyStrategy{}, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Service) Decide(ctx context.Context, principal Principal, req Request) (Record, bool, error) {
@@ -357,31 +357,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		record.ReplanSequence = req.Replan.Sequence
 		record.MaxReplans = req.Replan.MaxReplans
 	}
-	if len(req.Evidence) == 0 {
-		record.Status = StatusAbstained
-		record.ReasonCodes = append(record.ReasonCodes, "INSUFFICIENT_EVIDENCE")
-	} else {
-		required := []struct{ id, kind string }{
-			{"sre.metrics.read", "OBSERVE_METRICS"},
-			{"sre.logs.read", "INSPECT_LOGS"},
-			{"sre.changes.read", "CORRELATE_CHANGE"},
-		}
-		for _, item := range required {
-			capability, ok := findCapability(req.Capabilities, item.id)
-			if !ok {
-				record.Status = StatusAbstained
-				record.ReasonCodes = []string{"MISSING_REQUIRED_CAPABILITY"}
-				record.Plan.Steps = []PlanStep{}
-				break
-			}
-			record.Plan.Steps = append(record.Plan.Steps, PlanStep{
-				StepID: "step_" + digest(struct{ DecisionID, CapabilityID string }{decisionID, item.id})[:24],
-				Kind: item.kind, Capability: capability, TargetRef: req.Input.Service,
-				InputSchemaRef: capability.InputSchemaRef, OutputSchemaRef: capability.OutputSchemaRef,
-				ReadOnly: true,
-			})
-		}
-	}
+	result := s.strategy.Plan(req, decisionID)
+	record.Status = result.Status
+	record.ReasonCodes = result.ReasonCodes
+	record.Plan.Steps = result.Steps
 	record.Plan.PlanHash = planHash(record.Plan)
 	return s.store.SaveOrGet(ctx, record)
 }
