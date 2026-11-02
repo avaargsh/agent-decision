@@ -55,3 +55,16 @@
 - Evidence and capability references are versioned and content-addressed.
 - Unknown execution outcomes are not automatically replannable.
 - Every persisted decision is attributable to a trusted tenant and principal.
+
+
+## Production SRE decision-loop gates
+
+- [ ] Add a versioned OPA/Rego policy bundle for Kubernetes candidate manifests and run Conftest verification in CI. Conftest is a deterministic policy test gate, not the probabilistic risk model or actuation engine.
+- [ ] Add candidate-action and explicit no-op contracts with impact, blast radius, reversibility, execution cost and uncertainty dimensions.
+- [ ] Build incident outcome datasets with human-verified Gold labels before claiming calibrated probabilities.
+- [ ] Publish calibration reports, uncertainty bounds, cohort/sample metadata and risk regression results as release artifacts.
+- [ ] Implement expected-loss comparison against the no-op baseline with policy-owned thresholds and counterfactual evaluation.
+- [ ] Integrate progressive authorization through Control Plane and EngageGuard; Runtime owns durable actuation, recovery, and post-condition receipts.
+- [ ] Feed execution receipts, post-condition evidence and human-reviewed incident trajectories into continuous evaluation and recalibration.
+
+These items are roadmap gates only. The current implementation remains a deterministic read-only planner and does not yet provide Kubernetes mutation proposals, probabilistic risk scores, expected-loss ranking, authorization, or execution.
