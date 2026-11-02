@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +13,8 @@ import (
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 	"github.com/avaargsh/agent-decision/internal/outbox"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
@@ -20,13 +22,40 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if dsn == "" {
 		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
 	}
-	db, err := sql.Open("pgx", dsn)
+	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-
 	ctx := context.Background()
+	if err := admin.PingContext(ctx); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("outbox_test_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		_, _ = admin.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	config.RuntimeParams["search_path"] = schema
+	db := stdlib.OpenDB(*config)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		_, _ = admin.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = db.Close()
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+	}()
+
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
