@@ -13,8 +13,9 @@ It does not own:
 - Agent, Session, or Run lifecycle;
 - durable workflow orchestration or retries;
 - identity issuance or tenant membership;
-- capability publication, approval, or authorization policy;
-- tool credentials, privileged execution, or execution permits;
+- capability publication or policy-binding authority;
+- action authorization decisions, approvals, permits or trusted execution;
+- tool credentials or privileged execution;
 - incident lifecycle or SRE alert routing.
 
 ## 2. System boundary
@@ -33,13 +34,22 @@ Agent Decision
           |
           | DecisionRecord / read-only PlanCandidate
           v
-Agent Control Plane / Agent Runtime
-  - policy and approval
-  - Run lifecycle and durable workflow
-  - capability enforcement and execution
+Agent Control Plane
+  - canonical Agent / Session / Run identity
+  - desired state, capability catalog and policy bindings
           |
           v
-EngageGuard / infrastructure providers
+Agent Runtime
+  - durable Run execution and workflow history
+  - task/step scheduling, retry and checkpoint semantics
+          |
+          v
+EngageGuard
+  - action authorization, risk and approval
+  - one-time permits, operation journal and trusted executor
+          |
+          v
+Sandbox / Compute providers
 ```
 
 Agent Decision may describe capability references but never receives capability endpoints, credentials, or executor configuration. A `PlanStep` is a proposal for read-only investigation, not an execution permit.
@@ -91,15 +101,20 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 
 The PostgreSQL integration suite applies the real migration and verifies first insert, exact replay, changed-input conflict, tenant isolation, and concurrent same-key insertion. CI provisions PostgreSQL 16 and runs the suite with the Go race detector.
 
-## 8. API compatibility artifacts
+## 8. Upstream integration contract
 
-- `api/openapi.yaml` is the OpenAPI 3.1 description for `POST /v1/decisions` and `GET /healthz`.
+The cross-repository ownership map, identity binding rules, evidence requirements and open integration gates are recorded in `docs/architecture/integration-contract.md`. In summary: Control Plane owns canonical Agent/Session/Run identity and policy bindings; Runtime owns durable execution semantics; EngageGuard owns action authorization and trusted execution; Decision only returns proposals and abstentions. The Runtime README currently says it owns Run identity, which conflicts with the Control Plane architecture baseline and remains an upstream wording/ownership gate.
+
+## 9. API compatibility artifacts
+
+- `api/openapi.yaml` is the OpenAPI 3.1 description for `POST /v1/decisions`, `GET /v1/decisions/{decision_id}`, `GET /v1/runs/{run_id}/decisions`, and `GET /healthz`.
 - `api/schemas/decision-request.schema.json` defines the strict `DecisionRequest` v1 shape.
 - `api/schemas/decision-record.schema.json` defines the immutable `DecisionRecord` v1 shape.
+- `api/schemas/decision-page.schema.json` defines the bounded cursor-paginated ledger page.
 - `api/schemas/problem.schema.json` defines the public error envelope.
 - The API remains development-only until trusted principal resolution and authoritative snapshot verification are wired to production adapters.
 
-## 9. Next architecture increments
+## 10. Next architecture increments
 
 The following are deliberately outside the v0.1 implementation and require separate contracts and tests:
 
@@ -110,5 +125,6 @@ The following are deliberately outside the v0.1 implementation and require separ
 5. Decision Ledger durability, append-only history, and replay.
 6. Evaluation datasets, benchmark, calibration reports, and release gates.
 7. Scenario-scoped autonomy levels and integration with Control Plane authorization.
+8. Ledger export, retention and archival evidence for long-running audit requirements.
 
-These increments must preserve the boundary: Decision proposes and explains; Control Plane authorizes; Runtime executes and owns Run state.
+These increments must preserve the boundary: Decision proposes and explains; Control Plane owns canonical identity and policy bindings; EngageGuard authorizes actions; Runtime owns durable execution semantics and executes.
