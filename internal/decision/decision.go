@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	ErrConflict = errors.New("idempotency key reused with different request")
+	ErrConflict = errors.New("invocation_id reused with different request")
 	ErrUnauthenticated = errors.New("authenticated principal required")
 	ErrUnauthorized = errors.New("principal is not authorized for this decision request")
 	ErrAuthorityUnavailable = errors.New("authoritative snapshot verifier unavailable")
@@ -148,7 +148,7 @@ type ReplanContext struct {
 type Request struct {
 	SchemaVersion string `json:"schema_version"`
 	Identity Identity `json:"identity"`
-	IdempotencyKey string `json:"idempotency_key"`
+	InvocationID string `json:"invocation_id"`
 	Input Input `json:"input"`
 	Constraints Constraints `json:"constraints"`
 	Versions VersionSet `json:"versions"`
@@ -183,7 +183,7 @@ type Record struct {
 	AgentID string `json:"agent_id"`
 	SessionID string `json:"session_id"`
 	RunID string `json:"run_id"`
-	IdempotencyKey string `json:"idempotency_key"`
+	InvocationID string `json:"invocation_id"`
 	RequestSHA256 string `json:"request_sha256"`
 	StrategyVersion string `json:"strategy_version"`
 	PromptVersion string `json:"prompt_version"`
@@ -241,8 +241,8 @@ func (c CapabilityRef) Validate(catalogVersion string) error {
 func (r Request) Validate() error {
 	if r.SchemaVersion != SchemaVersion || !nameRe.MatchString(r.Identity.AgentID) ||
 		!nameRe.MatchString(r.Identity.SessionID) || !nameRe.MatchString(r.Identity.RunID) ||
-		!nameRe.MatchString(r.IdempotencyKey) {
-		return fmt.Errorf("%w: schema, identity or idempotency key", ErrInvalidRequest)
+		!nameRe.MatchString(r.InvocationID) {
+		return fmt.Errorf("%w: schema, identity or invocation_id", ErrInvalidRequest)
 	}
 	if r.Input.Objective != "sre_incident_triage" || !nameRe.MatchString(r.Input.Service) ||
 		(r.Input.Signal != "latency" && r.Input.Signal != "errors" && r.Input.Signal != "saturation") {
@@ -318,7 +318,7 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
-	key := digest(struct{ TenantID, Key string }{r.TenantID, r.IdempotencyKey})
+	key := digest(struct{ TenantID, InvocationID string }{r.TenantID, r.InvocationID})
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.byKey[key]; ok {
@@ -386,11 +386,11 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		Principal Principal
 		Request Request
 	}{principal, req})
-	decisionID := "dec_" + digest(struct{ TenantID, Key string }{principal.TenantID, req.IdempotencyKey})
+	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
 		AgentID: principal.AgentID, SessionID: principal.SessionID, RunID: req.Identity.RunID,
-		IdempotencyKey: req.IdempotencyKey, RequestSHA256: fingerprint,
+		InvocationID: req.InvocationID, RequestSHA256: fingerprint,
 		StrategyVersion: req.Versions.StrategyVersion, PromptVersion: req.Versions.PromptVersion,
 		ModelProfile: req.Versions.ModelProfile, CapabilityCatalogVersion: req.Versions.CapabilityCatalogVersion,
 		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
