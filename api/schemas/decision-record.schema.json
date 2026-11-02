@@ -112,17 +112,10 @@
       "$ref": "#/$defs/SnapshotRef"
     },
     "evidence_refs": {
-      "anyOf": [
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EvidenceRef"
-          }
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      }
     },
     "plan": {
       "$ref": "#/$defs/PlanCandidate"
@@ -172,7 +165,8 @@
           "maxLength": 256
         },
         "trust_level": {
-          "const": "attested"
+          "const": "attested",
+          "type": "string"
         },
         "issued_at": {
           "type": "string",
@@ -272,13 +266,16 @@
           "maxLength": 256
         },
         "effect_class": {
-          "const": "read_only"
+          "const": "read_only",
+          "type": "string"
         },
         "idempotency": {
-          "const": "safe"
+          "const": "safe",
+          "type": "string"
         },
         "tenant_scoped": {
-          "const": true
+          "const": true,
+          "type": "boolean"
         }
       }
     },
@@ -343,20 +340,15 @@
           "pattern": "^plan_[a-f0-9]{32}$"
         },
         "schema_version": {
-          "const": "decision.v1"
+          "const": "decision.v1",
+          "type": "string"
         },
         "steps": {
-          "anyOf": [
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/PlanStep"
-              }
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/PlanStep"
+          }
         },
         "plan_hash": {
           "type": "string",
