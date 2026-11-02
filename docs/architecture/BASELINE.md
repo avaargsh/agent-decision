@@ -1,52 +1,51 @@
-# ADR-001 — Go Decision Plane boundary and migration baseline
+# ADR-001 — Go Decision Plane boundary and P0 baseline
 
-Status: **Accepted for P0 development only** · 2026-11-02
+Status: **P0 implementation in progress; v1.0 Architecture Baseline not yet frozen** · 2026-11-02
 
-## Context
+## Authority
 
-The earlier SRE decision lab demonstrated read-only five-stage receipt verification, Ed25519, SLO observation provenance, health threshold recalculation, TOCTOU snapshot binding and strict JSON checks. Those results are evidence for migration, **not proof of parity** in this fresh Go repository. No legacy execution privileges are imported.
-
-The initial repository charter described a Python-first framework plugin host. This ADR supersedes it: **Go is the Decision Plane service**, while Python and TypeScript remain bounded framework-worker implementations behind a versioned plugin adapter. Keep domain objects independent of LangGraph, a model provider, or Temporal SDK types.
-
-## Authority (not shared)
-
-| Concern | Authority | Decision Plane can do |
+| Concern | Authority | Decision Plane may |
 |---|---|---|
-| Release, capability, tenant/Run identity | agent-control-panel | link immutable, versioned references |
-| Candidate plans, decision record | agent-decision | propose; never execute |
-| Run/Step/Checkpoint, retries, replanning | Agent Runtime / Temporal | answer one bounded decision request |
-| Risk, approval, permit, ActionHash | EngageGuard | pass proposed action intent only |
-| Trusted execution, UNKNOWN journal/reconciliation | EngageGuard Trusted Executor | consume outcome feedback; cannot retry side effects |
-| Metrics/decision quality/replay | Evaluation | emit provenance, never re-infer during replay |
-| Hardware resources | compute-control-panel | may consume capacity hints, not schedule compute |
+| Tenant, Agent, Session, Run identity; AgentRelease; Capability Catalog | agent-control-panel | consume authenticated, attested, versioned references |
+| Candidate plans and immutable DecisionRecord | agent-decision | propose; never authorize or execute |
+| Run/Step/Attempt/Checkpoint, retries and replan admission | agent-runtime / Temporal | request one bounded decision turn |
+| Action normalization, risk, approval, Permit, ActionHash | EngageGuard | independently authorize a concrete ActionRequest |
+| Trusted execution and UNKNOWN journal/reconciliation | EngageGuard Trusted Executor | reconcile; never blind retry |
+| Provider, Pool, Workload, Allocation | compute-control-panel | provide capacity hints only |
+| Decision quality, replay and regression | Evaluation | consume records/outcomes offline |
 
-## V1 contracts
+## Frozen domain objects for P0
 
-- `DecisionRequest`: tenant, client-stable idempotency key, ACP Run reference, service/signal, `ContextSnapshotRef`, `CapabilitySnapshotRef`, evidence references.
-- `DecisionRecord`: stable ID, input hash, policy version, input refs, status, reason, read-only proposals, creation time.
-- Future adapter types (not yet implemented): `PlanCandidate`, `ActionRequest`, `AuthorizationPermit` (owned by Guard), `OutcomeFeedback`.
-- State is immutable; retry with same tenant/key and same exact request returns the original record, different body conflicts. Cross-tenant keys never alias.
-- This P0 planner returns `ABSTAINED` if no evidence references exist; does not claim submitted evidence is authentic.
-- Existing in-memory mutex is only a concurrency demonstration. Replace with PostgreSQL uniqueness and transactional outbox **before production**.
+1. `DecisionRequest`: schema version, authenticated Agent/Session/Run identity, idempotency key, objective/input, resource constraints, strategy/prompt/model versions, attested ContextSnapshot and CapabilitySnapshot references, version-pinned CapabilityRefs, evidence references, optional bounded replan lineage.
+2. `PlanCandidate`: stable PlanID, ordered PlanSteps, exact capability versions/schema refs, target refs, and PlanHash. It contains no executable credentials or arbitrary tool arguments.
+3. `DecisionRecord`: immutable request fingerprint, identity, policy/version provenance, snapshots, evidence, status/reason codes, parent Decision lineage and PlanCandidate.
+4. `ActionRequest`: created by Runtime from one PlanStep and resolved inputs; includes tenant/subject/agent/run/decision/plan/step/operation identity, exact capability reference, resource target, canonical arguments and trusted tool binding. Canonical contract and ActionHash are owned by EngageGuard.
+5. `OutcomeFeedback`: Runtime supplies step result and evidence references; it cannot change prior DecisionRecords.
 
-## Threat model and strict exclusions
+## P0 invariants
 
-No execution, no approval shortcut, no credentials in prompts or proposal records, no workflow engine implementation, no self-managed scheduler. The local HTTP listener is loopback-only without authentication. In production, bind `tenant_id` to an authenticated principal, enforce tenant-scoped access, verify immutable snapshot provenance, impose body/time limits and prevent data-plane workers from directly calling Trusted Executor. `read_only:true` is descriptive metadata, **not** an authorization mechanism.
+- ACP is the only publisher and lifecycle authority for Capability definitions and versions. Decision may select only references contained in an attested ACP CapabilitySnapshot.
+- Runtime validates a PlanCandidate against the active Run and AgentRelease, then maps each PlanStep into an ActionRequest. EngageGuard independently revalidates current capability, policy and risk, computes ActionHash, and binds any Permit to that individual action.
+- PlanHash, ActionHash and Permit are different objects. A PlanHash cannot authorize execution.
+- Runtime owns replan admission, attempt count, deadline and lifecycle. Decision only creates a child DecisionRecord with `parent_decision_id` after a Runtime-authorized retryable failure. UNKNOWN and Guard-denied operations are not ordinary failures and cannot trigger replan.
+- Tenant identity is derived from authenticated OIDC/mTLS principal context, never from a request-body field. The authority adapter verifies tenant/agent/session/run ownership and snapshot/evidence provenance.
+- Idempotency is scoped by tenant and client key. The fingerprint includes the complete normalized request and authenticated principal identity. Identical replay returns the original immutable record; any changed input conflicts. A new decision requires a new key.
+- Decision cannot issue AuthorizationPermit, approve a request, execute a tool, own workflow state, or schedule compute.
 
-The future Planner adapter may call external model/framework workers only with bounded context, timeout, trace ID, no long-lived credentials and a typed output schema. Guard independently normalizes and hashes **individual actions**; a DecisionRecord or Plan hash is never a permit.
+## P0 implementation limits
 
-## P0 acceptance and migration gates
+The current implementation has a deterministic read-only SRE planner, strict JSON decoding, tenant-scoped in-memory idempotency, immutable-copy tests, and interfaces for trusted principal resolution and authoritative snapshot verification. The development command intentionally has no principal resolver or authority adapter and fails closed. The in-memory store is not durable and is not production-ready.
 
-1. Rule planner and HTTP contract tests include missing-evidence abstention, immutable record replay, cross-tenant idempotency, concurrent duplicate requests, validation, duplicate-key rejection and limit enforcement.
-2. Verify PostgreSQL restart/replay, key race and outbox atomicity before shipping. No production claim from in-memory test results.
-3. ACP capability snapshot and SLO evidence source need independent attestation; failing closed if missing, expired or mismatched.
-4. Migration from legacy SRE code is permitted only with traceable fixtures for five-stage Ed25519 receipts, revoked/rotated keys, raw SLO samples, observation windows, threshold recalculation and TOCTOU, plus independent reviewer sign-off.
-5. E2E must demonstrate `Decision -> Runtime -> EngageGuard -> Trusted Executor -> OperationJournal -> OutcomeFeedback`, with UNKNOWN never retried blindly.
+Before production, implement PostgreSQL uniqueness and immutable record storage, transactional outbox, restart/replay and race tests, OIDC/mTLS principal resolution, ACP capability/snapshot verification, signed SLO evidence verification, and Runtime–EngageGuard contract conformance.
 
-## ADRs to freeze next
+## Replan contract
 
-- ADR-002: ACP Capability contract and tenant-scope authority
-- ADR-003: Decision/Plan/Action split; action-bound authorization, not plan-bound
-- ADR-004: Runtime replan semantics and `parent_decision_id`
-- ADR-005: PostgreSQL immutable records, outbox and replay semantics
-- ADR-006: Evidence/receipt signature, SLO provenance and key revocation
+Runtime is the only component that decides whether a replan is admitted and enforces the per-Run maximum. Decision accepts a replan request only when it carries a parent Decision ID, a sequence within the Runtime-provided bound, and a prior disposition of `RETRYABLE_FAILURE`. UNKNOWN, timeout with uncertain side effect, Guard denial, cancellation and non-retryable failure must not be represented as retryable.
+
+## Next ADRs
+
+- ADR-002: ACP Capability Catalog contract and tenant-scoped authority.
+- ADR-003: PlanStep → ActionRequest → ActionHash → Permit → Trusted Executor.
+- ADR-004: Runtime replan admission, Attempt/Lease and fencing.
+- ADR-005: PostgreSQL immutable DecisionRecords, idempotency and outbox.
+- ADR-006: evidence attestation, SLO observation windows, key rotation/revocation and TOCTOU.
