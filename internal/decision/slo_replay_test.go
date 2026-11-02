@@ -167,3 +167,52 @@ func TestLegacySLOReplayRejectsInvalidTimestampWindowAndValue(t *testing.T) {
 		})
 	}
 }
+
+
+// encoding/json accepts case-insensitive struct tags; those aliases cannot
+// shadow a signed policy or observer sample field even after local rehashing.
+func TestSLOReplayRejectsCaseVariantSemanticAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		field string
+		old string
+		replacement string
+	}{
+		{
+			name: "policy metric alias bypass",
+			field: "policy",
+			old: `"metric":"error_ratio"`,
+			replacement: `"metric":"latency_ms","Metric":"error_ratio"`,
+		},
+		{
+			name: "signed sample value alias bypass",
+			field: "sample",
+			old: `"value":0.01`,
+			replacement: `"value":0.90,"Value":0.01`,
+		},
+		{
+			name: "signed sample source alias bypass",
+			field: "sample",
+			old: `"source_id":"observer-staging"`,
+			replacement: `"source_id":"wrong-source","Source_ID":"observer-staging"`,
+		},
+	} {
+		t.Run(tc.name,func(t *testing.T) {
+			in:=replayFixture(t)
+			if tc.field=="policy" {
+				orig:=string(in.PolicyBytes)
+				if !strings.Contains(orig,tc.old) { t.Fatalf("fixture missing %s",tc.old) }
+				in.PolicyBytes=[]byte(strings.Replace(orig,tc.old,tc.replacement,1))
+				in.ExpectedPolicySHA256=replaySHA(in.PolicyBytes)
+			} else {
+				orig:=string(in.RawSamples[0])
+				if !strings.Contains(orig,tc.old) { t.Fatalf("fixture missing %s",tc.old) }
+				in.RawSamples[0]=[]byte(strings.Replace(orig,tc.old,tc.replacement,1))
+				in.Claims[0].SamplesSHA256=replaySHA(in.RawSamples[0])
+			}
+			if _,err:=ReplaySLOHealth(in);err==nil {
+				t.Fatal("case-variant semantic alias must fail closed, including after matching caller SHA-256")
+			}
+		})
+	}
+}
