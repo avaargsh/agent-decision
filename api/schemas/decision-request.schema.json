@@ -46,17 +46,17 @@
     },
     "capabilities": {
       "type": "array",
-      "maxItems": 32,
       "items": {
         "$ref": "#/$defs/CapabilityRef"
-      }
+      },
+      "maxItems": 32
     },
     "evidence_refs": {
       "type": "array",
-      "maxItems": 32,
       "items": {
         "$ref": "#/$defs/EvidenceRef"
-      }
+      },
+      "maxItems": 32
     },
     "replan": {
       "$ref": "#/$defs/ReplanContext"
