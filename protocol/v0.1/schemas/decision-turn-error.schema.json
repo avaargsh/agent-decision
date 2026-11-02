@@ -41,7 +41,8 @@
             "DEADLINE_EXCEEDED",
             "CANCELLED",
             "DEPENDENCY_UNAVAILABLE",
-            "INTERNAL_ERROR"
+            "INTERNAL_ERROR",
+            "UNSUPPORTED_CONTEXT_SCHEMA_VERSION"
           ],
           "type": "string"
         },

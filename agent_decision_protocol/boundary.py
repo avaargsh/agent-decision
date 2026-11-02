@@ -224,6 +224,55 @@ def validate_response(
     return data
 
 
+# Stable external error vocabulary; never leak private parser/registry diagnostics.
+_PUBLIC_ERROR_CODES = {
+    "INVALID_REQUEST": "INVALID_REQUEST",
+    "INVALID_JSON": "INVALID_REQUEST",
+    "INVALID_CONTEXT_REF": "INVALID_REQUEST",
+    "INVALID_TRACE_CONTEXT": "INVALID_REQUEST",
+    "UNSUPPORTED_CONTEXT_SCHEMA_VERSION": "UNSUPPORTED_CONTEXT_SCHEMA_VERSION",
+    "UNSUPPORTED_CAPABILITY_VERSION": "UNSUPPORTED_CAPABILITY_VERSION",
+    "SCHEMA_DIGEST_MISMATCH": "INVALID_REQUEST",
+    "PAYLOAD_TOO_LARGE": "PAYLOAD_TOO_LARGE",
+    "DEADLINE_EXCEEDED": "DEADLINE_EXCEEDED",
+    "OUTPUT_VALIDATION_FAILED": "OUTPUT_VALIDATION_FAILED",
+    "INVOCATION_ID_MISMATCH": "OUTPUT_VALIDATION_FAILED",
+    "CAPABILITY_NOT_ALLOWED": "OUTPUT_VALIDATION_FAILED",
+    "DUPLICATE_PROPOSAL_ID": "OUTPUT_VALIDATION_FAILED",
+    "INVALID_PROPOSAL_ARGUMENTS": "OUTPUT_VALIDATION_FAILED",
+}
+_PUBLIC_ERROR_MESSAGES = {
+    "INVALID_REQUEST": "Request validation failed",
+    "UNSUPPORTED_CONTEXT_SCHEMA_VERSION": "Unsupported context schema version",
+    "UNSUPPORTED_CAPABILITY_VERSION": "Unsupported capability version",
+    "PAYLOAD_TOO_LARGE": "Payload size exceeds the configured limit",
+    "DEADLINE_EXCEEDED": "Invocation deadline exceeded",
+    "OUTPUT_VALIDATION_FAILED": "Plugin response validation failed",
+    "INTERNAL_ERROR": "Internal decision service error",
+}
+
+
+def error_envelope(
+    error: BoundaryError, *, invocation_id: str | None = None
+) -> dict[str, Any]:
+    """Build a schema-valid, non-sensitive public error from an internal failure."""
+    import re
+
+    code = _PUBLIC_ERROR_CODES.get(error.code, "INTERNAL_ERROR")
+    result: dict[str, Any] = {
+        "protocol_version": "0.1",
+        "error": {
+            "code": code,
+            "message": _PUBLIC_ERROR_MESSAGES[code],
+        },
+    }
+    if invocation_id is not None and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", invocation_id
+    ):
+        result["invocation_id"] = invocation_id
+    return result
+
+
 def validate_error(payload: bytes | str) -> dict[str, Any]:
     data = strict_json_loads(payload)
     _schema_validate("error", data)

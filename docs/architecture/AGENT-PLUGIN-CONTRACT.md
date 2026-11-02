@@ -64,7 +64,7 @@ The normative error schema is `protocol/v0.1/schemas/decision-turn-error.schema.
 | 409 | INVOCATION_ID_REUSED | Do not retry; contract violation |
 | 409 | INVOCATION_IN_PROGRESS | Bounded retry using retry_after_ms |
 | 413 | PAYLOAD_TOO_LARGE | Do not retry |
-| 422 | UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CAPABILITY_VERSION, OUTPUT_VALIDATION_FAILED | Fail closed; do not retry |
+| 422 | UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CAPABILITY_VERSION, UNSUPPORTED_CONTEXT_SCHEMA_VERSION, OUTPUT_VALIDATION_FAILED | Fail closed; do not retry |
 | 429 | RATE_LIMITED | Bounded retry; honor retry_after_ms |
 | 500 | INTERNAL_ERROR | Do not retry by default; alert and fail the invocation |
 | 503 | DEPENDENCY_UNAVAILABLE | Bounded retry with backoff |
@@ -85,3 +85,5 @@ Cancellation is propagated from Runtime to the plugin. A cancelled request must 
 - JSON Schema Draft 2020-12 is canonical.
 - v0.1 is frozen and closed-world: unknown fields are rejected. Any schema change, including an additive field, requires a new protocol version and updated shared fixtures.
 - Python and TypeScript adapters must pass the exact same fixtures. Runtime Go validation must pass them as well before integration is accepted.
+
+The Python boundary has internal parse/validation error categories and translates them into the versioned public error envelope using `error_envelope`. The public `message` is deliberately generic and does not include source payloads, parser details, or credentials.
