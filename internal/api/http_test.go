@@ -37,7 +37,15 @@ func apiRequest() decision.Request {
 			{ID:"sre.logs.read",Version:"1.2.0",ContractSHA256:strings.Repeat("2",64),InputSchemaRef:"schema://logs/input",OutputSchemaRef:"schema://logs/output",EffectClass:"read_only",Idempotency:"safe",TenantScoped:true},
 			{ID:"sre.changes.read",Version:"2.0.0",ContractSHA256:strings.Repeat("3",64),InputSchemaRef:"schema://changes/input",OutputSchemaRef:"schema://changes/output",EffectClass:"read_only",Idempotency:"safe",TenantScoped:true},
 		},
-		Evidence:[]decision.EvidenceRef{{Ref:"slo-sample-17",Source:"slo-adapter",SourceVersion:"v2",SHA256:strings.Repeat("b",64),AttestationRef:"att-slo-17",TrustLevel:"attested",ObservedAt:issued,ExpiresAt:expires}},
+		Evidence:[]decision.EvidenceRef{{
+			Ref:"slo-sample-17", EvidenceType:"slo", SchemaVersion:"1.0.0",
+			TenantID:"tenant-a", AgentID:"agent-1", RunID:"run-17", Service:"payment-api",
+			ResourceRef:"resource://payment-api/slo", SourceID:"slo-adapter-prod",
+			Source:"slo-adapter", SourceVersion:"v2", SHA256:strings.Repeat("b",64),
+			AttestationRef:"att-slo-17", TrustLevel:"attested",
+			ObservedFrom:issued.Add(-5*time.Minute), ObservedTo:issued, ObservedAt:issued,
+			CollectedAt:issued.Add(time.Minute), ExpiresAt:expires, RevocationState:"active",
+		}},
 	}
 }
 
