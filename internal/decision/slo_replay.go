@@ -15,12 +15,14 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	maxSLOPolicyBytes = 64 * 1024
 	maxSLORawBytes = 2 * 1024 * 1024
 	maxSLOSampleCount = 1_000_000
+	maxSLOJSONDepth = 128
 )
 
 type SLOSampleClaim struct {
@@ -104,40 +106,66 @@ func replayDigestValid(s string) bool {
 // decodeSLOStrict rejects duplicate JSON fields recursively, unknown schema
 // fields, trailing tokens, nonfinite JSON constants, and invalid exponents.
 func decodeSLOStrict(raw []byte, output any) error {
+	if len(raw) == 0 || !utf8.Valid(raw) {
+		return errors.New("invalid SLO JSON: empty or non-UTF-8 input")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	var walk func() error
-	walk = func() error {
+	var walk func(int) error
+	walk = func(depth int) error {
+		if depth > maxSLOJSONDepth {
+			return errors.New("SLO JSON nesting exceeds limit")
+		}
 		token, err := dec.Token()
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		mark, isDelim := token.(json.Delim)
-		if !isDelim { return nil }
+		if !isDelim {
+			return nil
+		}
 		switch mark {
 		case '{':
 			seen := make(map[string]struct{})
 			for dec.More() {
 				keyToken, err := dec.Token()
-				if err != nil { return err }
+				if err != nil {
+					return err
+				}
 				key, ok := keyToken.(string)
-				if !ok { return errors.New("object key must be a string") }
+				if !ok {
+					return errors.New("object key must be a string")
+				}
 				if _, duplicate := seen[key]; duplicate {
 					return fmt.Errorf("duplicate SLO JSON key %q", key)
 				}
 				seen[key] = struct{}{}
-				if err := walk(); err != nil { return err }
+				if err := walk(depth + 1); err != nil {
+					return err
+				}
 			}
-			_, err := dec.Token()
-			return err
+			end, err := dec.Token()
+			if err != nil || end != json.Delim('}') {
+				return errors.New("unterminated SLO JSON object")
+			}
+			return nil
 		case '[':
 			for dec.More() {
-				if err := walk(); err != nil { return err }
+				if err := walk(depth + 1); err != nil {
+					return err
+				}
 			}
-			_, err := dec.Token()
-			return err
+			end, err := dec.Token()
+			if err != nil || end != json.Delim(']') {
+				return errors.New("unterminated SLO JSON array")
+			}
+			return nil
 		default:
 			return fmt.Errorf("unexpected JSON delimiter %q", mark)
 		}
 	}
-	if err := walk(); err != nil { return fmt.Errorf("invalid SLO JSON: %w", err) }
+	if err := walk(0); err != nil {
+		return fmt.Errorf("invalid SLO JSON: %w", err)
+	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("invalid SLO JSON trailing token")
 	}
