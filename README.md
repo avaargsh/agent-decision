@@ -26,6 +26,8 @@ Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestra
 - Database migration: `migrations/0001_create_decision_records.sql`
 - Architecture contract: `docs/architecture.md`
 - Delivery roadmap: `docs/roadmap.md`
+- OpenAPI 3.1 contract: `api/openapi.yaml`
+- JSON Schema compatibility artifacts: `api/schemas/`
 
 The default `sre-readonly-v1` strategy emits a deterministic all-or-nothing plan using metrics, logs, and change-history read capabilities. Missing evidence or capabilities produces an explicit abstention. Strategy output is independently checked by the core for read-only safety invariants.
 
