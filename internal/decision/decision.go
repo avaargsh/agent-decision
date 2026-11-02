@@ -361,6 +361,11 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	if req.Identity.AgentID != principal.AgentID || req.Identity.SessionID != principal.SessionID {
 		return Record{}, false, ErrUnauthorized
 	}
+	for _, evidence := range req.Evidence {
+		if evidence.TenantID != principal.TenantID {
+			return Record{}, false, ErrUnauthorized
+		}
+	}
 	if s.strategy == nil || req.Versions.StrategyVersion != s.strategy.Version() {
 		return Record{}, false, fmt.Errorf("%w: strategy version unavailable", ErrInvalidRequest)
 	}
@@ -398,13 +403,18 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		record.ReplanSequence = req.Replan.Sequence
 		record.MaxReplans = req.Replan.MaxReplans
 	}
-	result := s.strategy.Plan(req, decisionID)
+	// Strategies receive detached request slices so an implementation cannot
+	// mutate already-verified evidence or capabilities before output validation.
+	result := s.strategy.Plan(cloneRequest(req), decisionID)
+	// Required JSON arrays must remain arrays even when a strategy omits warnings.
+	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
+	result.Steps = append([]PlanStep{}, result.Steps...)
 	if err := validateStrategyResult(req, result); err != nil {
 		return Record{}, false, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
 	record.Status = result.Status
-	record.ReasonCodes = result.ReasonCodes
-	record.Plan.Steps = result.Steps
+	record.ReasonCodes = append([]string{}, result.ReasonCodes...)
+	record.Plan.Steps = append([]PlanStep{}, result.Steps...)
 	record.Plan.PlanHash = planHash(record.Plan)
 	return s.store.SaveOrGet(ctx, record)
 }
@@ -427,6 +437,16 @@ func digest(value any) string {
 	b, _ := json.Marshal(value)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func cloneRequest(req Request) Request {
+	req.Capabilities = append([]CapabilityRef{}, req.Capabilities...)
+	req.Evidence = append([]EvidenceRef{}, req.Evidence...)
+	if req.Replan != nil {
+		replan := *req.Replan
+		req.Replan = &replan
+	}
+	return req
 }
 
 func clone(record Record) Record {
