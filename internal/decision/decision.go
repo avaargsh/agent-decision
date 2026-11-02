@@ -345,7 +345,7 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
 	if s.store == nil {
-		return Record{}, false, errors.New("decision store unavailable")
+		return Record{}, false, ErrStoreUnavailable
 	}
 
 	fingerprint := digest(struct {
