@@ -29,6 +29,8 @@ var (
 	ErrAuthorityUnavailable = errors.New("authoritative snapshot verifier unavailable")
 	ErrAuthorityRejected = errors.New("authoritative snapshot verification rejected")
 	ErrInvalidRequest = errors.New("invalid decision request")
+	ErrNotFound = errors.New("decision record not found")
+	ErrInvalidCursor = errors.New("invalid decision page cursor")
 )
 
 var (
@@ -278,6 +280,8 @@ type AuthorityVerifier interface {
 
 type Store interface {
 	SaveOrGet(context.Context, Record) (Record, bool, error)
+	GetByDecisionID(context.Context, string, string, string, string) (Record, error)
+	ListByRun(context.Context, string, string, string, string, *DecisionCursor, int) ([]Record, error)
 }
 
 type MemoryStore struct {
