@@ -51,3 +51,63 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 	}
 	return clone(stored), false, nil
 }
+
+func (s *PostgresStore) GetByDecisionID(ctx context.Context, tenantID, agentID, sessionID, decisionID string) (Record, error) {
+	if s == nil || s.db == nil {
+		return Record{}, ErrStoreUnavailable
+	}
+	var payload []byte
+	err := s.db.QueryRowContext(ctx,
+		"SELECT record FROM decision_records WHERE tenant_id = $1 AND decision_id = $2 AND record->>'agent_id' = $3 AND record->>'session_id' = $4",
+		tenantID, decisionID, agentID, sessionID).Scan(&payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Record{}, ErrNotFound
+		}
+		return Record{}, fmt.Errorf("load decision record: %w", err)
+	}
+	var record Record
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return Record{}, fmt.Errorf("decode decision record: %w", err)
+	}
+	return clone(record), nil
+}
+
+func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessionID, runID string, before *DecisionCursor, limit int) ([]Record, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrStoreUnavailable
+	}
+	if limit < 1 {
+		return nil, fmt.Errorf("ledger query limit must be positive")
+	}
+	query := "SELECT record FROM decision_records WHERE tenant_id = $1 AND record->>'agent_id' = $2 AND record->>'session_id' = $3 AND record->>'run_id' = $4"
+	args := []any{tenantID, agentID, sessionID, runID}
+	if before != nil {
+		query += " AND (created_at, decision_id) < ($5, $6)"
+		args = append(args, before.CreatedAt, before.DecisionID)
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY created_at DESC, decision_id DESC LIMIT $%d", len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list decision records: %w", err)
+	}
+	defer rows.Close()
+	records := make([]Record, 0, limit)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan decision record: %w", err)
+		}
+		var record Record
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return nil, fmt.Errorf("decode decision record: %w", err)
+		}
+		records = append(records, clone(record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate decision records: %w", err)
+	}
+	return records, nil
+}
