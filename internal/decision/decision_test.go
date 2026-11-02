@@ -81,6 +81,23 @@ func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
 	changed := validRequest()
 	changed.Constraints.MaxTokens++
 	if _, _, err = svc.Decide(context.Background(), p, changed); err != ErrConflict { t.Fatalf("expected conflict, got %v", err) }
+
+	// Payload changes that also violate the request schema must still produce
+	// the invocation conflict, rather than masking prior use as a 400.
+	invalidReuse := validRequest()
+	invalidReuse.Evidence[0].RevocationState = "revoked"
+	if _, _, err = svc.Decide(context.Background(), p, invalidReuse); err != ErrConflict {
+		t.Fatalf("invalid payload under a completed invocation must conflict, got %v", err)
+	}
+
+	// A malformed payload under a brand-new invocation is still validated as
+	// a request error and cannot be persisted.
+	newInvalid := validRequest()
+	newInvalid.InvocationID = "new-invalid"
+	newInvalid.Evidence[0].RevocationState = "revoked"
+	if _, _, err = svc.Decide(context.Background(), p, newInvalid); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("invalid new invocation must remain a request error, got %v", err)
+	}
 	p.TenantID = "tenant-b"
 	tenantRequest := validRequest()
 	tenantRequest.Evidence[0].TenantID = "tenant-b"
