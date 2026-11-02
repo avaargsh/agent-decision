@@ -99,15 +99,29 @@ type SnapshotRef struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// EvidenceRef is a versioned, scoped evidence envelope. All fields are claims
+// until AuthorityVerifier verifies tenant ownership, digest, attestation, and revocation.
 type EvidenceRef struct {
 	Ref string `json:"ref"`
+	EvidenceType string `json:"evidence_type"`
+	SchemaVersion string `json:"schema_version"`
+	TenantID string `json:"tenant_id"`
+	AgentID string `json:"agent_id"`
+	RunID string `json:"run_id"`
+	Service string `json:"service"`
+	ResourceRef string `json:"resource_ref"`
+	SourceID string `json:"source_id"`
 	Source string `json:"source"`
 	SourceVersion string `json:"source_version"`
 	SHA256 string `json:"sha256"`
 	AttestationRef string `json:"attestation_ref"`
 	TrustLevel string `json:"trust_level"`
+	ObservedFrom time.Time `json:"observed_from"`
+	ObservedTo time.Time `json:"observed_to"`
 	ObservedAt time.Time `json:"observed_at"`
+	CollectedAt time.Time `json:"collected_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	RevocationState string `json:"revocation_state"`
 }
 
 // CapabilityRef is published and versioned by Agent Control Plane.
@@ -198,10 +212,18 @@ func validSnapshot(s SnapshotRef) bool {
 		!s.IssuedAt.IsZero() && s.ExpiresAt.After(s.IssuedAt)
 }
 
-func validEvidence(e EvidenceRef) bool {
-	return validOpaque(e.Ref) && validOpaque(e.Source) && validOpaque(e.SourceVersion) &&
-		digestRe.MatchString(e.SHA256) && validOpaque(e.AttestationRef) &&
-		e.TrustLevel == "attested" && !e.ObservedAt.IsZero() && e.ExpiresAt.After(e.ObservedAt)
+func validEvidence(e EvidenceRef, req Request) bool {
+	return validOpaque(e.Ref) &&
+		(e.EvidenceType == "metrics" || e.EvidenceType == "logs" || e.EvidenceType == "traces" || e.EvidenceType == "change" || e.EvidenceType == "slo") &&
+		semverRe.MatchString(e.SchemaVersion) &&
+		nameRe.MatchString(e.TenantID) && e.AgentID == req.Identity.AgentID && e.RunID == req.Identity.RunID &&
+		e.Service == req.Input.Service && validOpaque(e.ResourceRef) && validOpaque(e.SourceID) &&
+		validOpaque(e.Source) && validOpaque(e.SourceVersion) && digestRe.MatchString(e.SHA256) &&
+		validOpaque(e.AttestationRef) && e.TrustLevel == "attested" &&
+		!e.ObservedFrom.IsZero() && !e.ObservedTo.Before(e.ObservedFrom) &&
+		!e.ObservedAt.IsZero() && !e.CollectedAt.IsZero() &&
+		!e.CollectedAt.Before(e.ObservedTo) && e.ExpiresAt.After(e.CollectedAt) &&
+		e.RevocationState == "active"
 }
 
 func (c CapabilityRef) Validate(catalogVersion string) error {
@@ -256,7 +278,7 @@ func (r Request) Validate() error {
 		seen[capability.ID] = struct{}{}
 	}
 	for _, evidence := range r.Evidence {
-		if !validEvidence(evidence) {
+		if !validEvidence(evidence, r) {
 			return fmt.Errorf("%w: invalid evidence reference", ErrInvalidRequest)
 		}
 	}
