@@ -1,14 +1,14 @@
 CREATE TABLE IF NOT EXISTS decision_records (
     tenant_id TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL,
+    invocation_id TEXT NOT NULL,
     decision_id TEXT NOT NULL,
     request_sha256 CHAR(64) NOT NULL,
     record JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (tenant_id, idempotency_key),
+    PRIMARY KEY (tenant_id, invocation_id),
     UNIQUE (tenant_id, decision_id),
     CHECK (tenant_id <> ''),
-    CHECK (idempotency_key <> ''),
+    CHECK (invocation_id <> ''),
     CHECK (decision_id <> ''),
     CHECK (request_sha256 ~ '^[a-f0-9]{64}$'),
     CHECK (jsonb_typeof(record) = 'object')
