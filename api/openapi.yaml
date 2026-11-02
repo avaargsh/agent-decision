@@ -77,7 +77,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '409':
-          description: Tenant-scoped invocation_id was reused with a different request fingerprint
+          description: Tenant-scoped INVOCATION_ID_REUSED
           x-error-code: INVOCATION_ID_REUSED
           content:
             application/json:
