@@ -91,7 +91,15 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 
 The PostgreSQL integration suite applies the real migration and verifies first insert, exact replay, changed-input conflict, tenant isolation, and concurrent same-key insertion. CI provisions PostgreSQL 16 and runs the suite with the Go race detector.
 
-## 8. Next architecture increments
+## 8. API compatibility artifacts
+
+- `api/openapi.yaml` is the OpenAPI 3.1 description for `POST /v1/decisions` and `GET /healthz`.
+- `api/schemas/decision-request.schema.json` defines the strict `DecisionRequest` v1 shape.
+- `api/schemas/decision-record.schema.json` defines the immutable `DecisionRecord` v1 shape.
+- `api/schemas/problem.schema.json` defines the public error envelope.
+- The API remains development-only until trusted principal resolution and authoritative snapshot verification are wired to production adapters.
+
+## 9. Next architecture increments
 
 The following are deliberately outside the v0.1 implementation and require separate contracts and tests:
 
