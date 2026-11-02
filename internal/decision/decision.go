@@ -237,6 +237,9 @@ func (r Request) Validate() error {
 	if !validSnapshot(r.ContextSnapshot) || !validSnapshot(r.CapabilitySnapshot) {
 		return fmt.Errorf("%w: invalid snapshot reference or attestation metadata", ErrInvalidRequest)
 	}
+	if r.Capabilities == nil || r.Evidence == nil {
+		return fmt.Errorf("%w: capabilities and evidence_refs must be explicit arrays", ErrInvalidRequest)
+	}
 	if len(r.Capabilities) > 32 || len(r.Evidence) > 32 {
 		return fmt.Errorf("%w: too many capability or evidence references", ErrInvalidRequest)
 	}
@@ -359,7 +362,7 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		StrategyVersion: req.Versions.StrategyVersion, PromptVersion: req.Versions.PromptVersion,
 		ModelProfile: req.Versions.ModelProfile, CapabilityCatalogVersion: req.Versions.CapabilityCatalogVersion,
 		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
-		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef(nil), req.Evidence...),
+		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef{}, req.Evidence...),
 		Plan: PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 		CreatedAt: s.now(),
 	}
@@ -400,8 +403,8 @@ func digest(value any) string {
 }
 
 func clone(record Record) Record {
-	record.ReasonCodes = append([]string(nil), record.ReasonCodes...)
-	record.Evidence = append([]EvidenceRef(nil), record.Evidence...)
-	record.Plan.Steps = append([]PlanStep(nil), record.Plan.Steps...)
+	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
+	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
+	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
 	return record
 }
