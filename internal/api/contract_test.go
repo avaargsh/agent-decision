@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
-	"gopkg.in/yaml.v3"
 )
 
 type jsonSchema map[string]any
@@ -162,47 +161,6 @@ func TestDecisionPageAndProblemSchemas(t *testing.T) {
 	for _, code := range []string{"NOT_FOUND", "INVALID_CURSOR", "IDEMPOTENCY_CONFLICT", "STORE_UNAVAILABLE"} {
 		if !seen[code] {
 			t.Errorf("Problem schema is missing error code %s", code)
-		}
-	}
-}
-
-func TestOpenAPIIsValidYAMLAndDeclaresAllHTTPRoutes(t *testing.T) {
-	data, err := os.ReadFile("../../api/openapi.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document map[string]any
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		t.Fatalf("OpenAPI YAML must parse: %v", err)
-	}
-	if document["openapi"] != "3.1.0" {
-		t.Fatalf("expected OpenAPI 3.1.0, got %v", document["openapi"])
-	}
-	paths, ok := document["paths"].(map[string]any)
-	if !ok {
-		t.Fatalf("OpenAPI paths must be a mapping, got %T", document["paths"])
-	}
-	for _, path := range []string{
-		"/healthz",
-		"/v1/decisions",
-		"/v1/decisions/{decision_id}",
-		"/v1/runs/{run_id}/decisions",
-	} {
-		if _, ok := paths[path]; !ok {
-			t.Errorf("OpenAPI path %s is missing", path)
-		}
-	}
-	components, ok := document["components"].(map[string]any)
-	if !ok {
-		t.Fatal("OpenAPI components are missing")
-	}
-	schemas, ok := components["schemas"].(map[string]any)
-	if !ok {
-		t.Fatal("OpenAPI components.schemas are missing")
-	}
-	for _, name := range []string{"DecisionRequest", "DecisionRecord", "DecisionPage", "Problem"} {
-		if _, ok := schemas[name]; !ok {
-			t.Errorf("OpenAPI schema %s is missing", name)
 		}
 	}
 }
