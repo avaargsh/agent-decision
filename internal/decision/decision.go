@@ -221,7 +221,8 @@ func validEvidence(e EvidenceRef, req Request) bool {
 		validOpaque(e.Source) && validOpaque(e.SourceVersion) && digestRe.MatchString(e.SHA256) &&
 		validOpaque(e.AttestationRef) && e.TrustLevel == "attested" &&
 		!e.ObservedFrom.IsZero() && !e.ObservedTo.Before(e.ObservedFrom) &&
-		!e.ObservedAt.IsZero() && !e.CollectedAt.IsZero() &&
+		!e.ObservedAt.IsZero() && !e.ObservedAt.Before(e.ObservedFrom) && !e.ObservedAt.After(e.ObservedTo) &&
+		!e.CollectedAt.IsZero() &&
 		!e.CollectedAt.Before(e.ObservedTo) && e.ExpiresAt.After(e.CollectedAt) &&
 		e.RevocationState == "active"
 }
