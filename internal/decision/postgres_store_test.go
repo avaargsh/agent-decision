@@ -150,7 +150,15 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first save: created=%v err=%v", created, err)
 	}
-	second, created, err := store.SaveOrGet(ctx, record)
+	stored, err := store.GetByInvocation(ctx, record.TenantID, record.InvocationID)
+	if err != nil || stored.DecisionID != record.DecisionID || stored.RequestSHA256 != record.RequestSHA256 {
+		t.Fatalf("lookup completed invocation: record=%+v err=%v", stored, err)
+	}
+	if _, err := store.GetByInvocation(ctx, record.TenantID, "missing-invocation"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing invocation should return ErrNotFound, got %v", err)
+	}
+	freshStore := NewPostgresStore(db)
+	second, created, err := freshStore.SaveOrGet(ctx, record)
 	if err != nil || created || second.DecisionID != first.DecisionID {
 		t.Fatalf("replay: created=%v err=%v record=%+v", created, err, second)
 	}
