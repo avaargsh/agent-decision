@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"io"
 	"fmt"
 	"sort"
 	"time"
@@ -102,7 +102,7 @@ func decodeDecisionCursor(value string) (DecisionCursor, error) {
 	if err := decoder.Decode(&cursor); err != nil {
 		return DecisionCursor{}, ErrInvalidCursor
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, context.Canceled) && err == nil {
+	if err := decoder.Decode(new(any)); err != io.EOF {
 		return DecisionCursor{}, ErrInvalidCursor
 	}
 	if cursor.CreatedAt.IsZero() || !decisionIDRe.MatchString(cursor.DecisionID) {
