@@ -278,10 +278,18 @@ func (r Request) Validate() error {
 		}
 		seen[capability.ID] = struct{}{}
 	}
+	seenEvidence := make(map[string]struct{}, len(r.Evidence))
 	for _, evidence := range r.Evidence {
 		if !validEvidence(evidence, r) {
 			return fmt.Errorf("%w: invalid evidence reference", ErrInvalidRequest)
 		}
+		// A source reference identifies one immutable observation. Repeating it
+		// must not inflate evidence coverage or create ambiguous provenance.
+		evidenceKey := evidence.SourceID + "\\x00" + evidence.Ref
+		if _, exists := seenEvidence[evidenceKey]; exists {
+			return fmt.Errorf("%w: duplicate evidence reference", ErrInvalidRequest)
+		}
+		seenEvidence[evidenceKey] = struct{}{}
 	}
 	if r.Replan != nil {
 		p := r.Replan
