@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -32,17 +33,11 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS decision_records (
-			tenant_id TEXT NOT NULL,
-			idempotency_key TEXT NOT NULL,
-			decision_id TEXT NOT NULL,
-			request_sha256 CHAR(64) NOT NULL,
-			record JSONB NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL,
-			PRIMARY KEY (tenant_id, idempotency_key),
-			UNIQUE (tenant_id, decision_id)
-		)`); err != nil {
+	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -85,4 +80,39 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 		_, _ = db.ExecContext(context.Background(),
 			"DELETE FROM decision_records WHERE tenant_id = $1", "store-integration-test-other")
 	})
+
+	concurrent := record
+	concurrent.IdempotencyKey = "concurrent-key"
+	concurrent.DecisionID = "dec_integration_003"
+	const workers = 12
+	var wg sync.WaitGroup
+	createdResults := make(chan bool, workers)
+	errResults := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, created, err := store.SaveOrGet(ctx, concurrent)
+			createdResults <- created
+			errResults <- err
+		}()
+	}
+	wg.Wait()
+	close(createdResults)
+	close(errResults)
+	winners := 0
+	for created := range createdResults {
+		if created {
+			winners++
+		}
+	}
+	for err := range errResults {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one concurrent insert winner, got %d", winners)
+	}
+
 }
