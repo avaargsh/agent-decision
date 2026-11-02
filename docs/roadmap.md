@@ -10,6 +10,7 @@
 - [x] Go module and repeatable CI workflow (`go test -race`, `go vet`).
 - [x] Store contract and PostgreSQL implementation with atomic tenant-scoped idempotency.
 - [x] PostgreSQL migration and integration tests for replay, conflict, tenant isolation, and concurrent inserts.
+- [x] Tenant-, agent-, session-, and run-scoped Decision Ledger read API with bounded cursor pagination.
 - [x] PostgreSQL role separation, backup/retention and restore runbook baseline documented (`docs/operations/postgres-runbook.md`).
 - [ ] Configure deployment-specific roles/secrets, retention approval, and produce a successful isolated restore-rehearsal artifact.
 - [x] OpenAPI 3.1 and JSON Schema compatibility artifacts published under `api/`; request/record schemas are checked against Go JSON contracts.
