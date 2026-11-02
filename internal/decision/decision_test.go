@@ -19,7 +19,7 @@ func testPrincipal() Principal {
 func validRequest() Request {
 	issued := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
 	expires := issued.Add(2*time.Hour)
-	return Request{
+	req := Request{
 		SchemaVersion: SchemaVersion,
 		Identity: Identity{AgentID:"agent-1", SessionID:"session-1", RunID:"run-17"},
 		InvocationID:"alert-17",
@@ -36,7 +36,29 @@ func validRequest() Request {
 		Evidence: []EvidenceRef{
 			{Ref:"slo-sample-17", EvidenceType:"slo", SchemaVersion:"1.0.0", TenantID:"tenant-a", AgentID:"agent-1", RunID:"run-17", Service:"payment-api", ResourceRef:"resource://payment-api/slo", SourceID:"slo-adapter-prod", Source:"slo-adapter", SourceVersion:"v2", SHA256:strings.Repeat("b",64), AttestationRef:"att-slo-17", TrustLevel:"attested", ObservedFrom:issued.Add(-5*time.Minute), ObservedTo:issued, ObservedAt:issued, CollectedAt:issued.Add(time.Minute), ExpiresAt:expires, RevocationState:"active"},
 		},
+
 	}
+	// This is a proposal fixture, not an authoritative verifier result.
+	// Each read-only investigation capability must be backed by its own
+	// source-typed evidence; a lone SLO sample must abstain.
+	logs := req.Evidence[0]
+	logs.Ref = "logs-sample-17"
+	logs.EvidenceType = "logs"
+	logs.ResourceRef = "resource://payment-api/logs"
+	logs.SourceID = "logs-adapter-prod"
+	logs.Source = "logs-adapter"
+	logs.SHA256 = strings.Repeat("d", 64)
+	logs.AttestationRef = "att-logs-17"
+	change := req.Evidence[0]
+	change.Ref = "change-sample-17"
+	change.EvidenceType = "change"
+	change.ResourceRef = "resource://payment-api/changes"
+	change.SourceID = "changes-adapter-prod"
+	change.Source = "changes-adapter"
+	change.SHA256 = strings.Repeat("e", 64)
+	change.AttestationRef = "att-change-17"
+	req.Evidence = append(req.Evidence, logs, change)
+	return req
 }
 
 func TestReadOnlyPlanAndPinnedCapabilities(t *testing.T) {
@@ -59,6 +81,26 @@ func TestAbstainsWithoutEvidenceOrRequiredCapability(t *testing.T) {
 	req.Capabilities = req.Capabilities[:2]
 	rec, _, err = NewService(NewMemoryStore(), allowAuthority{}).Decide(context.Background(), testPrincipal(), req)
 	if err != nil || rec.Status != StatusAbstained || len(rec.Plan.Steps) != 0 { t.Fatalf("expected no partial plan: %+v %v", rec, err) }
+}
+
+
+func TestReadOnlyPlannerAbstainsWhenLogsOrChangesEvidenceMissing(t *testing.T) {
+	for _, missingType := range []string{"logs", "change"} {
+		t.Run(missingType, func(t *testing.T) {
+			req := validRequest()
+			filtered := make([]EvidenceRef, 0, len(req.Evidence))
+			for _, evidence := range req.Evidence {
+				if evidence.EvidenceType != missingType {
+					filtered = append(filtered, evidence)
+				}
+			}
+			req.Evidence = filtered
+			record, _, err := NewService(NewMemoryStore(), allowAuthority{}).Decide(context.Background(), testPrincipal(), req)
+			if err != nil || record.Status != StatusAbstained || len(record.Plan.Steps) != 0 {
+				t.Fatalf("missing %s evidence must abstain, got %+v %v", missingType, record, err)
+			}
+		})
+	}
 }
 
 func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
@@ -100,7 +142,9 @@ func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
 	}
 	p.TenantID = "tenant-b"
 	tenantRequest := validRequest()
-	tenantRequest.Evidence[0].TenantID = "tenant-b"
+	for i := range tenantRequest.Evidence {
+		tenantRequest.Evidence[i].TenantID = "tenant-b"
+	}
 	if _, created, err = svc.Decide(context.Background(), p, tenantRequest); err != nil || !created {
 		t.Fatalf("tenant-scoped evidence must bind to the second tenant: created=%t err=%v", created, err)
 	}
