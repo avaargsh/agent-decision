@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
@@ -166,6 +167,9 @@ func validateJSONObjects(body []byte) error {
 				key, ok := keyToken.(string)
 				if !ok {
 					return errors.New("invalid JSON object key")
+				}
+				if key != strings.ToLower(key) {
+					return fmt.Errorf("non-canonical JSON key %q", key)
 				}
 				if _, exists := seen[key]; exists {
 					return fmt.Errorf("duplicate JSON key %q", key)
