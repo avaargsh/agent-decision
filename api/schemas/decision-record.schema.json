@@ -12,7 +12,7 @@
     "agent_id",
     "session_id",
     "run_id",
-    "idempotency_key",
+    "invocation_id",
     "request_sha256",
     "strategy_version",
     "prompt_version",
@@ -53,10 +53,6 @@
       "type": "string",
       "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
       "description": "Runtime-issued Run ID created after accepting a Control Plane RunIntent; Decision records this reference and never creates it."
-    },
-    "idempotency_key": {
-      "type": "string",
-      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
     },
     "request_sha256": {
       "type": "string",
@@ -124,6 +120,11 @@
     "created_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "invocation_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+      "description": "Stable Runtime-issued ID for the logical Decision invocation represented by this immutable ledger record."
     }
   },
   "$defs": {
