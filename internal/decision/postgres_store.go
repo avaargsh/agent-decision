@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrStoreUnavailable = errors.New("decision store unavailable")
@@ -23,6 +24,7 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 		!digestRe.MatchString(record.RequestSHA256) {
 		return Record{}, false, fmt.Errorf("invalid record for persistence")
 	}
+	record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
 	payload, err := json.Marshal(record)
 	if err != nil { return Record{}, false, fmt.Errorf("marshal decision record: %w", err) }
 
