@@ -92,6 +92,12 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = $1 WHERE version = 2", checksum); err != nil {
 		t.Fatal(err)
 	}
+	var checksum0001 string
+	if err := db.QueryRowContext(ctx,
+		"SELECT checksum FROM schema_migrations WHERE version = 1",
+	).Scan(&checksum0001); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 1"); err != nil {
 		t.Fatal(err)
 	}
