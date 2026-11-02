@@ -62,6 +62,51 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatalf("migration re-entry should be safe: %v", err)
 	}
+	// Applied migrations must be byte-pinned and contiguous. A version-only
+	// presence check silently accepts a tampered name, changed checksum or
+	// missing earlier migration while claiming that the schema is current.
+	var name, checksum string
+	if err := db.QueryRowContext(ctx,
+		"SELECT name, checksum FROM schema_migrations WHERE version = 2",
+	).Scan(&name, &checksum); err != nil {
+		t.Fatalf("migration history must persist content checksum: %v", err)
+	}
+	if len(checksum) != 64 {
+		t.Fatalf("migration checksum missing: %q", checksum)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET name = 'substituted.sql' WHERE version = 2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("migration name substitution must fail closed")
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET name = $1 WHERE version = 2", name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = repeat('0', 64) WHERE version = 2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("migration checksum substitution must fail closed")
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = $1 WHERE version = 2", checksum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("missing earlier migration must not be silently re-applied")
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO schema_migrations(version, name, checksum) VALUES (1, $1, $2)",
+		"0001_create_decision_records.sql", checksum0001,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err != nil {
+		t.Fatalf("restored authentic migration history must be accepted: %v", err)
+	}
 	store := decision.NewPostgresStore(db)
 
 	record := decision.Record{
