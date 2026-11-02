@@ -34,7 +34,7 @@ func validRequest() Request {
 			{ID:"sre.changes.read", Version:"2.0.0", ContractSHA256:strings.Repeat("3",64), InputSchemaRef:"schema://changes/input", OutputSchemaRef:"schema://changes/output", EffectClass:"read_only", Idempotency:"safe", TenantScoped:true},
 		},
 		Evidence: []EvidenceRef{
-			{Ref:"slo-sample-17", Source:"slo-adapter", SourceVersion:"v2", SHA256:strings.Repeat("b",64), AttestationRef:"att-slo-17", TrustLevel:"attested", ObservedAt:issued, ExpiresAt:expires},
+			{Ref:"slo-sample-17", EvidenceType:"slo", SchemaVersion:"1.0.0", TenantID:"tenant-a", AgentID:"agent-1", RunID:"run-17", Service:"payment-api", ResourceRef:"resource://payment-api/slo", SourceID:"slo-adapter-prod", Source:"slo-adapter", SourceVersion:"v2", SHA256:strings.Repeat("b",64), AttestationRef:"att-slo-17", TrustLevel:"attested", ObservedFrom:issued.Add(-5*time.Minute), ObservedTo:issued, ObservedAt:issued, CollectedAt:issued.Add(time.Minute), ExpiresAt:expires, RevocationState:"active"},
 		},
 	}
 }
@@ -158,4 +158,52 @@ func TestRequestRequiresExplicitEvidenceCollections(t *testing.T) {
 	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("nil capabilities must be rejected, got %v", err)
 	}
+}
+
+func TestEvidenceEnvelopeRejectsScopeWindowAndRevocationMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		mutate func(*EvidenceRef)
+	}{
+		{"wrong agent", func(e *EvidenceRef) { e.AgentID = "other-agent" }},
+		{"wrong run", func(e *EvidenceRef) { e.RunID = "other-run" }},
+		{"wrong service", func(e *EvidenceRef) { e.Service = "other-service" }},
+		{"inverted observation window", func(e *EvidenceRef) { e.ObservedFrom = e.ObservedTo.Add(time.Minute) }},
+		{"collection before observation end", func(e *EvidenceRef) { e.CollectedAt = e.ObservedTo.Add(-time.Second) }},
+		{"revoked evidence", func(e *EvidenceRef) { e.RevocationState = "revoked" }},
+		{"unknown evidence kind", func(e *EvidenceRef) { e.EvidenceType = "arbitrary" }},
+		{"unsupported envelope version", func(e *EvidenceRef) { e.SchemaVersion = "v1" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := validRequest()
+			tc.mutate(&req.Evidence[0])
+			if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("expected invalid evidence envelope, got %v", err)
+			}
+		})
+	}
+}
+
+func TestEvidenceEnvelopeBindsTenantInAuthorityVerifier(t *testing.T) {
+	type tenantVerifier struct{}
+	// The request-level envelope tenant is only a claim. The authoritative
+	// verifier must bind it to the trusted principal tenant.
+	verifier := authorityFunc(func(_ context.Context, p Principal, req Request) error {
+		if req.Evidence[0].TenantID != p.TenantID {
+			return ErrAuthorityRejected
+		}
+		return nil
+	})
+	req := validRequest()
+	req.Evidence[0].TenantID = "tenant-other"
+	_, _, err := NewService(NewMemoryStore(), verifier).Decide(context.Background(), testPrincipal(), req)
+	if !errors.Is(err, ErrAuthorityRejected) {
+		t.Fatalf("expected tenant binding rejection, got %v", err)
+	}
+}
+
+type authorityFunc func(context.Context, Principal, Request) error
+func (f authorityFunc) VerifyDecisionInputs(ctx context.Context, p Principal, req Request) error {
+	return f(ctx, p, req)
 }
