@@ -23,7 +23,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	security := object.get(container, "securityContext", {})
 	object.get(security, "privileged", false) == true
@@ -36,7 +36,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	container_security := object.get(container, "securityContext", {})
 	pod_security := object.get(pod_spec, "securityContext", {})
@@ -51,7 +51,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	resources := object.get(container, "resources", {})
 	requests := object.get(resources, "requests", {})
@@ -65,7 +65,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	resources := object.get(container, "resources", {})
 	requests := object.get(resources, "requests", {})
@@ -79,7 +79,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	resources := object.get(container, "resources", {})
 	limits := object.get(resources, "limits", {})
@@ -93,7 +93,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	resources := object.get(container, "resources", {})
 	limits := object.get(resources, "limits", {})
@@ -107,7 +107,7 @@ deny contains msg if {
 deny contains msg if {
 	input.kind == "Deployment"
 	pod_spec := object.get(object.get(object.get(input, "spec", {}), "template", {}), "spec", {})
-	containers := object.get(pod_spec, "containers", [])
+	containers := array.concat(object.get(pod_spec, "containers", []), object.get(pod_spec, "initContainers", []))
 	some container in containers
 	image := object.get(container, "image", "")
 	not regex.match("^[^@]+@sha256:[a-f0-9]{64}$", image)
