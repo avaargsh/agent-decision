@@ -116,11 +116,51 @@ func TestOpenAPIContractReferencesVersionedSchemas(t *testing.T) {
 		"/v1/decisions:",
 		"DecisionRequest",
 		"DecisionRecord",
+		"DecisionPage",
+		"/v1/decisions/{decision_id}",
+		"/v1/runs/{run_id}/decisions",
 		"decision-request.schema.json",
 		"decision-record.schema.json",
 		"/healthz:",
 		"IDEMPOTENCY_CONFLICT",
 	} {
 		if !strings.Contains(spec, required) { t.Errorf("OpenAPI contract is missing %q", required) }
+	}
+}
+
+func TestDecisionPageAndProblemSchemas(t *testing.T) {
+	page := loadSchema(t, "../../api/schemas/decision-page.schema.json")
+	properties, ok := page["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("DecisionPage properties missing")
+	}
+	items, ok := properties["items"].(map[string]any)
+	if !ok || items["type"] != "array" {
+		t.Fatal("DecisionPage.items must be an array")
+	}
+	itemSchema, ok := items["items"].(map[string]any)
+	if !ok || itemSchema["$ref"] != "./decision-record.schema.json" {
+		t.Fatal("DecisionPage.items must reference DecisionRecord")
+	}
+	required, ok := page["required"].([]any)
+	if !ok || len(required) != 1 || required[0] != "items" {
+		t.Fatalf("DecisionPage required fields mismatch: %v", required)
+	}
+
+	problem := loadSchema(t, "../../api/schemas/problem.schema.json")
+	errorSchema := problem["properties"].(map[string]any)["error"].(map[string]any)
+	codeSchema := errorSchema["properties"].(map[string]any)["code"].(map[string]any)
+	codes, ok := codeSchema["enum"].([]any)
+	if !ok {
+		t.Fatal("Problem.error.code must enumerate stable error codes")
+	}
+	seen := map[any]bool{}
+	for _, code := range codes {
+		seen[code] = true
+	}
+	for _, code := range []string{"NOT_FOUND", "INVALID_CURSOR", "IDEMPOTENCY_CONFLICT", "STORE_UNAVAILABLE"} {
+		if !seen[code] {
+			t.Errorf("Problem schema is missing error code %s", code)
+		}
 	}
 }
