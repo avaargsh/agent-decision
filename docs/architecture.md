@@ -76,9 +76,9 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 
 - Decision identity is deterministic for `(tenant_id, invocation_id)`.
 - The request fingerprint covers the authenticated principal and complete request.
-- Replaying the same key and fingerprint returns the existing record.
-- Reusing a key with a different fingerprint returns an idempotency conflict.
-- `MemoryStore` is process-local and suitable only for tests and development. `PostgresStore` uses `INSERT ... ON CONFLICT DO NOTHING` followed by a read of the winning row; the database primary key `(tenant_id, invocation_id)` is the cross-process idempotency authority. A changed fingerprint returns an idempotency conflict. The migration is `migrations/0001_create_decision_records.sql`. Production must use a restricted application database role and a separate migration owner; the application should not receive schema-alteration privileges.
+- After trusted Principal and local tenant/Agent/Session binding checks, a completed invocation with the same fingerprint returns its immutable stored record before expiring evidence references are re-verified. This is a read-only replay, not an authorization grant.
+- Reusing the same `invocation_id` with a different fingerprint returns `409 INVOCATION_ID_REUSED`.
+- `MemoryStore` is process-local and suitable only for tests and development. `PostgresStore` uses `INSERT ... ON CONFLICT DO NOTHING` followed by a read of the winning row; the database primary key `(tenant_id, invocation_id)` is the cross-process idempotency authority. A changed fingerprint returns `INVOCATION_ID_REUSED`. The migration is `migrations/0001_create_decision_records.sql`. Production must use a restricted application database role and a separate migration owner; the application should not receive schema-alteration privileges.
 - Decision records retain strategy/model/prompt/catalog versions, snapshot references, evidence references, reason codes, and a hash of the read-only plan.
 
 ## 6. Failure semantics
