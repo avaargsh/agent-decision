@@ -15,7 +15,7 @@ Agent Decision turns authenticated, evidence-backed context into deterministic a
 
 ## Explicit non-goals
 
-Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestration; approval state; capability authorization; credentials; execution permits; or tool execution. Agent Control Plane owns canonical Agent/Session/Run identity and policy bindings; Agent Runtime owns durable execution semantics; EngageGuard owns action authorization and trusted execution; Agent Decision proposes.
+Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestration; approval state; capability authorization; credentials; execution permits; or tool execution. Agent Control Plane owns Tenant/Agent/Session/RunIntent identity and policy bindings; Agent Runtime creates and owns Run identity and durable execution semantics; EngageGuard owns action authorization and trusted execution; Agent Decision consumes a Runtime-issued Run ID and proposes only. The ACP/Runtime RunIntent-to-Run mapping remains a proposed cross-repository contract pending owner sign-off.
 
 ## Go implementation
 
