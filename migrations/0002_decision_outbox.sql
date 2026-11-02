@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     lease_owner       TEXT,
     lease_until       TIMESTAMPTZ,
     published_at      TIMESTAMPTZ,
-    last_error        TEXT,
+    last_error_code   TEXT        CHECK (last_error_code IS NULL OR last_error_code = 'publish_failed'),
     CONSTRAINT outbox_decision_fk FOREIGN KEY (tenant_id, aggregate_id)
         REFERENCES decision_records (tenant_id, decision_id),
     CONSTRAINT outbox_decision_event_uq UNIQUE (tenant_id, aggregate_id, event_type),
