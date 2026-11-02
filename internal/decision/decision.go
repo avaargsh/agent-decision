@@ -382,16 +382,16 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	if err := principal.Validate(); err != nil {
 		return Record{}, false, err
 	}
-	if err := req.Validate(); err != nil {
-		return Record{}, false, err
+	// Validate the minimum trusted lookup scope before consulting the ledger.
+	// Full request validation follows only when this is a new invocation, so
+	// any changed payload under an existing invocation deterministically conflicts.
+	if !nameRe.MatchString(req.InvocationID) ||
+		!nameRe.MatchString(req.Identity.AgentID) ||
+		!nameRe.MatchString(req.Identity.SessionID) {
+		return Record{}, false, fmt.Errorf("%w: invocation_id or identity", ErrInvalidRequest)
 	}
 	if req.Identity.AgentID != principal.AgentID || req.Identity.SessionID != principal.SessionID {
 		return Record{}, false, ErrUnauthorized
-	}
-	for _, evidence := range req.Evidence {
-		if evidence.TenantID != principal.TenantID {
-			return Record{}, false, ErrUnauthorized
-		}
 	}
 	if s.store == nil {
 		return Record{}, false, ErrStoreUnavailable
@@ -402,10 +402,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		Request Request
 	}{principal, req})
 
-	// Resolve a completed logical invocation before re-validating expiring
-	// evidence. The trusted Principal and request identity bindings above are
-	// still checked on every call; returning a stored proposal grants no
-	// authorization and cannot bypass EngageGuard.
+	// An exact retry of a completed invocation returns its immutable historical
+	// result before current evidence freshness/attestation is re-evaluated.
+	// Current Principal and Agent/Session bindings are checked above; this
+	// read-only replay is never authorization and cannot bypass EngageGuard.
 	existing, lookupErr := s.store.GetByInvocation(ctx, principal.TenantID, req.InvocationID)
 	if lookupErr == nil {
 		if existing.RequestSHA256 != fingerprint {
@@ -417,6 +417,14 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, lookupErr
 	}
 
+	if err := req.Validate(); err != nil {
+		return Record{}, false, err
+	}
+	for _, evidence := range req.Evidence {
+		if evidence.TenantID != principal.TenantID {
+			return Record{}, false, ErrUnauthorized
+		}
+	}
 	if s.strategy == nil || req.Versions.StrategyVersion != s.strategy.Version() {
 		return Record{}, false, fmt.Errorf("%w: strategy version unavailable", ErrInvalidRequest)
 	}
@@ -429,6 +437,7 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		}
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
+
 	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
@@ -449,7 +458,6 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	// Strategies receive detached request slices so an implementation cannot
 	// mutate already-verified evidence or capabilities before output validation.
 	result := s.strategy.Plan(cloneRequest(req), decisionID)
-	// Required JSON arrays must remain arrays even when a strategy omits warnings.
 	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
 	result.Steps = append([]PlanStep{}, result.Steps...)
 	if err := validateStrategyResult(req, result); err != nil {
