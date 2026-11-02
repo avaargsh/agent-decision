@@ -198,17 +198,24 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 
 func TestDispatchOnceRetriesPublishFailure(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{ID: "event-1"}}}
-	publisher := fakePublisher{err: errors.New("broker unavailable")}
+	publisher := fakePublisher{err: errors.New("authorization header bearer secret-sentinel")}
 	published, err := outbox.DispatchOnce(context.Background(), store, publisher, "worker-a", 1, time.Minute, 5*time.Second)
 	if published != 0 || !errors.Is(err, publisher.err) || store.retries != 1 || store.acks != 0 {
 		t.Fatalf("DispatchOnce: published=%d err=%v retries=%d acks=%d", published, err, store.retries, store.acks)
 	}
+	if store.retryCause != "publish_failed" {
+		t.Fatalf("unsafe publisher error was persisted as retry cause: %q", store.retryCause)
+	}
+	if strings.Contains(store.retryCause, "secret-sentinel") {
+		t.Fatal("publisher error detail leaked into durable Outbox metadata")
+	}
 }
 
 type fakeStore struct {
-	events  []outbox.Event
-	acks    int
-	retries int
+	events     []outbox.Event
+	acks       int
+	retries    int
+	retryCause string
 }
 
 func (s *fakeStore) Claim(context.Context, string, int, time.Duration) ([]outbox.Event, error) {
@@ -218,8 +225,9 @@ func (s *fakeStore) Ack(context.Context, string, string, int) error {
 	s.acks++
 	return nil
 }
-func (s *fakeStore) Retry(context.Context, string, string, int, time.Duration, string) error {
+func (s *fakeStore) Retry(_ context.Context, _ string, _ string, _ int, _ time.Duration, cause string) error {
 	s.retries++
+	s.retryCause = cause
 	return nil
 }
 
