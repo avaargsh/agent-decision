@@ -82,7 +82,8 @@
         },
         "run_id": {
           "type": "string",
-          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+          "description": "Runtime-issued Run ID created after accepting a Control Plane RunIntent; verified against Runtime authority."
         }
       }
     },
