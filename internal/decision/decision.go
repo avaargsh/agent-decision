@@ -227,7 +227,7 @@ func (r Request) Validate() error {
 		r.Constraints.MaxTokens < 1 || r.Constraints.MaxTokens > 8192 ||
 		r.Constraints.MaxCostMicros < 0 || r.Constraints.MaxCostMicros > 10000000 ||
 		r.Constraints.MaxCandidates < 1 || r.Constraints.MaxCandidates > 3 ||
-		false {
+		{
 		return fmt.Errorf("%w: invalid resource constraints", ErrInvalidRequest)
 	}
 	if r.Versions.CapabilityCatalogVersion == "" || r.Versions.StrategyVersion != PolicyVersion ||
