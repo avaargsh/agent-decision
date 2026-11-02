@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -18,6 +19,57 @@ func TestPostgresStoreRequiresDatabase(t *testing.T) {
 	_, _, err := store.SaveOrGet(context.Background(), Record{})
 	if !errors.Is(err, ErrStoreUnavailable) {
 		t.Fatalf("expected ErrStoreUnavailable, got %v", err)
+	}
+}
+
+func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(db)
+	record := Record{
+		DecisionID: "dec_" + strings.Repeat("d", 64),
+		TenantID: fmt.Sprintf("append-only-%d", time.Now().UnixNano()),
+		AgentID: "agent-1",
+		SessionID: "session-1",
+		RunID: "run-17",
+		IdempotencyKey: "append-only-key",
+		RequestSHA256: strings.Repeat("e", 64),
+		CreatedAt: time.Now().UTC(),
+		Status: StatusProposed,
+		ReasonCodes: []string{},
+		Evidence: []EvidenceRef{},
+		Plan: PlanCandidate{PlanID: "plan_append_only", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+	}
+	if _, created, err := store.SaveOrGet(ctx, record); err != nil || !created {
+		t.Fatalf("save append-only record: created=%v err=%v", created, err)
+	}
+	for name, statement := range map[string]string{
+		"update": "UPDATE decision_records SET record = '{}'::jsonb WHERE tenant_id = $1 AND decision_id = $2",
+		"delete": "DELETE FROM decision_records WHERE tenant_id = $1 AND decision_id = $2",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, statement, record.TenantID, record.DecisionID); err == nil {
+				t.Fatalf("%s must be rejected by the append-only trigger", name)
+			}
+		})
 	}
 }
 
@@ -42,10 +94,6 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = db.ExecContext(context.Background(),
-			"DELETE FROM decision_records WHERE tenant_id = $1", "store-integration-test")
-	})
 
 	store := NewPostgresStore(db)
 	record := Record{
@@ -54,7 +102,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 		SessionID: "session-1",
 		RunID: "run-17",
 		CreatedAt: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC),
-		TenantID: "store-integration-test",
+		TenantID: fmt.Sprintf("store-integration-%d", time.Now().UnixNano()),
 		IdempotencyKey: "same-key",
 		RequestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Status: StatusProposed,
@@ -89,15 +137,11 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	}
 
 	otherTenant := record
-	otherTenant.TenantID = "store-integration-test-other"
+	otherTenant.TenantID = record.TenantID + "-other"
 	otherTenant.DecisionID = "dec_"+strings.Repeat("c",64)
 	if _, created, err := store.SaveOrGet(ctx, otherTenant); err != nil || !created {
 		t.Fatalf("tenant isolation: created=%v err=%v", created, err)
 	}
-	t.Cleanup(func() {
-		_, _ = db.ExecContext(context.Background(),
-			"DELETE FROM decision_records WHERE tenant_id = $1", "store-integration-test-other")
-	})
 
 	concurrent := record
 	concurrent.IdempotencyKey = "concurrent-key"
