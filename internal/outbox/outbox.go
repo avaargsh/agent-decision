@@ -10,6 +10,10 @@ import (
 
 var ErrLeaseLost = errors.New("outbox lease lost")
 
+// ReasonPublishFailed is the only durable retry diagnostic. Publisher error
+// strings may contain credentials, endpoints or request data and are never persisted.
+const ReasonPublishFailed = "publish_failed"
+
 // Event is an immutable event envelope. Payload is the immutable DecisionRecord.
 type Event struct {
 	ID               string          `json:"event_id"`
@@ -29,7 +33,7 @@ type Event struct {
 type Store interface {
 	Claim(context.Context, string, int, time.Duration) ([]Event, error)
 	Ack(context.Context, string, string, int) error
-	Retry(context.Context, string, string, int, time.Duration, string) error
+	Retry(context.Context, string, string, int, time.Duration, string) error // reason code, never raw error text
 }
 
 type Publisher interface {
@@ -51,7 +55,7 @@ func DispatchOnce(ctx context.Context, store Store, publisher Publisher, workerI
 	var firstErr error
 	for _, event := range events {
 		if err := publisher.Publish(ctx, event); err != nil {
-			if retryErr := store.Retry(ctx, event.ID, workerID, event.Attempts, retryDelay, err.Error()); retryErr != nil && firstErr == nil {
+			if retryErr := store.Retry(ctx, event.ID, workerID, event.Attempts, retryDelay, ReasonPublishFailed); retryErr != nil && firstErr == nil {
 				firstErr = retryErr
 			}
 			if firstErr == nil {
