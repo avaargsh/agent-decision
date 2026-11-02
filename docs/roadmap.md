@@ -19,7 +19,9 @@
 
 ## v0.2 — Evidence-aware Investigation
 
-- [ ] Evidence freshness, provenance, quality, and coverage policy.
+- [x] Define a versioned, typed, tenant/Agent/Run/service-scoped Evidence Envelope v1 with observation windows, collection time, revocation state, and validation tests.
+- [ ] Implement production AuthorityVerifier integration for tenant ownership, attestation, digest, expiry, and revocation.
+- [ ] Evidence freshness, provenance, quality, and coverage policy (requires per-kind operational thresholds and source semantics).
 - [ ] Hypothesis model with explicit supporting and contradicting evidence references.
 - [ ] Investigation result ingestion and bounded follow-up decision steps.
 - [ ] DecisionRecord schema evolution and replay compatibility tests.
