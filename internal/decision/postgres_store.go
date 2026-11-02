@@ -17,6 +17,33 @@ type PostgresStore struct { db *sql.DB }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
 
+// GetByInvocation resolves an existing immutable invocation result within one tenant.
+func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
+	if s == nil || s.db == nil {
+		return Record{}, ErrStoreUnavailable
+	}
+	var fingerprint string
+	var payload []byte
+	err := s.db.QueryRowContext(ctx,
+		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
+		tenantID, invocationID).Scan(&fingerprint, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, ErrNotFound
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("%w: lookup Decision invocation: %v", ErrStoreUnavailable, err)
+	}
+	var record Record
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return Record{}, fmt.Errorf("decode stored DecisionRecord: %w", err)
+	}
+	if record.TenantID != tenantID || record.InvocationID != invocationID ||
+		record.RequestSHA256 != fingerprint {
+		return Record{}, errors.New("stored DecisionRecord identity does not match indexed columns")
+	}
+	return clone(record), nil
+}
+
 func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
 	if s == nil || s.db == nil { return Record{}, false, ErrStoreUnavailable }
 	if err := ctx.Err(); err != nil { return Record{}, false, err }
