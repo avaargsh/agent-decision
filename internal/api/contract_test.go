@@ -142,7 +142,7 @@ func TestOpenAPIContractReferencesVersionedSchemas(t *testing.T) {
 		"decision-request.schema.json",
 		"decision-record.schema.json",
 		"/healthz:",
-		"IDEMPOTENCY_CONFLICT",
+		"INVOCATION_ID_REUSED",
 	} {
 		if !strings.Contains(spec, required) { t.Errorf("OpenAPI contract is missing %q", required) }
 	}
@@ -178,7 +178,7 @@ func TestDecisionPageAndProblemSchemas(t *testing.T) {
 	for _, code := range codes {
 		seen[code] = true
 	}
-	for _, code := range []string{"NOT_FOUND", "INVALID_CURSOR", "IDEMPOTENCY_CONFLICT", "STORE_UNAVAILABLE"} {
+	for _, code := range []string{"NOT_FOUND", "INVALID_CURSOR", "INVOCATION_ID_REUSED", "STORE_UNAVAILABLE"} {
 		if !seen[code] {
 			t.Errorf("Problem schema is missing error code %s", code)
 		}
