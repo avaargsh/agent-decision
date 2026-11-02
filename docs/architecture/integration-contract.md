@@ -45,11 +45,11 @@ The `CapabilitySnapshot` version must match `versions.capability_catalog_version
 
 ## 4. Evidence contract and next-stage gap
 
-The v1 `EvidenceRef` currently carries only a reference, source/version, content digest, attestation reference, trust label, observation time and expiry. It contains no evidence payload.
+The Decision-side Evidence Envelope v1 now carries evidence type/schema version, tenant/Agent/Run/service/resource scope, source identity/version, content digest/attestation, observation interval, observed and collected timestamps, expiry and revocation state. It contains no evidence payload. This is a syntactic and scope-binding baseline; the production AuthorityVerifier must independently verify tenant ownership, signatures, digests, source identity/version, expiry and revocation.
 
 This is sufficient for identity/provenance verification, but it is not yet sufficient for a robust Evidence Quality or Hypothesis Engine. Before adding freshness scores or coverage rules, define and version the evidence envelope with at least:
 
-- evidence kind/modality and schema version;
+- envelope evidence kind/modality and schema version (represented by the v1 envelope);
 - tenant, Agent, Run and service/resource scope;
 - observation interval or query window, not only a single timestamp;
 - source identity and source-version semantics;
@@ -79,6 +79,6 @@ A future remediation proposal must remain a separate typed object. Runtime/Contr
 
 - Resolve the Runtime README's “owns Run identity” wording against the Control Plane canonical identity contract.
 - Implement the production AuthorityVerifier adapter against Control Plane identity/snapshot authority and the evidence store.
-- Define the versioned evidence envelope before implementing freshness scoring, coverage or hypotheses.
+- Align the versioned Evidence Envelope v1 with producers and Control Plane before implementing freshness scoring, coverage or hypotheses.
 - Add and verify PostgreSQL tenant row-level security, or document an independently reviewed equivalent isolation proof.
 - Freeze a generated/client-consumable contract only after these upstream owners agree on the identity and reference semantics.
