@@ -83,26 +83,6 @@ func TestAbstainsWithoutEvidenceOrRequiredCapability(t *testing.T) {
 	if err != nil || rec.Status != StatusAbstained || len(rec.Plan.Steps) != 0 { t.Fatalf("expected no partial plan: %+v %v", rec, err) }
 }
 
-
-func TestReadOnlyPlannerAbstainsWhenLogsOrChangesEvidenceMissing(t *testing.T) {
-	for _, missingType := range []string{"logs", "change"} {
-		t.Run(missingType, func(t *testing.T) {
-			req := validRequest()
-			filtered := make([]EvidenceRef, 0, len(req.Evidence))
-			for _, evidence := range req.Evidence {
-				if evidence.EvidenceType != missingType {
-					filtered = append(filtered, evidence)
-				}
-			}
-			req.Evidence = filtered
-			record, _, err := NewService(NewMemoryStore(), allowAuthority{}).Decide(context.Background(), testPrincipal(), req)
-			if err != nil || record.Status != StatusAbstained || len(record.Plan.Steps) != 0 {
-				t.Fatalf("missing %s evidence must abstain, got %+v %v", missingType, record, err)
-			}
-		})
-	}
-}
-
 func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
 	store := NewMemoryStore()
 	svc := NewService(store, allowAuthority{})
@@ -364,3 +344,60 @@ type authorityFunc func(context.Context, Principal, Request) error
 func (f authorityFunc) VerifyDecisionInputs(ctx context.Context, p Principal, req Request) error {
 	return f(ctx, p, req)
 }
+
+func TestReadOnlyPlannerAbstainsWhenLogsOrChangesEvidenceMissing(t *testing.T) {
+	for _, missingType := range []string{"logs", "change"} {
+		t.Run(missingType, func(t *testing.T) {
+			req := validRequest()
+			filtered := make([]EvidenceRef, 0, len(req.Evidence))
+			for _, evidence := range req.Evidence {
+				if evidence.EvidenceType != missingType {
+					filtered = append(filtered, evidence)
+				}
+			}
+			req.Evidence = filtered
+			record, _, err := NewService(NewMemoryStore(), allowAuthority{}).Decide(context.Background(), testPrincipal(), req)
+			if err != nil || record.Status != StatusAbstained || len(record.Plan.Steps) != 0 {
+				t.Fatalf("missing %s evidence must abstain, got %+v %v", missingType, record, err)
+			}
+		})
+	}
+}
+
+func TestStrategyRejectsMissingOrMismatchedStepEvidenceBindings(t *testing.T) {
+	cases := []struct {
+		name string
+		mutate func(*StrategyResult)
+	}{
+		{
+			name: "missing evidence",
+			mutate: func(result *StrategyResult) { result.Steps[0].EvidenceRefs = nil },
+		},
+		{
+			name: "unknown evidence reference",
+			mutate: func(result *StrategyResult) { result.Steps[0].EvidenceRefs[0].Ref = "unbound-reference" },
+		},
+		{
+			name: "evidence from wrong source type",
+			mutate: func(result *StrategyResult) {
+				for _, evidence := range validRequest().Evidence {
+					if evidence.EvidenceType == "logs" {
+						result.Steps[0].EvidenceRefs = []EvidenceBinding{{SourceID:evidence.SourceID, Ref:evidence.Ref}}
+						return
+					}
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := validRequest()
+			result := SREReadOnlyStrategy{}.Plan(req, "dec_test")
+			tc.mutate(&result)
+			if err := validateStrategyResult(req, result); err == nil {
+				t.Fatal("invalid step evidence binding was accepted")
+			}
+		})
+	}
+}
+
