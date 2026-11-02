@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -97,5 +98,50 @@ func TestIdentityAuthorityAndReplanFailClosed(t *testing.T) {
 		req:=validRequest()
 		req.Replan=&ReplanContext{ParentDecisionID:"dec_"+strings.Repeat("a",64),Sequence:1,MaxReplans:2,Trigger:"STEP_FAILED",PriorDisposition:disposition}
 		if _,_,err:=NewService(NewMemoryStore(),allowAuthority{}).Decide(context.Background(),testPrincipal(),req); err!=ErrInvalidRequest { t.Errorf("%s should be blocked: %v",disposition,err) }
+	}
+}
+
+type unsafeTestStrategy struct{}
+
+func (unsafeTestStrategy) Version() string { return PolicyVersion }
+func (unsafeTestStrategy) Plan(Request, string) StrategyResult {
+	return StrategyResult{
+		Status: StatusProposed,
+		Steps: []PlanStep{{
+			StepID: "step_mutation",
+			Capability: CapabilityRef{
+				ID: "sre.deploy.write",
+				EffectClass: "write",
+				Idempotency: "unsafe",
+				TenantScoped: true,
+			},
+			ReadOnly: false,
+		}},
+	}
+}
+
+func TestStrategyOutputIsDeterministicAndReadOnly(t *testing.T) {
+	req := validRequest()
+	strategy := SREReadOnlyStrategy{}
+	first := strategy.Plan(req, "dec_"+strings.Repeat("a", 64))
+	second := strategy.Plan(req, "dec_"+strings.Repeat("a", 64))
+	if digest(first) != digest(second) {
+		t.Fatal("same request and decision identity must produce the same strategy output")
+	}
+	if len(first.Steps) != 3 {
+		t.Fatalf("expected three investigation steps, got %d", len(first.Steps))
+	}
+	for _, step := range first.Steps {
+		if !step.ReadOnly || step.Capability.EffectClass != "read_only" {
+			t.Fatalf("strategy emitted unsafe step: %+v", step)
+		}
+	}
+}
+
+func TestCoreRejectsUnsafeStrategyOutput(t *testing.T) {
+	svc := NewServiceWithStrategy(NewMemoryStore(), allowAuthority{}, unsafeTestStrategy{})
+	_, _, err := svc.Decide(context.Background(), testPrincipal(), validRequest())
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected unsafe strategy output to be rejected, got %v", err)
 	}
 }
