@@ -52,7 +52,7 @@ func TestReadOnlyPlanAndPinnedCapabilities(t *testing.T) {
 
 func TestAbstainsWithoutEvidenceOrRequiredCapability(t *testing.T) {
 	req := validRequest()
-	req.Evidence = nil
+	req.Evidence = []EvidenceRef{}
 	rec, _, err := NewService(NewMemoryStore(), allowAuthority{}).Decide(context.Background(), testPrincipal(), req)
 	if err != nil || rec.Status != StatusAbstained || len(rec.Plan.Steps) != 0 { t.Fatalf("expected abstention: %+v %v", rec, err) }
 	req = validRequest()
@@ -143,5 +143,19 @@ func TestCoreRejectsUnsafeStrategyOutput(t *testing.T) {
 	_, _, err := svc.Decide(context.Background(), testPrincipal(), validRequest())
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("expected unsafe strategy output to be rejected, got %v", err)
+	}
+}
+
+
+func TestRequestRequiresExplicitEvidenceCollections(t *testing.T) {
+	req := validRequest()
+	req.Evidence = nil
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil evidence_refs must be rejected, got %v", err)
+	}
+	req = validRequest()
+	req.Capabilities = nil
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil capabilities must be rejected, got %v", err)
 	}
 }
