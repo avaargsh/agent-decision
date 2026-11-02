@@ -262,6 +262,16 @@ func TestEvidenceEnvelopeRejectsScopeWindowAndRevocationMismatch(t *testing.T) {
 	}
 }
 
+func TestRequestRejectsDuplicateEvidenceFromSameSource(t *testing.T) {
+	req := validRequest()
+	duplicate := req.Evidence[0]
+	duplicate.SHA256 = strings.Repeat("f", 64)
+	req.Evidence = append(req.Evidence, duplicate)
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("duplicate source/reference pair must be rejected, got %v", err)
+	}
+}
+
 func TestEvidenceEnvelopeBindsTenantToTrustedPrincipal(t *testing.T) {
 	verifierCalled := false
 	verifier := authorityFunc(func(context.Context, Principal, Request) error {
