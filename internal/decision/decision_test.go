@@ -97,7 +97,7 @@ func TestIdentityAuthorityAndReplanFailClosed(t *testing.T) {
 	for _, disposition:=range []string{"UNKNOWN","GUARD_DENIED"} {
 		req:=validRequest()
 		req.Replan=&ReplanContext{ParentDecisionID:"dec_"+strings.Repeat("a",64),Sequence:1,MaxReplans:2,Trigger:"STEP_FAILED",PriorDisposition:disposition}
-		if _,_,err:=NewService(NewMemoryStore(),allowAuthority{}).Decide(context.Background(),testPrincipal(),req); err!=ErrInvalidRequest { t.Errorf("%s should be blocked: %v",disposition,err) }
+		if _,_,err:=NewService(NewMemoryStore(),allowAuthority{}).Decide(context.Background(),testPrincipal(),req); !errors.Is(err, ErrInvalidRequest) { t.Errorf("%s should be blocked: %v",disposition,err) }
 	}
 }
 
