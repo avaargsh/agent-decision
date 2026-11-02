@@ -51,6 +51,8 @@ For the same authenticated tenant and `invocation_id`:
 
 The HTTP worker remains stateless, but the service MUST persist invocation digest, lease/state, and the completed response before returning success. This invocation-result store is not canonical Run/Session state and is not a framework checkpoint.
 
+The initial store is owned by Agent Decision (separate from Runtime PostgreSQL) and has a unique key on `(authenticated_tenant_id, invocation_id)`. Minimum record fields are `request_digest`, `state` (`RUNNING` / `COMPLETED`), `lease_token`, `lease_expires_at`, `response_json`, `created_at`, and `completed_at`. Claim/reclaim and completion are compare-and-set transactions. A worker may commit a response only while holding the current lease token. Completed response bytes are committed before HTTP success is returned, and retention must exceed the maximum Temporal retry/re-delivery horizon. A transient provider failure releases the lease for a bounded retry; an expired RUNNING lease may be reclaimed with a new fencing token.
+
 ## Error contract
 
 The normative error schema is `protocol/v0.1/schemas/decision-turn-error.schema.json`. Do not expose a `retryable` boolean; Runtime owns retry policy.
