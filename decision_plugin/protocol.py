@@ -18,7 +18,7 @@ class DecisionTurn:
         expected = set(cls.__dataclass_fields__)
         if set(payload) != expected:
             raise ValueError('missing or unexpected fields')
-        if any(not isinstance(v, str) or not v or len(v) > 4096 for v in payload.values()):
+        if any(not isinstance(v, str) or not v.strip() or len(v.encode('utf-8')) > 4096 for v in payload.values()):
             raise ValueError('fields must be nonempty bounded strings')
         if payload['protocol_version'] != 'v0.1':
             raise ValueError('unsupported protocol version')
