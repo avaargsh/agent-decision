@@ -15,37 +15,21 @@ CREATE TABLE IF NOT EXISTS decision_records (
 );
 
 CREATE OR REPLACE FUNCTION reject_decision_record_mutation() RETURNS trigger
-LANGUAGE plpgsql AS $
+LANGUAGE plpgsql AS '
 BEGIN
-    RAISE EXCEPTION 'decision_records are append-only';
+    RAISE EXCEPTION ''decision_records are append-only'';
 END;
-$;
+';
 
-DO $
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'decision_records_no_update'
-          AND tgrelid = 'decision_records'::regclass
-          AND NOT tgisinternal
-    ) THEN
-        CREATE TRIGGER decision_records_no_update
-        BEFORE UPDATE ON decision_records
-        FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation();
-    END IF;
+DROP TRIGGER IF EXISTS decision_records_no_update ON decision_records;
+CREATE TRIGGER decision_records_no_update
+BEFORE UPDATE ON decision_records
+FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation();
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'decision_records_no_delete'
-          AND tgrelid = 'decision_records'::regclass
-          AND NOT tgisinternal
-    ) THEN
-        CREATE TRIGGER decision_records_no_delete
-        BEFORE DELETE ON decision_records
-        FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation();
-    END IF;
-END;
-$;
+DROP TRIGGER IF EXISTS decision_records_no_delete ON decision_records;
+CREATE TRIGGER decision_records_no_delete
+BEFORE DELETE ON decision_records
+FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation();
 
 CREATE INDEX IF NOT EXISTS idx_decision_records_tenant_created
     ON decision_records (tenant_id, created_at DESC);
