@@ -514,5 +514,8 @@ func clone(record Record) Record {
 	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
 	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
 	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
+	for i := range record.Plan.Steps {
+		record.Plan.Steps[i].EvidenceRefs = append([]EvidenceBinding{}, record.Plan.Steps[i].EvidenceRefs...)
+	}
 	return record
 }
