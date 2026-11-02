@@ -1,0 +1,100 @@
+# Agent Decision Architecture
+
+**Status:** v0.1 baseline  
+**Scope:** deterministic, read-only SRE decision planning  
+**Implementation:** Go
+
+## 1. Responsibility
+
+Agent Decision is the decision-intelligence component of Open Agent Infrastructure. It accepts a caller-authenticated decision request, verifies externally owned context and capability snapshots, and produces an immutable, deterministic decision record containing a bounded read-only investigation plan or an explicit abstention.
+
+It does not own:
+
+- Agent, Session, or Run lifecycle;
+- durable workflow orchestration or retries;
+- identity issuance or tenant membership;
+- capability publication, approval, or authorization policy;
+- tool credentials, privileged execution, or execution permits;
+- incident lifecycle or SRE alert routing.
+
+## 2. System boundary
+
+```text
+SRE domain workflow (agentic-aiops)
+          |
+          | DecisionRequest + immutable references
+          v
+Agent Decision
+  - request validation
+  - trusted principal binding
+  - authoritative snapshot verification
+  - deterministic read-only planning
+  - idempotent DecisionRecord
+          |
+          | DecisionRecord / read-only PlanCandidate
+          v
+Agent Control Plane / Agent Runtime
+  - policy and approval
+  - Run lifecycle and durable workflow
+  - capability enforcement and execution
+          |
+          v
+EngageGuard / infrastructure providers
+```
+
+Agent Decision may describe capability references but never receives capability endpoints, credentials, or executor configuration. A `PlanStep` is a proposal for read-only investigation, not an execution permit.
+
+## 3. Request trust model
+
+The HTTP transport obtains `Principal` from a trusted resolver (for example, an authenticated OIDC or mTLS gateway). Tenant identity is never accepted from the request body. The principal is bound to `agent_id` and `session_id` in the request. The current contract restricts the caller identity to `agent-runtime`.
+
+The request carries references to immutable Context and Capability snapshots plus Evidence references. Their fields are untrusted claims until `AuthorityVerifier.VerifyDecisionInputs` independently verifies ownership, tenant/run binding, content digest, attestation, source version, expiry, and revocation against the authoritative owner.
+
+Missing principal, missing verifier, failed verification, invalid request, or identity mismatch fails closed.
+
+## 4. Deterministic v0.1 planner
+
+The first strategy is `sre-readonly-v1` and supports `sre_incident_triage` for `latency`, `errors`, and `saturation` signals. It requires the following tenant-scoped, version-pinned, safe, read-only capabilities:
+
+1. `sre.metrics.read` → `OBSERVE_METRICS`
+2. `sre.logs.read` → `INSPECT_LOGS`
+3. `sre.changes.read` → `CORRELATE_CHANGE`
+
+The planner emits all three steps or no steps. Missing evidence yields `ABSTAINED / INSUFFICIENT_EVIDENCE`; a missing required capability yields `ABSTAINED / MISSING_REQUIRED_CAPABILITY`. It does not infer a root cause, rank remediation actions, or perform mutations in v0.1.
+
+## 5. Identity, idempotency, and records
+
+- Decision identity is deterministic for `(tenant_id, idempotency_key)`.
+- The request fingerprint covers the authenticated principal and complete request.
+- Replaying the same key and fingerprint returns the existing record.
+- Reusing a key with a different fingerprint returns an idempotency conflict.
+- The current `MemoryStore` is process-local and is suitable only for development and tests. Production requires a durable store with an atomic unique constraint on the tenant-scoped idempotency key.
+- Decision records retain strategy/model/prompt/catalog versions, snapshot references, evidence references, reason codes, and a hash of the read-only plan.
+
+## 6. Failure semantics
+
+| Condition | Result |
+|---|---|
+| No trusted principal | 401 |
+| Principal/request identity mismatch | 403 |
+| Authority verifier unavailable | 503 |
+| Snapshot verification rejected | 403 |
+| Invalid or unknown JSON fields | 400 |
+| Idempotency key reused with changed input | 409 |
+| No evidence / required capability | Persisted `ABSTAINED` record |
+
+`/healthz` is intentionally unauthenticated and returns 204. The development binary binds to loopback and fails closed for decision calls until authentication and authority verification are configured.
+
+## 7. Next architecture increments
+
+The following are deliberately outside the v0.1 implementation and require separate contracts and tests:
+
+1. Decision context freshness and evidence quality policy (beyond signature/ownership validation).
+2. Hypothesis and evidence correlation model.
+3. Candidate remediation proposals and risk vectors (impact, blast radius, uncertainty, reversibility, current SLO/Error Budget state).
+4. Confidence calibration backed by labeled incident trajectories; model confidence must not be treated as a probability without calibration.
+5. Decision Ledger durability, append-only history, and replay.
+6. Evaluation datasets, benchmark, calibration reports, and release gates.
+7. Scenario-scoped autonomy levels and integration with Control Plane authorization.
+
+These increments must preserve the boundary: Decision proposes and explains; Control Plane authorizes; Runtime executes and owns Run state.
