@@ -35,13 +35,14 @@ Agent Decision
           | DecisionRecord / read-only PlanCandidate
           v
 Agent Control Plane
-  - canonical Agent / Session / Run identity
+  - Agent / Session / RunIntent identity (v0.3 proposal; not ratified)
   - desired state, capability catalog and policy bindings
           |
+          | RunIntent reference (contract pending owner sign-off)
           v
 Agent Runtime
-  - durable Run execution and workflow history
-  - task/step scheduling, retry and checkpoint semantics
+  - Run / RunAttempt identity and RunIntent-to-Run mapping (v0.3 proposal)
+  - durable execution, Temporal history, task/step retries and recovery
           |
           v
 EngageGuard
@@ -51,6 +52,9 @@ EngageGuard
           v
 Sandbox / Compute providers
 ```
+
+
+The ownership shown above follows the **proposed**, not yet ratified v0.3 authority map. The actual `run_id` must come from Runtime authority and be verified by the Decision AuthorityVerifier before the request is trusted. The `run_intent_id` is a distinct Control Plane identity. This draft does not itself ratify ACP/Runtime boundaries; see [the integration contract](architecture/integration-contract.md), [ACP governance PR #4](https://github.com/avaargsh/agent-control-panel/pull/4), and [Decision issue #9](https://github.com/avaargsh/agent-decision/issues/9).
 
 Agent Decision may describe capability references but never receives capability endpoints, credentials, or executor configuration. A `PlanStep` is a proposal for read-only investigation, not an execution permit.
 
