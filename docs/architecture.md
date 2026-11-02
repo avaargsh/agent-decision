@@ -90,7 +90,7 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 | Authority verifier unavailable | 503 |
 | Snapshot verification rejected | 403 |
 | Invalid or unknown JSON fields | 400 |
-| Idempotency key reused with changed input | 409 |
+| Same invocation_id with a changed authenticated request fingerprint | 409 `INVOCATION_ID_REUSED` |
 | No evidence / required capability | Persisted `ABSTAINED` record |
 
 `/healthz` is intentionally unauthenticated and returns 204. The development binary binds to loopback and fails closed for decision calls until authentication and authority verification are configured.
