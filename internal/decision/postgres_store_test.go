@@ -50,7 +50,7 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 		AgentID: "agent-1",
 		SessionID: "session-1",
 		RunID: "run-17",
-		IdempotencyKey: "append-only-key",
+		InvocationID: "append-only-key",
 		RequestSHA256: strings.Repeat("e", 64),
 		CreatedAt: time.Now().UTC(),
 		Status: StatusProposed,
@@ -103,7 +103,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 		RunID: "run-17",
 		CreatedAt: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC),
 		TenantID: fmt.Sprintf("store-integration-%d", time.Now().UnixNano()),
-		IdempotencyKey: "same-key",
+		InvocationID: "same-key",
 		RequestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Status: StatusProposed,
 		ReasonCodes: []string{},
@@ -144,7 +144,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	}
 
 	concurrent := record
-	concurrent.IdempotencyKey = "concurrent-key"
+	concurrent.InvocationID = "concurrent-key"
 	concurrent.DecisionID = "dec_"+strings.Repeat("b",64)
 	concurrent.CreatedAt = record.CreatedAt
 	const workers = 12
