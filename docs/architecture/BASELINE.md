@@ -28,15 +28,15 @@ Status: **P0 implementation in progress; v1.0 Architecture Baseline not yet froz
 - Runtime validates a PlanCandidate against the active Run and AgentRelease, then maps each PlanStep into an ActionRequest. EngageGuard independently revalidates current capability, policy and risk, computes ActionHash, and binds any Permit to that individual action.
 - PlanHash, ActionHash and Permit are different objects. A PlanHash cannot authorize execution.
 - Runtime owns replan admission, attempt count, deadline and lifecycle. Decision only creates a child DecisionRecord with `parent_decision_id` after a Runtime-authorized retryable failure. UNKNOWN and Guard-denied operations are not ordinary failures and cannot trigger replan.
-- Tenant identity is derived from authenticated OIDC/mTLS principal context, never from a request-body field. The authority adapter verifies tenant/agent/session/run ownership and snapshot/evidence provenance.
-- Idempotency is scoped by tenant and client key. The fingerprint includes the complete normalized request and authenticated principal identity. Identical replay returns the original immutable record; any changed input conflicts. A new decision requires a new key.
+- Tenant and active Agent identity are derived from authenticated OIDC/mTLS principal context, never from a request-body field. Decision reads are scoped by `(tenant_id, agent_id, decision_id)`. The authority adapter verifies tenant/agent/session/run ownership and snapshot/evidence provenance.
+- Idempotency is scoped by tenant and client key. The fingerprint includes the complete normalized request and authenticated principal identity. Identical replay returns the original immutable record; any changed input or principal conflicts. A new decision requires a new key.
 - Decision cannot issue AuthorizationPermit, approve a request, execute a tool, own workflow state, or schedule compute.
 
-## P0 implementation limits
+## P0 implementation status
 
-The current implementation has a deterministic read-only SRE planner, strict JSON decoding, tenant-scoped in-memory idempotency, immutable-copy tests, and interfaces for trusted principal resolution and authoritative snapshot verification. The development command intentionally has no principal resolver or authority adapter and fails closed. The in-memory store is not durable and is not production-ready.
+Implemented in this branch: versioned DecisionRequest/PlanCandidate structures matching the checked-in JSON Schemas; strict JSON parsing; a deterministic read-only SRE planner; fail-closed `AuthorityVerifier` interface; tenant/subject-derived idempotency; PostgreSQL unique constraints, append-only DecisionRecord storage, transactional outbox, tenant-scoped reads, outbox leases/ack/retry and dispatcher semantics. The default command intentionally wires neither a principal resolver nor an ACP verifier, so requests fail closed.
 
-Before production, implement PostgreSQL uniqueness and immutable record storage, transactional outbox, restart/replay and race tests, OIDC/mTLS principal resolution, ACP capability/snapshot verification, signed SLO evidence verification, and Runtime–EngageGuard contract conformance.
+Not yet production-complete: real OIDC/mTLS principal resolution; ACP Run/Session/capability snapshot verification; cryptographic SLO evidence verification; concrete broker adapter and worker deployment; real PostgreSQL CI execution and restore drill; Runtime/EngageGuard cross-service E2E.
 
 ## Replan contract
 

@@ -1,4 +1,4 @@
-// Package api exposes a development-only loopback HTTP surface.
+// Package api exposes the versioned Decision HTTP contract.
 package api
 
 import (
@@ -7,94 +7,137 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 
+	"github.com/avaargsh/agent-decision/internal/auth"
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
 
 const maxBodyBytes = 1 << 20
 
-func NewHandler(svc *decision.Service) http.Handler {
+func NewHandler(service *decision.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /v1/decisions", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok {
+			problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated tenant principal is required")
+			return
+		}
+		mediaType, _, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if mediaErr != nil || !strings.EqualFold(mediaType, "application/json") {
+			problem(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		b, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			problem(w, 400, "INVALID_JSON", "invalid or oversized JSON body")
+			problem(w, http.StatusBadRequest, "INVALID_JSON", "invalid or oversized JSON body")
 			return
 		}
-		if err := validateJSONObjects(b); err != nil {
-			problem(w, 400, "INVALID_JSON", err.Error())
+		if err := validateJSONObjects(body); err != nil {
+			problem(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
-		dec := json.NewDecoder(bytes.NewReader(b))
-		dec.DisallowUnknownFields()
-		var req decision.Request
-		if err := dec.Decode(&req); err != nil {
-			problem(w, 400, "INVALID_JSON", "invalid or unknown request field")
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		var request decision.Request
+		if err := decoder.Decode(&request); err != nil {
+			problem(w, http.StatusBadRequest, "INVALID_JSON", "invalid or unknown request field")
 			return
 		}
-		rec, created, err := svc.Decide(r.Context(), req)
-		if errors.Is(err, decision.ErrConflict) {
-			problem(w, 409, "IDEMPOTENCY_CONFLICT", "idempotency key already belongs to another request")
+		record, created, err := service.Decide(r.Context(), principal, request)
+		switch {
+		case errors.Is(err, decision.ErrConflict):
+			problem(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "idempotency key already belongs to another request")
 			return
-		}
-		if err != nil {
-			problem(w, 400, "INVALID_REQUEST", err.Error())
+		case errors.Is(err, decision.ErrNotAuthorized):
+			problem(w, http.StatusForbidden, "NOT_AUTHORIZED", "principal is not authorized for this decision request")
+			return
+		case errors.Is(err, decision.ErrAuthorityUnavailable):
+			problem(w, http.StatusServiceUnavailable, "AUTHORITY_UNAVAILABLE", "authoritative identity and evidence verification is not configured")
+			return
+		case errors.Is(err, decision.ErrAuthorityRejected):
+			problem(w, http.StatusUnprocessableEntity, "AUTHORITY_REJECTED", "authoritative identity or evidence verification failed")
+			return
+		case errors.Is(err, decision.ErrInvalidRequest):
+			problem(w, http.StatusBadRequest, "INVALID_REQUEST", "decision request does not satisfy the v1 contract")
+			return
+		case err != nil:
+			problem(w, http.StatusInternalServerError, "INTERNAL_ERROR", "decision service could not persist the request")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if created {
 			w.WriteHeader(http.StatusCreated)
 		}
-		_ = json.NewEncoder(w).Encode(rec)
+		_ = json.NewEncoder(w).Encode(record)
+	})
+	mux.HandleFunc("GET /v1/agents/{agentID}/decisions/{decisionID}", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok {
+			problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated tenant principal is required")
+			return
+		}
+		record, err := service.Get(r.Context(), principal, r.PathValue("agentID"), r.PathValue("decisionID"))
+		if errors.Is(err, decision.ErrNotFound) {
+			problem(w, http.StatusNotFound, "NOT_FOUND", "decision record not found")
+			return
+		}
+		if err != nil {
+			problem(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not load decision record")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(record)
 	})
 	return mux
 }
 
-// validateJSONObjects rejects duplicate keys at every depth, not just top-level.
-func validateJSONObjects(b []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(b))
+// validateJSONObjects rejects duplicate keys at every nesting depth.
+func validateJSONObjects(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	var walk func() error
 	walk = func() error {
-		tok, err := dec.Token()
+		token, err := decoder.Token()
 		if err != nil {
 			return err
 		}
-		d, ok := tok.(json.Delim)
+		delimiter, ok := token.(json.Delim)
 		if !ok {
 			return nil
 		}
-		switch d {
+		switch delimiter {
 		case '{':
 			seen := make(map[string]struct{})
-			for dec.More() {
-				k, err := dec.Token()
+			for decoder.More() {
+				keyToken, err := decoder.Token()
 				if err != nil {
 					return err
 				}
-				name, ok := k.(string)
+				key, ok := keyToken.(string)
 				if !ok {
 					return errors.New("invalid object key")
 				}
-				if _, ok := seen[name]; ok {
-					return fmt.Errorf("duplicate JSON key: %q", name)
+				if _, exists := seen[key]; exists {
+					return fmt.Errorf("duplicate JSON key: %q", key)
 				}
-				seen[name] = struct{}{}
+				seen[key] = struct{}{}
 				if err := walk(); err != nil {
 					return err
 				}
 			}
-			_, err = dec.Token()
+			_, err = decoder.Token()
 			return err
 		case '[':
-			for dec.More() {
+			for decoder.More() {
 				if err := walk(); err != nil {
 					return err
 				}
 			}
-			_, err = dec.Token()
+			_, err := decoder.Token()
 			return err
 		default:
 			return errors.New("unexpected JSON delimiter")
@@ -103,11 +146,12 @@ func validateJSONObjects(b []byte) error {
 	if err := walk(); err != nil {
 		return err
 	}
-	if _, err := dec.Token(); err != io.EOF {
+	if _, err := decoder.Token(); err != io.EOF {
 		return errors.New("unexpected trailing JSON content")
 	}
 	return nil
 }
+
 func problem(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
