@@ -117,6 +117,57 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 	}
 }
 
+func TestPostgresServiceReplaysCompletedInvocationAfterVerifierUnavailable(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := os.ReadFile("../../migrations/0001_create_decision_records.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewPostgresStore(db)
+	principal := testPrincipal()
+	request := validRequest()
+	firstService := NewService(store, allowAuthority{})
+	created, wasCreated, err := firstService.Decide(ctx, principal, request)
+	if err != nil || !wasCreated {
+		t.Fatalf("initial decision: created=%t err=%v", wasCreated, err)
+	}
+
+	// A fresh service instance models a process restart. A completed invocation
+	// must replay its immutable result even when the external verifier is down.
+	restartedService := NewService(NewPostgresStore(db), nil)
+	replayed, wasCreated, err := restartedService.Decide(ctx, principal, request)
+	if err != nil || wasCreated {
+		t.Fatalf("restart replay: created=%t err=%v", wasCreated, err)
+	}
+	if replayed.DecisionID != created.DecisionID ||
+		replayed.RequestSHA256 != created.RequestSHA256 ||
+		replayed.Plan.PlanHash != created.Plan.PlanHash {
+		t.Fatalf("restart replay changed immutable result: first=%+v replay=%+v", created, replayed)
+	}
+
+	changed := request
+	changed.Constraints.MaxTokens++
+	if _, _, err := restartedService.Decide(ctx, principal, changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed request under existing invocation must conflict before verifier lookup, got %v", err)
+	}
+}
+
 func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
