@@ -14,6 +14,25 @@ CREATE TABLE IF NOT EXISTS decision_records (
     CHECK (jsonb_typeof(record) = 'object')
 );
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'decision_records'::regclass
+          AND conname = 'decision_records_json_identity_ck'
+    ) THEN
+        ALTER TABLE decision_records
+        ADD CONSTRAINT decision_records_json_identity_ck CHECK (
+            record->>'tenant_id' IS NOT DISTINCT FROM tenant_id
+            AND record->>'invocation_id' IS NOT DISTINCT FROM invocation_id
+            AND record->>'decision_id' IS NOT DISTINCT FROM decision_id
+            AND record->>'request_sha256' IS NOT DISTINCT FROM request_sha256::text
+        );
+    END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION reject_decision_record_mutation() RETURNS trigger
 LANGUAGE plpgsql AS '
 BEGIN
