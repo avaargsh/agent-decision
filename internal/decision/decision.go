@@ -1,5 +1,5 @@
-// Package decision implements a side-effect-free SRE decision planner.
-// It never issues authorization permits or executes proposed steps.
+// Package decision implements a deterministic, side-effect-free SRE planner.
+// It never authorizes, issues permits, executes tools, or owns Run lifecycle.
 package decision
 
 import (
@@ -10,159 +10,443 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
 
-const PolicyVersion = "sre-readonly-v1"
 const (
-	StatusProposed  = "PROPOSED"
+	PolicyVersion = "sre-readonly-v1"
+	SchemaVersion = "decision.v1"
+	RecordSchemaVersion = 1
+	StatusProposed = "PROPOSED"
 	StatusAbstained = "ABSTAINED"
 )
 
-var ErrConflict = errors.New("idempotency key reused with different request")
-var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
-var digestRe = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var (
+	ErrConflict = errors.New("idempotency key reused with different request")
+	ErrNotFound = errors.New("decision record not found")
+	ErrUnauthenticated = errors.New("authenticated principal required")
+	ErrUnauthorized = errors.New("principal is not authorized for this decision request")
+	ErrAuthorityUnavailable = errors.New("authoritative snapshot verifier unavailable")
+	ErrAuthorityRejected = errors.New("authoritative snapshot verification rejected")
+	ErrInvalidRequest = errors.New("invalid decision request")
+)
 
+var (
+	nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+	digestRe = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	semverRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	decisionIDRe = regexp.MustCompile(`^dec_[a-f0-9]{64}$`)
+)
+
+// Principal is supplied by a trusted OIDC/mTLS gateway, never decoded from the
+// DecisionRequest body. CallerID must be the authenticated Runtime service.
+type Principal struct {
+	TenantID string `json:"tenant_id"`
+	SubjectID string `json:"subject_id"`
+	AgentID string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	CallerID string `json:"caller_id"`
+}
+
+func (p Principal) Validate() error {
+	if !nameRe.MatchString(p.TenantID) || !validOpaque(p.SubjectID) ||
+		!nameRe.MatchString(p.AgentID) || !nameRe.MatchString(p.SessionID) ||
+		p.CallerID != "agent-runtime" {
+		return ErrUnauthenticated
+	}
+	return nil
+}
+
+type Identity struct {
+	AgentID string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	RunID string `json:"run_id"`
+}
+
+type Input struct {
+	Objective string `json:"objective"`
+	Service string `json:"service"`
+	Signal string `json:"signal"`
+}
+
+type Constraints struct {
+	DeadlineMS int `json:"deadline_ms"`
+	MaxTokens int `json:"max_tokens"`
+	MaxCostMicros int64 `json:"max_cost_micros"`
+	MaxCandidates int `json:"max_candidates"`
+}
+
+type VersionSet struct {
+	CapabilityCatalogVersion string `json:"capability_catalog_version"`
+	StrategyVersion string `json:"strategy_version"`
+	PromptVersion string `json:"prompt_version"`
+	ModelProfile string `json:"model_profile"`
+}
+
+// SnapshotRef contains claims until AuthorityVerifier validates signature,
+// owner, expiry, revocation and content digest against the authoritative source.
 type SnapshotRef struct {
-	ID     string `json:"id"`
+	ID string `json:"id"`
+	Version string `json:"version"`
 	SHA256 string `json:"sha256"`
-}
-type EvidenceRef struct {
-	Ref    string `json:"ref"`
-	SHA256 string `json:"sha256"`
-}
-type Request struct {
-	TenantID       string        `json:"tenant_id"`
-	IdempotencyKey string        `json:"idempotency_key"`
-	RunID          string        `json:"run_id"`
-	Service        string        `json:"service"`
-	Signal         string        `json:"signal"`
-	Snapshot       SnapshotRef   `json:"context_snapshot"`
-	Capability     SnapshotRef   `json:"capability_snapshot"`
-	Evidence       []EvidenceRef `json:"evidence_refs"`
-}
-type PlanStep struct {
-	Kind       string `json:"kind"`
-	Capability string `json:"capability"`
-	TargetRef  string `json:"target_ref"`
-	ReadOnly   bool   `json:"read_only"`
-}
-type Record struct {
-	DecisionID         string        `json:"decision_id"`
-	TenantID           string        `json:"tenant_id"`
-	IdempotencyKey     string        `json:"idempotency_key"`
-	RunID              string        `json:"run_id"`
-	RequestSHA256      string        `json:"request_sha256"`
-	PolicyVersion      string        `json:"policy_version"`
-	Status             string        `json:"status"`
-	Reason             string        `json:"reason,omitempty"`
-	ContextSnapshot    SnapshotRef   `json:"context_snapshot"`
-	CapabilitySnapshot SnapshotRef   `json:"capability_snapshot"`
-	Evidence           []EvidenceRef `json:"evidence_refs"`
-	Plan               []PlanStep    `json:"plan"`
-	CreatedAt          time.Time     `json:"created_at"`
+	Source string `json:"source"`
+	AttestationRef string `json:"attestation_ref"`
+	TrustLevel string `json:"trust_level"`
+	IssuedAt time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func validRef(ref, sha string) bool {
-	return len(ref) > 0 && len(ref) <= 256 && digestRe.MatchString(sha)
+type EvidenceRef struct {
+	Ref string `json:"ref"`
+	Source string `json:"source"`
+	SourceVersion string `json:"source_version"`
+	SHA256 string `json:"sha256"`
+	AttestationRef string `json:"attestation_ref"`
+	TrustLevel string `json:"trust_level"`
+	ObservedAt time.Time `json:"observed_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
+
+// CapabilityRef is published and versioned by Agent Control Plane.
+// Endpoint, credential and executor configuration are intentionally absent.
+type CapabilityRef struct {
+	ID string `json:"id"`
+	Version string `json:"version"`
+	ContractSHA256 string `json:"contract_sha256"`
+	InputSchemaRef string `json:"input_schema_ref"`
+	OutputSchemaRef string `json:"output_schema_ref"`
+	EffectClass string `json:"effect_class"`
+	Idempotency string `json:"idempotency"`
+	TenantScoped bool `json:"tenant_scoped"`
+}
+
+type ReplanContext struct {
+	ParentDecisionID string `json:"parent_decision_id"`
+	Sequence int `json:"sequence"`
+	MaxReplans int `json:"max_replans"`
+	Trigger string `json:"trigger"`
+	PriorDisposition string `json:"prior_disposition"`
+}
+
+type Request struct {
+	SchemaVersion string `json:"schema_version"`
+	Identity Identity `json:"identity"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Input Input `json:"input"`
+	Constraints Constraints `json:"constraints"`
+	Versions VersionSet `json:"versions"`
+	ContextSnapshot SnapshotRef `json:"context_snapshot"`
+	CapabilitySnapshot SnapshotRef `json:"capability_snapshot"`
+	Capabilities []CapabilityRef `json:"capabilities"`
+	Evidence []EvidenceRef `json:"evidence_refs"`
+	Replan *ReplanContext `json:"replan,omitempty"`
+}
+
+type PlanStep struct {
+	StepID string `json:"step_id"`
+	Kind string `json:"kind"`
+	Capability CapabilityRef `json:"capability"`
+	TargetRef string `json:"target_ref"`
+	InputSchemaRef string `json:"input_schema_ref"`
+	OutputSchemaRef string `json:"output_schema_ref"`
+	ReadOnly bool `json:"read_only"`
+}
+
+type PlanCandidate struct {
+	PlanID string `json:"plan_id"`
+	SchemaVersion string `json:"schema_version"`
+	Steps []PlanStep `json:"steps"`
+	PlanHash string `json:"plan_hash"`
+}
+
+type Record struct {
+	SchemaVersion int `json:"schema_version"`
+	DecisionID string `json:"decision_id"`
+	TenantID string `json:"tenant_id"`
+	SubjectID string `json:"subject_id"`
+	AgentID string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	RunID string `json:"run_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	RequestSHA256 string `json:"request_sha256"`
+	PolicyVersion string `json:"policy_version"`
+	StrategyVersion string `json:"strategy_version"`
+	PromptVersion string `json:"prompt_version"`
+	ModelProfile string `json:"model_profile"`
+	CapabilityCatalogVersion string `json:"capability_catalog_version"`
+	Status string `json:"status"`
+	ReasonCodes []string `json:"reason_codes"`
+	ParentDecisionID string `json:"parent_decision_id,omitempty"`
+	ReplanSequence int `json:"replan_sequence"`
+	MaxReplans int `json:"max_replans"`
+	ContextSnapshot SnapshotRef `json:"context_snapshot"`
+	CapabilitySnapshot SnapshotRef `json:"capability_snapshot"`
+	Evidence []EvidenceRef `json:"evidence_refs"`
+	Plan PlanCandidate `json:"plan"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func validOpaque(value string) bool {
+	return len(value) > 0 && len(value) <= 256 && strings.TrimSpace(value) == value &&
+		!strings.ContainsAny(value, "\x00\r\n\t ")
+}
+
+func validSnapshot(snapshot SnapshotRef) bool {
+	return validOpaque(snapshot.ID) && validOpaque(snapshot.Version) &&
+		digestRe.MatchString(snapshot.SHA256) && validOpaque(snapshot.Source) &&
+		validOpaque(snapshot.AttestationRef) && snapshot.TrustLevel == "attested" &&
+		!snapshot.IssuedAt.IsZero() && snapshot.ExpiresAt.After(snapshot.IssuedAt)
+}
+
+func validEvidence(evidence EvidenceRef) bool {
+	return validOpaque(evidence.Ref) && validOpaque(evidence.Source) &&
+		validOpaque(evidence.SourceVersion) && digestRe.MatchString(evidence.SHA256) &&
+		validOpaque(evidence.AttestationRef) && evidence.TrustLevel == "attested" &&
+		!evidence.ObservedAt.IsZero() && evidence.ExpiresAt.After(evidence.ObservedAt)
+}
+
+func (c CapabilityRef) Validate() error {
+	if !nameRe.MatchString(c.ID) || !semverRe.MatchString(c.Version) ||
+		!digestRe.MatchString(c.ContractSHA256) || !validOpaque(c.InputSchemaRef) ||
+		!validOpaque(c.OutputSchemaRef) || c.EffectClass != "read_only" ||
+		c.Idempotency != "safe" || !c.TenantScoped {
+		return fmt.Errorf("invalid or non-read-only capability binding: %s", c.ID)
+	}
+	return nil
+}
+
 func (r Request) Validate() error {
-	if !nameRe.MatchString(r.TenantID) || !nameRe.MatchString(r.IdempotencyKey) || !nameRe.MatchString(r.RunID) || !nameRe.MatchString(r.Service) {
-		return errors.New("tenant_id, idempotency_key, run_id, service must be valid bounded identifiers")
+	if r.SchemaVersion != SchemaVersion || !nameRe.MatchString(r.Identity.AgentID) ||
+		!nameRe.MatchString(r.Identity.SessionID) || !nameRe.MatchString(r.Identity.RunID) ||
+		!nameRe.MatchString(r.IdempotencyKey) {
+		return fmt.Errorf("%w: schema, identity or idempotency key", ErrInvalidRequest)
 	}
-	if r.Signal != "latency" && r.Signal != "errors" && r.Signal != "saturation" {
-		return errors.New("signal must be latency, errors, or saturation")
+	if r.Input.Objective != "sre_incident_triage" || !nameRe.MatchString(r.Input.Service) ||
+		(r.Input.Signal != "latency" && r.Input.Signal != "errors" && r.Input.Signal != "saturation") {
+		return fmt.Errorf("%w: unsupported SRE objective or input", ErrInvalidRequest)
 	}
-	if !validRef(r.Snapshot.ID, r.Snapshot.SHA256) {
-		return errors.New("invalid immutable context_snapshot reference")
+	if r.Constraints.DeadlineMS < 100 || r.Constraints.DeadlineMS > 120000 ||
+		r.Constraints.MaxTokens < 1 || r.Constraints.MaxTokens > 8192 ||
+		r.Constraints.MaxCostMicros < 0 || r.Constraints.MaxCostMicros > 10000000 ||
+		r.Constraints.MaxCandidates < 1 || r.Constraints.MaxCandidates > 3 {
+		return fmt.Errorf("%w: invalid resource constraints", ErrInvalidRequest)
 	}
-	if !validRef(r.Capability.ID, r.Capability.SHA256) {
-		return errors.New("invalid ACP capability_snapshot reference")
+	if r.Versions.CapabilityCatalogVersion == "" || r.Versions.StrategyVersion != PolicyVersion ||
+		r.Versions.PromptVersion != "none" || r.Versions.ModelProfile != "rule-only" ||
+		r.CapabilitySnapshot.Version != r.Versions.CapabilityCatalogVersion {
+		return fmt.Errorf("%w: unsupported or mismatched version set", ErrInvalidRequest)
 	}
-	if len(r.Evidence) > 32 {
-		return errors.New("too many evidence references")
+	if !validSnapshot(r.ContextSnapshot) || !validSnapshot(r.CapabilitySnapshot) {
+		return fmt.Errorf("%w: invalid snapshot reference or attestation metadata", ErrInvalidRequest)
 	}
-	for _, e := range r.Evidence {
-		if !validRef(e.Ref, e.SHA256) {
-			return errors.New("invalid evidence reference")
+	if len(r.Capabilities) > 32 || len(r.Evidence) > 32 {
+		return fmt.Errorf("%w: too many capability or evidence references", ErrInvalidRequest)
+	}
+	seen := make(map[string]struct{}, len(r.Capabilities))
+	for _, capability := range r.Capabilities {
+		if err := capability.Validate(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
+		if _, ok := seen[capability.ID]; ok {
+			return fmt.Errorf("%w: duplicate capability %s", ErrInvalidRequest, capability.ID)
+		}
+		seen[capability.ID] = struct{}{}
+	}
+	for _, evidence := range r.Evidence {
+		if !validEvidence(evidence) {
+			return fmt.Errorf("%w: invalid evidence reference", ErrInvalidRequest)
+		}
+	}
+	if r.Replan != nil {
+		p := r.Replan
+		if !decisionIDRe.MatchString(p.ParentDecisionID) || p.Sequence < 1 ||
+			p.MaxReplans < 1 || p.MaxReplans > 3 || p.Sequence > p.MaxReplans ||
+			p.Trigger != "STEP_FAILED" || p.PriorDisposition != "RETRYABLE_FAILURE" {
+			return fmt.Errorf("%w: unsafe or exhausted replan context", ErrInvalidRequest)
 		}
 	}
 	return nil
 }
-func digest(x any) string {
-	b, _ := json.Marshal(x)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
-func clone(r Record) Record {
-	r.Plan = append([]PlanStep(nil), r.Plan...)
-	r.Evidence = append([]EvidenceRef(nil), r.Evidence...)
-	return r
+
+type AuthorityVerifier interface {
+	VerifyDecisionInputs(context.Context, Principal, Request) error
 }
 
 type Store interface {
 	SaveOrGet(context.Context, Record) (Record, bool, error)
-}
-type MemoryStore struct {
-	mu    sync.Mutex
-	byKey map[string]Record
+	GetByID(context.Context, string, string) (Record, error)
 }
 
-func NewMemoryStore() *MemoryStore { return &MemoryStore{byKey: make(map[string]Record)} }
-func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, error) {
+type memoryKey struct {
+	tenantID string
+	key string
+}
+
+type MemoryStore struct {
+	mu sync.RWMutex
+	byKey map[memoryKey]Record
+	byID map[memoryKey]Record
+}
+
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{byKey: make(map[memoryKey]Record), byID: make(map[memoryKey]Record)}
+}
+
+func (s *MemoryStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
-	key := memoryKey{tenantID: r.TenantID, key: r.IdempotencyKey}
+	key := memoryKey{tenantID: record.TenantID, key: record.IdempotencyKey}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.byKey[key]; ok {
-		if old.RequestSHA256 != r.RequestSHA256 {
+		if old.RequestSHA256 != record.RequestSHA256 {
 			return Record{}, false, ErrConflict
 		}
 		return clone(old), false, nil
 	}
-	s.byKey[key] = clone(r)
-	s.byID[memoryKey{tenantID: r.TenantID, key: r.DecisionID}] = clone(r)
-	return clone(r), true, nil
+	s.byKey[key] = clone(record)
+	s.byID[memoryKey{tenantID: record.TenantID, key: record.DecisionID}] = clone(record)
+	return clone(record), true, nil
 }
 
 func (s *MemoryStore) GetByID(ctx context.Context, tenantID, decisionID string) (Record, error) {
-	if err := ctx.Err(); err != nil { return Record{}, err }
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	record, ok := s.byID[memoryKey{tenantID: tenantID, key: decisionID}]
-	if !ok { return Record{}, ErrNotFound }
+	if !ok {
+		return Record{}, ErrNotFound
+	}
 	return clone(record), nil
 }
 
 type Service struct {
 	store Store
-	now   func() time.Time
+	authority AuthorityVerifier
+	now func() time.Time
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store, now: func() time.Time { return time.Now().UTC() }}
+func NewService(store Store, authority AuthorityVerifier) *Service {
+	return &Service{store: store, authority: authority, now: func() time.Time { return time.Now().UTC() }}
 }
-func (s *Service) Decide(ctx context.Context, req Request) (Record, bool, error) {
-	if err := req.Validate(); err != nil {
-		return Record{}, false, fmt.Errorf("invalid decision request: %w", err)
+
+func (s *Service) Decide(ctx context.Context, principal Principal, req Request) (Record, bool, error) {
+	if err := principal.Validate(); err != nil {
+		return Record{}, false, err
 	}
-	// A caller-provided immutable reference is NOT proof its contents were verified.
-	record := Record{DecisionID: "dec_" + digest(struct{ TenantID, Key string }{req.TenantID, req.IdempotencyKey}), TenantID: req.TenantID, IdempotencyKey: req.IdempotencyKey,
-		RunID: req.RunID, RequestSHA256: digest(req), PolicyVersion: PolicyVersion, ContextSnapshot: req.Snapshot, CapabilitySnapshot: req.Capability, Evidence: append([]EvidenceRef(nil), req.Evidence...), CreatedAt: s.now()}
+	if err := req.Validate(); err != nil {
+		return Record{}, false, err
+	}
+	if req.Identity.AgentID != principal.AgentID || req.Identity.SessionID != principal.SessionID {
+		return Record{}, false, ErrUnauthorized
+	}
+	if s.authority == nil {
+		return Record{}, false, ErrAuthorityUnavailable
+	}
+	if err := s.authority.VerifyDecisionInputs(ctx, principal, req); err != nil {
+		if errors.Is(err, ErrAuthorityUnavailable) {
+			return Record{}, false, err
+		}
+		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
+	}
+	if s.store == nil {
+		return Record{}, false, errors.New("decision store unavailable")
+	}
+
+	fingerprint := digest(struct {
+		Principal Principal
+		Request Request
+	}{principal, req})
+	decisionID := "dec_" + digest(struct{ TenantID, Key string }{principal.TenantID, req.IdempotencyKey})
+	record := Record{
+		SchemaVersion: RecordSchemaVersion,
+		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
+		AgentID: principal.AgentID, SessionID: principal.SessionID, RunID: req.Identity.RunID,
+		IdempotencyKey: req.IdempotencyKey, RequestSHA256: fingerprint,
+		PolicyVersion: req.Versions.StrategyVersion, StrategyVersion: req.Versions.StrategyVersion,
+		PromptVersion: req.Versions.PromptVersion, ModelProfile: req.Versions.ModelProfile,
+		CapabilityCatalogVersion: req.Versions.CapabilityCatalogVersion,
+		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
+		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef(nil), req.Evidence...),
+		Plan: PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		CreatedAt: s.now(),
+	}
+	if req.Replan != nil {
+		record.ParentDecisionID = req.Replan.ParentDecisionID
+		record.ReplanSequence = req.Replan.Sequence
+		record.MaxReplans = req.Replan.MaxReplans
+	}
 	if len(req.Evidence) == 0 {
 		record.Status = StatusAbstained
-		record.Reason = "INSUFFICIENT_EVIDENCE"
-		record.Plan = []PlanStep{}
+		record.ReasonCodes = append(record.ReasonCodes, "INSUFFICIENT_EVIDENCE")
 	} else {
-		record.Status = StatusProposed
-		record.Plan = []PlanStep{
-			{Kind: "OBSERVE_METRICS", Capability: "sre.metrics.read", TargetRef: req.Service, ReadOnly: true},
-			{Kind: "INSPECT_LOGS", Capability: "sre.logs.read", TargetRef: req.Service, ReadOnly: true},
-			{Kind: "CORRELATE_CHANGE", Capability: "sre.changes.read", TargetRef: req.Service, ReadOnly: true},
+		required := []struct{ id, kind string }{
+			{"sre.metrics.read", "OBSERVE_METRICS"},
+			{"sre.logs.read", "INSPECT_LOGS"},
+			{"sre.changes.read", "CORRELATE_CHANGE"},
+		}
+		for _, item := range required {
+			capability, ok := findCapability(req.Capabilities, item.id)
+			if !ok {
+				record.Status = StatusAbstained
+				record.ReasonCodes = []string{"MISSING_REQUIRED_CAPABILITY"}
+				record.Plan.Steps = []PlanStep{}
+				break
+			}
+			record.Plan.Steps = append(record.Plan.Steps, PlanStep{
+				StepID: "step_" + digest(struct{ DecisionID, CapabilityID string }{decisionID, item.id})[:24],
+				Kind: item.kind, Capability: capability, TargetRef: req.Input.Service,
+				InputSchemaRef: capability.InputSchemaRef, OutputSchemaRef: capability.OutputSchemaRef,
+				ReadOnly: true,
+			})
 		}
 	}
+	record.Plan.PlanHash = planHash(record.Plan)
 	return s.store.SaveOrGet(ctx, record)
+}
+
+func (s *Service) Get(ctx context.Context, principal Principal, decisionID string) (Record, error) {
+	if err := principal.Validate(); err != nil || !decisionIDRe.MatchString(decisionID) || s.store == nil {
+		return Record{}, ErrNotFound
+	}
+	record, err := s.store.GetByID(ctx, principal.TenantID, decisionID)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.AgentID != principal.AgentID || record.SessionID != principal.SessionID {
+		return Record{}, ErrNotFound
+	}
+	return record, nil
+}
+
+func findCapability(capabilities []CapabilityRef, id string) (CapabilityRef, bool) {
+	for _, capability := range capabilities {
+		if capability.ID == id {
+			return capability, true
+		}
+	}
+	return CapabilityRef{}, false
+}
+
+func planHash(plan PlanCandidate) string {
+	plan.PlanHash = ""
+	return digest(plan)
+}
+
+func digest(value any) string {
+	encoded, _ := json.Marshal(value)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func clone(record Record) Record {
+	record.ReasonCodes = append([]string(nil), record.ReasonCodes...)
+	record.Evidence = append([]EvidenceRef(nil), record.Evidence...)
+	record.Plan.Steps = append([]PlanStep(nil), record.Plan.Steps...)
+	return record
 }
