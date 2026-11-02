@@ -141,11 +141,65 @@ func decodeSLOStrict(raw []byte, output any) error {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("invalid SLO JSON trailing token")
 	}
+	// encoding/json matches struct fields case-insensitively even with
+	// DisallowUnknownFields. Reject JSON aliases such as "metric"/"Metric"
+	// or "value"/"Value" instead of allowing last-write-wins shadowing.
+	if err := verifySLOExactFieldNames(raw, output); err != nil {
+		return err
+	}
 	typed := json.NewDecoder(bytes.NewReader(raw))
 	typed.DisallowUnknownFields()
 	if err := typed.Decode(output); err != nil { return fmt.Errorf("invalid SLO schema: %w", err) }
 	if _, err := typed.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("invalid SLO JSON trailing token")
+	}
+	return nil
+}
+
+
+func verifySLOExactFieldNames(raw []byte, output any) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return fmt.Errorf("invalid SLO JSON structure: %w", err)
+	}
+	policyFields := map[string]struct{}{
+		"schema_version": {}, "metric": {}, "aggregation": {},
+		"source_id": {}, "query_sha256": {}, "max_error_ratio": {},
+		"maximum_sample_gap_seconds": {}, "minimum_samples_per_phase": {},
+	}
+	bundleFields := map[string]struct{}{
+		"schema_version": {}, "phase": {}, "source_id": {},
+		"query_sha256": {}, "window_start": {}, "window_end": {},
+		"samples": {},
+	}
+	var allowed map[string]struct{}
+	switch output.(type) {
+	case *replayPolicy:
+		allowed = policyFields
+	case *replayBundle:
+		allowed = bundleFields
+	default:
+		return errors.New("unsupported SLO schema type")
+	}
+	for key := range object {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unexpected or case-variant SLO JSON field %q", key)
+		}
+	}
+	if _, isBundle := output.(*replayBundle); isBundle {
+		if rawRows, ok := object["samples"]; ok {
+			var rows []map[string]json.RawMessage
+			if err := json.Unmarshal(rawRows, &rows); err != nil {
+				return fmt.Errorf("invalid SLO sample rows: %w", err)
+			}
+			for _, row := range rows {
+				for key := range row {
+					if key != "at" && key != "value" {
+						return fmt.Errorf("unexpected or case-variant SLO sample field %q", key)
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
