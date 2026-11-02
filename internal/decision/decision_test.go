@@ -169,6 +169,8 @@ func TestEvidenceEnvelopeRejectsScopeWindowAndRevocationMismatch(t *testing.T) {
 		{"wrong run", func(e *EvidenceRef) { e.RunID = "other-run" }},
 		{"wrong service", func(e *EvidenceRef) { e.Service = "other-service" }},
 		{"inverted observation window", func(e *EvidenceRef) { e.ObservedFrom = e.ObservedTo.Add(time.Minute) }},
+		{"observed timestamp before window", func(e *EvidenceRef) { e.ObservedAt = e.ObservedFrom.Add(-time.Second) }},
+		{"observed timestamp after window", func(e *EvidenceRef) { e.ObservedAt = e.ObservedTo.Add(time.Second) }},
 		{"collection before observation end", func(e *EvidenceRef) { e.CollectedAt = e.ObservedTo.Add(-time.Second) }},
 		{"revoked evidence", func(e *EvidenceRef) { e.RevocationState = "revoked" }},
 		{"unknown evidence kind", func(e *EvidenceRef) { e.EvidenceType = "arbitrary" }},
