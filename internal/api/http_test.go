@@ -197,3 +197,18 @@ func TestHTTPDecisionLedgerRoutes(t *testing.T) {
 		t.Fatalf("unauthenticated read: got %d want 401", unauthenticated.Code)
 	}
 }
+
+func TestHTTPRejectsOutOfRangeLedgerPageSize(t *testing.T) {
+	h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+	for _, path := range []string{
+		"/v1/runs/run-17/decisions?limit=0",
+		"/v1/runs/run-17/decisions?limit=101",
+		"/v1/runs/run-17/decisions?limit=not-a-number",
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d want 400", path, w.Code)
+		}
+	}
+}
