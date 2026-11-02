@@ -146,6 +146,77 @@ func TestCoreRejectsUnsafeStrategyOutput(t *testing.T) {
 	}
 }
 
+type strategyFunc func(Request, string) StrategyResult
+
+func (f strategyFunc) Version() string { return PolicyVersion }
+func (f strategyFunc) Plan(req Request, decisionID string) StrategyResult {
+	return f(req, decisionID)
+}
+
+func TestCoreRejectsSemanticallyInvalidStrategyOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		plan strategyFunc
+	}{
+		{
+			name: "unknown step kind",
+			plan: func(req Request, id string) StrategyResult {
+				result := SREReadOnlyStrategy{}.Plan(req, id)
+				result.Steps[0].Kind = "SHELL_EXEC"
+				return result
+			},
+		},
+		{
+			name: "duplicate capability",
+			plan: func(req Request, id string) StrategyResult {
+				result := SREReadOnlyStrategy{}.Plan(req, id)
+				result.Steps[1].Capability = result.Steps[0].Capability
+				result.Steps[1].Kind = result.Steps[0].Kind
+				return result
+			},
+		},
+		{
+			name: "partial read-only plan",
+			plan: func(req Request, id string) StrategyResult {
+				result := SREReadOnlyStrategy{}.Plan(req, id)
+				result.Steps = result.Steps[:1]
+				return result
+			},
+		},
+		{
+			name: "mutated verified capability input",
+			plan: func(req Request, id string) StrategyResult {
+				req.Capabilities[0].ContractSHA256 = strings.Repeat("f", 64)
+				return SREReadOnlyStrategy{}.Plan(req, id)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewServiceWithStrategy(NewMemoryStore(), allowAuthority{}, tc.plan)
+			if _, _, err := svc.Decide(context.Background(), testPrincipal(), validRequest()); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("expected strategy output rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCoreNormalizesNilStrategyReasonCodesToEmptyArray(t *testing.T) {
+	plan := strategyFunc(func(req Request, id string) StrategyResult {
+		result := SREReadOnlyStrategy{}.Plan(req, id)
+		result.ReasonCodes = nil
+		return result
+	})
+	record, _, err := NewServiceWithStrategy(NewMemoryStore(), allowAuthority{}, plan).Decide(
+		context.Background(), testPrincipal(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ReasonCodes == nil {
+		t.Fatal("reason_codes must serialize as an array, not null")
+	}
+}
+
 
 func TestRequestRequiresExplicitEvidenceCollections(t *testing.T) {
 	req := validRequest()
@@ -187,20 +258,20 @@ func TestEvidenceEnvelopeRejectsScopeWindowAndRevocationMismatch(t *testing.T) {
 	}
 }
 
-func TestEvidenceEnvelopeBindsTenantInAuthorityVerifier(t *testing.T) {
-	// The request-level envelope tenant is only a claim. The authoritative
-	// verifier must bind it to the trusted principal tenant.
-	verifier := authorityFunc(func(_ context.Context, p Principal, req Request) error {
-		if req.Evidence[0].TenantID != p.TenantID {
-			return ErrAuthorityRejected
-		}
+func TestEvidenceEnvelopeBindsTenantToTrustedPrincipal(t *testing.T) {
+	verifierCalled := false
+	verifier := authorityFunc(func(context.Context, Principal, Request) error {
+		verifierCalled = true
 		return nil
 	})
 	req := validRequest()
 	req.Evidence[0].TenantID = "tenant-other"
 	_, _, err := NewService(NewMemoryStore(), verifier).Decide(context.Background(), testPrincipal(), req)
-	if !errors.Is(err, ErrAuthorityRejected) {
-		t.Fatalf("expected tenant binding rejection, got %v", err)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected trusted-principal tenant mismatch rejection, got %v", err)
+	}
+	if verifierCalled {
+		t.Fatal("tenant-mismatched evidence must be rejected before the external verifier is called")
 	}
 }
 
