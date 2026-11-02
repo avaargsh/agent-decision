@@ -14,6 +14,8 @@
 - [x] PostgreSQL role separation, backup/retention and restore runbook baseline documented (`docs/operations/postgres-runbook.md`).
 - [ ] Configure deployment-specific roles/secrets, retention approval, and produce a successful isolated restore-rehearsal artifact.
 - [x] OpenAPI 3.1 and JSON Schema compatibility artifacts published under `api/`; request/record schemas are checked against Go JSON contracts.
+- [x] Document cross-repository identity, capability, evidence, and EngageGuard ownership boundaries.
+- [ ] Resolve canonical Run ID wording with Agent Runtime and confirm the integration contract with upstream owners.
 
 ## v0.2 — Evidence-aware Investigation
 
