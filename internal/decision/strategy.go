@@ -60,3 +60,31 @@ func (SREReadOnlyStrategy) Plan(req Request, decisionID string) StrategyResult {
 	}
 	return result
 }
+
+func validateStrategyResult(result StrategyResult) error {
+	if result.Status != StatusProposed && result.Status != StatusAbstained {
+		return ErrInvalidRequest
+	}
+	if result.Status == StatusAbstained {
+		if len(result.Steps) != 0 || len(result.ReasonCodes) == 0 {
+			return ErrInvalidRequest
+		}
+		return nil
+	}
+	if len(result.Steps) == 0 || len(result.Steps) > 3 {
+		return ErrInvalidRequest
+	}
+	seen := make(map[string]struct{}, len(result.Steps))
+	for _, step := range result.Steps {
+		if !validOpaque(step.StepID) || !step.ReadOnly ||
+			step.Capability.EffectClass != "read_only" ||
+			step.Capability.Idempotency != "safe" || !step.Capability.TenantScoped {
+			return ErrInvalidRequest
+		}
+		if _, exists := seen[step.StepID]; exists {
+			return ErrInvalidRequest
+		}
+		seen[step.StepID] = struct{}{}
+	}
+	return nil
+}
