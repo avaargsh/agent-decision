@@ -3,6 +3,8 @@ package decision
 import (
 	"context"
 	"database/sql"
+	"strings"
+	"time"
 	"errors"
 	"os"
 	"sync"
@@ -47,7 +49,11 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 
 	store := NewPostgresStore(db)
 	record := Record{
-		DecisionID: "dec_integration_001",
+		DecisionID: "dec_"+strings.Repeat("a",64),
+		AgentID: "agent-1",
+		SessionID: "session-1",
+		RunID: "run-17",
+		CreatedAt: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC),
 		TenantID: "store-integration-test",
 		IdempotencyKey: "same-key",
 		RequestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -68,6 +74,18 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	changed.RequestSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	if _, _, err := store.SaveOrGet(ctx, changed); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected idempotency conflict, got %v", err)
+	}
+
+	loaded, err := store.GetByDecisionID(ctx, record.TenantID, record.AgentID, record.SessionID, record.DecisionID)
+	if err != nil || loaded.DecisionID != record.DecisionID {
+		t.Fatalf("get persisted decision: record=%+v err=%v", loaded, err)
+	}
+	ledger, err := store.ListByRun(ctx, record.TenantID, record.AgentID, record.SessionID, record.RunID, nil, 10)
+	if err != nil || len(ledger) != 1 || ledger[0].DecisionID != record.DecisionID {
+		t.Fatalf("list persisted run decisions: records=%+v err=%v", ledger, err)
+	}
+	if _, err := store.GetByDecisionID(ctx, record.TenantID, record.AgentID, "other-session", record.DecisionID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-session lookup must be hidden, got %v", err)
 	}
 
 	otherTenant := record
