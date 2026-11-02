@@ -138,3 +138,62 @@ func TestHTTPRequiresExplicitEvidenceCollections(t *testing.T) {
 		t.Fatalf("null evidence_refs: got %d body=%s", w.Code, w.Body.String())
 	}
 }
+
+
+func TestHTTPDecisionLedgerRoutes(t *testing.T) {
+	store := decision.NewMemoryStore()
+	service := decision.NewService(store, apiAuthority{})
+	h := NewHandler(service, resolverFor(apiPrincipal()))
+
+	created := send(h, validBody(), "application/json")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create decision: %d %s", created.Code, created.Body.String())
+	}
+	var expected decision.Record
+	if err := json.Unmarshal(created.Body.Bytes(), &expected); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string, handler http.Handler) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	recordResponse := get("/v1/decisions/"+expected.DecisionID, h)
+	if recordResponse.Code != http.StatusOK {
+		t.Fatalf("get decision: %d %s", recordResponse.Code, recordResponse.Body.String())
+	}
+	var actual decision.Record
+	if err := json.Unmarshal(recordResponse.Body.Bytes(), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual.DecisionID != expected.DecisionID {
+		t.Fatalf("got decision %s, want %s", actual.DecisionID, expected.DecisionID)
+	}
+
+	pageResponse := get("/v1/runs/run-17/decisions?limit=10", h)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("list decisions: %d %s", pageResponse.Code, pageResponse.Body.String())
+	}
+	var page decision.DecisionPage
+	if err := json.Unmarshal(pageResponse.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].DecisionID != expected.DecisionID {
+		t.Fatalf("unexpected decision page: %+v", page)
+	}
+
+	missing := get("/v1/decisions/dec_"+strings.Repeat("f", 64), h)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing decision: got %d want 404", missing.Code)
+	}
+	invalidCursor := get("/v1/runs/run-17/decisions?cursor=not-a-cursor", h)
+	if invalidCursor.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor: got %d want 400", invalidCursor.Code)
+	}
+	unauthenticated := get("/v1/decisions/"+expected.DecisionID, testHandler(nil, apiAuthority{}))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read: got %d want 401", unauthenticated.Code)
+	}
+}
