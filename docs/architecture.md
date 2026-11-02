@@ -103,7 +103,7 @@ The PostgreSQL integration suite applies the real migration and verifies first i
 
 ## 8. Upstream integration contract
 
-The cross-repository ownership map, identity binding rules, evidence requirements and open integration gates are recorded in `docs/architecture/integration-contract.md`. In summary: Control Plane owns canonical Agent/Session/Run identity and policy bindings; Runtime owns durable execution semantics; EngageGuard owns action authorization and trusted execution; Decision only returns proposals and abstentions. The Runtime README currently says it owns Run identity, which conflicts with the Control Plane architecture baseline and remains an upstream wording/ownership gate.
+The cross-repository ownership map, identity binding rules, evidence requirements and open integration gates are recorded in `docs/architecture/integration-contract.md`. In summary, the proposed (not yet ratified) v0.3 map assigns Agent/Session/RunIntent to Control Plane and Run/RunAttempt/RunIntent-to-Run mapping to Runtime. Decision consumes a Runtime-issued Run ID and verifies it through the Runtime authority adapter; it never creates or advances Runs. EngageGuard owns action authorization and trusted execution; Decision only returns proposals and abstentions. See the cross-repository integration contract for the open owner sign-off gate.
 
 ## 9. API compatibility artifacts
 
@@ -127,7 +127,7 @@ The following are deliberately outside the v0.1 implementation and require separ
 7. Scenario-scoped autonomy levels and integration with Control Plane authorization.
 8. Ledger export, retention and archival evidence for long-running audit requirements.
 
-These increments must preserve the boundary: Decision proposes and explains; Control Plane owns canonical identity and policy bindings; EngageGuard authorizes actions; Runtime owns durable execution semantics and executes.
+These increments must preserve the boundary: Decision proposes and explains; Control Plane owns Agent/Session/RunIntent identities and policy bindings; Runtime creates and owns Run identity and durable execution semantics; EngageGuard authorizes actions and trusted execution.
 
 
 ## 11. Production SRE decision loop
