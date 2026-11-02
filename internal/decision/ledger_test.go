@@ -19,7 +19,7 @@ func TestDecisionLedgerQueriesAreTenantAndSessionScoped(t *testing.T) {
 		req := validRequest()
 		req.IdempotencyKey = fmt.Sprintf("ledger-%d", i)
 		service.now = func() time.Time {
-			return time.Date(2026, 11, 2, 10, i, 0, 0, time.UTC)
+			return time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 		}
 		record, inserted, err := service.Decide(ctx, principal, req)
 		if err != nil || !inserted {
@@ -51,8 +51,8 @@ func TestDecisionLedgerQueriesAreTenantAndSessionScoped(t *testing.T) {
 	if len(page.Items) != 2 || page.NextCursor == "" {
 		t.Fatalf("expected first page of 2 with cursor, got %+v", page)
 	}
-	if !page.Items[0].CreatedAt.After(page.Items[1].CreatedAt) {
-		t.Fatalf("page must be ordered newest first: %+v", page.Items)
+	if page.Items[0].DecisionID <= page.Items[1].DecisionID {
+		t.Fatalf("equal timestamps must use descending decision ID as tie-breaker: %+v", page.Items)
 	}
 	second, err := service.ListRunDecisions(ctx, principal, "run-17", page.NextCursor, 2)
 	if err != nil {
