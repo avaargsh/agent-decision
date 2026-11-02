@@ -264,7 +264,8 @@
           "maxLength": 256
         },
         "trust_level": {
-          "const": "attested"
+          "const": "attested",
+          "type": "string"
         },
         "observed_at": {
           "type": "string",
