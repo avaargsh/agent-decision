@@ -2,7 +2,7 @@
 
 Decision Plane for Open Agent Infrastructure. Go owns deterministic decisions, contracts, provenance, idempotency and governance boundaries; Python/TypeScript framework workers are **optional, replaceable decision plugins**, never an authority for approvals or tool side effects.
 
-## Boundaries
+## Authority boundaries
 
 - **agent-control-panel**: authoritative Agent/Release/Capability, Session/Run identity and desired state. Decision only consumes versioned references.
 - **agent-decision**: side-effect-free candidate planning and immutable decision record. It does **not** issue an AuthorizationPermit, approve an action, or execute tools.
