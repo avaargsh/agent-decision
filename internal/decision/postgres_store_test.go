@@ -16,9 +16,17 @@ import (
 
 func TestPostgresStoreRequiresDatabase(t *testing.T) {
 	store := NewPostgresStore(nil)
-	_, _, err := store.SaveOrGet(context.Background(), Record{})
-	if !errors.Is(err, ErrStoreUnavailable) {
-		t.Fatalf("expected ErrStoreUnavailable, got %v", err)
+	if _, _, err := store.SaveOrGet(context.Background(), Record{}); !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("SaveOrGet: expected ErrStoreUnavailable, got %v", err)
+	}
+	if _, err := store.GetByInvocation(context.Background(), "tenant-a", "invocation-a"); !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("GetByInvocation: expected ErrStoreUnavailable, got %v", err)
+	}
+	if _, err := store.GetByDecisionID(context.Background(), "tenant-a", "agent-a", "session-a", "decision-a"); !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("GetByDecisionID: expected ErrStoreUnavailable, got %v", err)
+	}
+	if _, err := store.ListByRun(context.Background(), "tenant-a", "agent-a", "session-a", "run-a", nil, 10); !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("ListByRun: expected ErrStoreUnavailable, got %v", err)
 	}
 }
 
