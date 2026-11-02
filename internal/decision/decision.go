@@ -114,7 +114,7 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
-	key := digest(struct{ TenantID, Key string }{r.TenantID, r.IdempotencyKey})
+	key := memoryKey{tenantID: r.TenantID, key: r.IdempotencyKey}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.byKey[key]; ok {
@@ -124,7 +124,17 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 		return clone(old), false, nil
 	}
 	s.byKey[key] = clone(r)
+	s.byID[memoryKey{tenantID: r.TenantID, key: r.DecisionID}] = clone(r)
 	return clone(r), true, nil
+}
+
+func (s *MemoryStore) GetByID(ctx context.Context, tenantID, decisionID string) (Record, error) {
+	if err := ctx.Err(); err != nil { return Record{}, err }
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.byID[memoryKey{tenantID: tenantID, key: decisionID}]
+	if !ok { return Record{}, ErrNotFound }
+	return clone(record), nil
 }
 
 type Service struct {
