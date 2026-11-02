@@ -2,10 +2,7 @@ module github.com/avaargsh/agent-decision
 
 go 1.22
 
-require (
-	github.com/jackc/pgx/v5 v5.7.2
-	gopkg.in/yaml.v3 v3.0.1
-)
+require github.com/jackc/pgx/v5 v5.7.2
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
