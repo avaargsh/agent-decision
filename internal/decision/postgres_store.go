@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
 )
 
 var ErrStoreUnavailable = errors.New("decision store unavailable")
