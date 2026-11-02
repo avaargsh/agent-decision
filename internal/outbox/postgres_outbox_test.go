@@ -162,7 +162,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := store.Ack(ctx, reclaimed[0].ID, "worker-a", claimed[0].Attempts); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner ack=%v, want ErrLeaseLost", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", claimed[0].Attempts, 0, "stale owner"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", claimed[0].Attempts, 0, outbox.ReasonPublishFailed); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner retry=%v, want ErrLeaseLost", err)
 	}
 	// A stable worker identity can be reused after a lease expires. The
@@ -175,11 +175,15 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := store.Ack(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("previous attempt same worker must not ACK current lease: %v", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts, 0, "stale same-worker attempt"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts, 0, outbox.ReasonPublishFailed); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("previous attempt same worker must not Retry current lease: %v", err)
 	}
-	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", sameWorkerReclaim[0].Attempts, 0, "publisher timeout"); err != nil {
+	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", sameWorkerReclaim[0].Attempts, 0, outbox.ReasonPublishFailed); err != nil {
 		t.Fatalf("retry event: %v", err)
+	}
+	var retryReason string
+	if err := db.QueryRowContext(ctx, "SELECT last_error_code FROM outbox_events WHERE event_id = $1", sameWorkerReclaim[0].ID).Scan(&retryReason); err != nil || retryReason != outbox.ReasonPublishFailed {
+		t.Fatalf("durable retry diagnostic=%q err=%v, want stable reason code", retryReason, err)
 	}
 	retried, err := store.Claim(ctx, "worker-c", 10, time.Second)
 	if err != nil || len(retried) != 1 || retried[0].Attempts != 4 {
