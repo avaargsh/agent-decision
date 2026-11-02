@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/avaargsh/agent-decision/internal/outbox"
 )
 
 var ErrStoreUnavailable = errors.New("decision store unavailable")
@@ -49,38 +51,77 @@ func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocatio
 }
 
 func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
-	if s == nil || s.db == nil { return Record{}, false, ErrStoreUnavailable }
-	if err := ctx.Err(); err != nil { return Record{}, false, err }
+	if s == nil || s.db == nil {
+		return Record{}, false, ErrStoreUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return Record{}, false, err
+	}
 	if record.TenantID == "" || record.InvocationID == "" || record.DecisionID == "" ||
 		!digestRe.MatchString(record.RequestSHA256) {
 		return Record{}, false, fmt.Errorf("invalid record for persistence")
 	}
 	record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
 	payload, err := json.Marshal(record)
-	if err != nil { return Record{}, false, fmt.Errorf("marshal decision record: %w", err) }
+	if err != nil {
+		return Record{}, false, fmt.Errorf("marshal decision record: %w", err)
+	}
 
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return Record{}, false, storeUnavailable("begin DecisionRecord transaction", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
 		"INSERT INTO decision_records (tenant_id, invocation_id, decision_id, request_sha256, record, created_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (tenant_id, invocation_id) DO NOTHING",
 		record.TenantID, record.InvocationID, record.DecisionID, record.RequestSHA256, payload, record.CreatedAt)
-	if err != nil { return Record{}, false, storeUnavailable("insert DecisionRecord", err) }
+	if err != nil {
+		return Record{}, false, storeUnavailable("insert DecisionRecord", err)
+	}
 	rows, err := result.RowsAffected()
-	if err != nil { return Record{}, false, storeUnavailable("read DecisionRecord insert result", err) }
-	if rows == 1 { return clone(record), true, nil }
-	if rows != 0 { return Record{}, false, fmt.Errorf("unexpected affected row count: %d", rows) }
+	if err != nil {
+		return Record{}, false, storeUnavailable("read DecisionRecord insert result", err)
+	}
+	if rows == 1 {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO outbox_events (
+				event_id, tenant_id, aggregate_type, aggregate_id, aggregate_version,
+				event_type, schema_version, payload
+			) VALUES ($1, $2, 'decision_record', $3, 1, 'decision.recorded.v1', 1, $4::jsonb)`,
+			decisionEventID(record), record.TenantID, record.DecisionID, payload)
+		if err != nil {
+			return Record{}, false, storeUnavailable("insert Decision outbox event", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return Record{}, false, storeUnavailable("commit DecisionRecord and outbox", err)
+		}
+		return clone(record), true, nil
+	}
+	if rows != 0 {
+		return Record{}, false, fmt.Errorf("unexpected affected row count: %d", rows)
+	}
 
 	var storedFingerprint string
 	var storedPayload []byte
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
 		record.TenantID, record.InvocationID).Scan(&storedFingerprint, &storedPayload)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) { return Record{}, false, storeUnavailable("load invocation after uniqueness conflict", err) }
+		if errors.Is(err, sql.ErrNoRows) {
+			return Record{}, false, storeUnavailable("load invocation after uniqueness conflict", err)
+		}
 		return Record{}, false, storeUnavailable("load existing DecisionRecord", err)
 	}
-	if storedFingerprint != record.RequestSHA256 { return Record{}, false, ErrConflict }
+	if storedFingerprint != record.RequestSHA256 {
+		return Record{}, false, ErrConflict
+	}
 	var stored Record
 	if err := json.Unmarshal(storedPayload, &stored); err != nil {
 		return Record{}, false, fmt.Errorf("decode stored decision record: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, false, storeUnavailable("commit idempotent DecisionRecord replay", err)
 	}
 	return clone(stored), false, nil
 }
