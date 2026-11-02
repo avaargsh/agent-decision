@@ -15,7 +15,7 @@ Agent Decision turns authenticated, evidence-backed context into deterministic a
 
 ## Explicit non-goals
 
-Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestration; approval state; capability authorization; credentials; execution permits; or tool execution. Agent Control Plane governs, Agent Runtime orchestrates and executes through EngageGuard, and Agent Decision proposes.
+Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestration; approval state; capability authorization; credentials; execution permits; or tool execution. Agent Control Plane owns canonical Agent/Session/Run identity and policy bindings; Agent Runtime owns durable execution semantics; EngageGuard owns action authorization and trusted execution; Agent Decision proposes.
 
 ## Go implementation
 
@@ -26,6 +26,7 @@ Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestra
 - Development entry point: `cmd/agent-decision`
 - Database migration: `migrations/0001_create_decision_records.sql`
 - Architecture contract: `docs/architecture.md`
+- Cross-repository integration contract: `docs/architecture/integration-contract.md`
 - Delivery roadmap: `docs/roadmap.md`
 - OpenAPI 3.1 contract: `api/openapi.yaml`
 - JSON Schema compatibility artifacts: `api/schemas/` (request, record, page, and problem)
