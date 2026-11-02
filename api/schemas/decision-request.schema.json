@@ -19,7 +19,8 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "decision.v1"
+      "const": "decision.v1",
+      "type": "string"
     },
     "identity": {
       "$ref": "#/$defs/Identity"
@@ -44,32 +45,18 @@
       "$ref": "#/$defs/SnapshotRef"
     },
     "capabilities": {
-      "anyOf": [
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/CapabilityRef"
-          },
-          "maxItems": 32
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/CapabilityRef"
+      }
     },
     "evidence_refs": {
-      "anyOf": [
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EvidenceRef"
-          },
-          "maxItems": 32
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      }
     },
     "replan": {
       "$ref": "#/$defs/ReplanContext"
@@ -109,7 +96,8 @@
       ],
       "properties": {
         "objective": {
-          "const": "sre_incident_triage"
+          "const": "sre_incident_triage",
+          "type": "string"
         },
         "service": {
           "type": "string",
@@ -172,13 +160,16 @@
           "minLength": 1
         },
         "strategy_version": {
-          "const": "sre-readonly-v1"
+          "const": "sre-readonly-v1",
+          "type": "string"
         },
         "prompt_version": {
-          "const": "none"
+          "const": "none",
+          "type": "string"
         },
         "model_profile": {
-          "const": "rule-only"
+          "const": "rule-only",
+          "type": "string"
         }
       }
     },
@@ -221,7 +212,8 @@
           "maxLength": 256
         },
         "trust_level": {
-          "const": "attested"
+          "const": "attested",
+          "type": "string"
         },
         "issued_at": {
           "type": "string",
@@ -321,13 +313,16 @@
           "maxLength": 256
         },
         "effect_class": {
-          "const": "read_only"
+          "const": "read_only",
+          "type": "string"
         },
         "idempotency": {
-          "const": "safe"
+          "const": "safe",
+          "type": "string"
         },
         "tenant_scoped": {
-          "const": true
+          "const": true,
+          "type": "boolean"
         }
       }
     },
@@ -357,10 +352,12 @@
           "maximum": 3
         },
         "trigger": {
-          "const": "STEP_FAILED"
+          "const": "STEP_FAILED",
+          "type": "string"
         },
         "prior_disposition": {
-          "const": "RETRYABLE_FAILURE"
+          "const": "RETRYABLE_FAILURE",
+          "type": "string"
         }
       }
     }
