@@ -61,6 +61,35 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 	if _, created, err := store.SaveOrGet(ctx, record); err != nil || !created {
 		t.Fatalf("save append-only record: created=%v err=%v", created, err)
 	}
+
+	// The normalized columns used for idempotency and lookups must remain
+	// byte-for-byte consistent with the immutable JSONB DecisionRecord.
+	mismatchCases := []struct {
+		name, tenantID, invocationID, decisionID, requestSHA string
+	}{
+		{"tenant", "other-tenant", record.InvocationID, record.DecisionID, record.RequestSHA256},
+		{"invocation", record.TenantID, "other-invocation", record.DecisionID, record.RequestSHA256},
+		{"decision", record.TenantID, record.InvocationID, "dec_"+strings.Repeat("f", 64), record.RequestSHA256},
+		{"request digest", record.TenantID, record.InvocationID, record.DecisionID, strings.Repeat("f", 64)},
+	}
+	for i, tc := range mismatchCases {
+		t.Run("json_identity_"+tc.name, func(t *testing.T) {
+			invocationID := fmt.Sprintf("mismatch-%d", i)
+			decisionID := "dec_" + strings.Repeat(string(rune('1'+i)), 64)
+			_, err := db.ExecContext(ctx, `INSERT INTO decision_records (
+				tenant_id, invocation_id, decision_id, request_sha256, record, created_at
+			) VALUES ($1, $2, $3, $4,
+				jsonb_build_object(
+					'tenant_id', $5, 'invocation_id', $6, 'decision_id', $7, 'request_sha256', $8
+				), now())`,
+				record.TenantID, invocationID, decisionID, record.RequestSHA256,
+				tc.tenantID, tc.invocationID, tc.decisionID, tc.requestSHA)
+			if err == nil {
+				t.Fatal("mismatched JSONB identity must be rejected by the database constraint")
+			}
+		})
+	}
+
 	for name, statement := range map[string]string{
 		"update": "UPDATE decision_records SET record = '{}'::jsonb WHERE tenant_id = $1 AND decision_id = $2",
 		"delete": "DELETE FROM decision_records WHERE tenant_id = $1 AND decision_id = $2",
