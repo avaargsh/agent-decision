@@ -2,96 +2,112 @@ openapi: 3.1.0
 info:
   title: Agent Decision API
   version: 0.1.0
-  description: Authenticated, tenant-bound deterministic read-only SRE decision planning. Decision proposes; it never authorizes or executes.
+  summary: Deterministic, read-only decision planning API
+  description: |
+    Agent Decision accepts an authenticated, version-pinned request and returns
+    an immutable decision proposal or abstention. It never authorizes or executes
+    capabilities and does not own Agent, Session, or Run lifecycle.
+
+    Authentication is deployment-specific. The HTTP handler requires a trusted
+    PrincipalResolver populated by an authenticated gateway. Tenant, subject,
+    caller, agent, and session identity are never trusted from the request body.
 servers:
-  - url: http://127.0.0.1:8080
-    description: Development loopback server
+  - url: /
+    description: Relative to the deployment base URL
 paths:
   /healthz:
     get:
-      operationId: healthz
-      summary: Liveness probe
-      security: []
+      operationId: getHealth
+      summary: Liveness endpoint
+      description: Unauthenticated process liveness check. Returns no response body.
       responses:
-        "204":
+        '204':
           description: Process is alive
+        '405':
+          description: Method not allowed
   /v1/decisions:
     post:
       operationId: createDecision
-      summary: Create or replay an immutable DecisionRecord
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: header
-          name: Idempotency-Key
-          required: false
-          description: Request body idempotency_key is authoritative; this header is reserved for future gateway normalization.
-          schema:
-            type: string
+      summary: Create or replay a decision
+      description: |
+        Produces a deterministic read-only investigation plan or an explicit
+        abstention. A first successful persistence returns 201. An exact
+        idempotent replay returns the stored record with 200. Reusing the same
+        tenant-scoped idempotency key with a different authenticated request
+        fingerprint returns 409.
+
+        The caller principal is resolved out-of-band. The deployment MUST
+        configure a trusted PrincipalResolver and authoritative snapshot verifier.
+        Unknown JSON properties and duplicate object keys are rejected.
+      x-max-request-body-bytes: 1048576
+      x-principal-source: trusted-deployment-resolver
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: ./schemas/decision-request.schema.json
+              $ref: '#/components/schemas/DecisionRequest'
       responses:
-        "201":
-          description: DecisionRecord created
+        '200':
+          description: Existing DecisionRecord returned for an exact idempotent replay
           content:
             application/json:
               schema:
-                $ref: ./schemas/decision-record.schema.json
-        "200":
-          description: Existing DecisionRecord replayed for the same tenant and request fingerprint
+                $ref: '#/components/schemas/DecisionRecord'
+        '201':
+          description: DecisionRecord persisted for the first time
           content:
             application/json:
               schema:
-                $ref: ./schemas/decision-record.schema.json
-        "400":
-          description: Malformed JSON or invalid DecisionRequest
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid JSON, unknown or duplicate property, or request contract validation failure
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "401":
-          description: Trusted principal missing or unauthenticated
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal is missing or unauthenticated
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "403":
-          description: Principal binding or authoritative snapshot verification rejected
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Authenticated principal does not match request identity or authoritative verification rejected the references
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "409":
-          description: IDEMPOTENCY_CONFLICT: idempotency key reused with a different request fingerprint
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Tenant-scoped idempotency key was reused with a different request fingerprint
+          x-error-code: IDEMPOTENCY_CONFLICT
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "415":
+                $ref: '#/components/schemas/Problem'
+        '415':
           description: Content-Type must be application/json
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "503":
-          description: Authority verifier or persistence is unavailable
+                $ref: '#/components/schemas/Problem'
+        '500':
+          description: Unexpected internal processing failure
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
-        "500":
-          description: Unexpected internal processing error
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Authoritative verifier or decision persistence is unavailable
           content:
             application/json:
               schema:
-                $ref: ./schemas/problem.schema.json
+                $ref: '#/components/schemas/Problem'
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+  schemas:
+    DecisionRequest:
+      $ref: './schemas/decision-request.schema.json'
+    DecisionRecord:
+      $ref: './schemas/decision-record.schema.json'
+    Problem:
+      $ref: './schemas/problem.schema.json'
