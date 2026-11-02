@@ -24,10 +24,12 @@ type Event struct {
 	CreatedAt        time.Time       `json:"created_at"`
 }
 
+// Each Ack/Retry carries the monotonic attempt (lease fencing token)
+// returned by Claim, preventing a stale operation by the same worker ID.
 type Store interface {
 	Claim(context.Context, string, int, time.Duration) ([]Event, error)
-	Ack(context.Context, string, string) error
-	Retry(context.Context, string, string, time.Duration, string) error
+	Ack(context.Context, string, string, int) error
+	Retry(context.Context, string, string, int, time.Duration, string) error
 }
 
 type Publisher interface {
@@ -49,7 +51,7 @@ func DispatchOnce(ctx context.Context, store Store, publisher Publisher, workerI
 	var firstErr error
 	for _, event := range events {
 		if err := publisher.Publish(ctx, event); err != nil {
-			if retryErr := store.Retry(ctx, event.ID, workerID, retryDelay, err.Error()); retryErr != nil && firstErr == nil {
+			if retryErr := store.Retry(ctx, event.ID, workerID, event.Attempts, retryDelay, err.Error()); retryErr != nil && firstErr == nil {
 				firstErr = retryErr
 			}
 			if firstErr == nil {
@@ -57,7 +59,7 @@ func DispatchOnce(ctx context.Context, store Store, publisher Publisher, workerI
 			}
 			continue
 		}
-		if err := store.Ack(ctx, event.ID, workerID); err != nil {
+		if err := store.Ack(ctx, event.ID, workerID, event.Attempts); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

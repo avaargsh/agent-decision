@@ -130,26 +130,33 @@ func (s *PostgresStore) Claim(ctx context.Context, workerID string, limit int, l
 	return events, nil
 }
 
-// Ack accepts acknowledgements only from the current, unexpired lease owner.
-func (s *PostgresStore) Ack(ctx context.Context, eventID, workerID string) error {
+// Ack requires the current unexpired worker lease and exact claim attempt.
+// The attempt fences stale ACKs even when a worker ID is reused.
+func (s *PostgresStore) Ack(ctx context.Context, eventID, workerID string, attempt int) error {
 	if s == nil || s.db == nil {
 		return ErrStoreUnavailable
 	}
+	if attempt < 1 {
+		return outbox.ErrLeaseLost
+	}
 	result, err := s.db.ExecContext(ctx,
 		"UPDATE outbox_events SET published_at = now(), lease_owner = NULL, lease_until = NULL "+
-			"WHERE event_id = $1 AND lease_owner = $2 AND lease_until > now() AND published_at IS NULL",
-		eventID, workerID)
+			"WHERE event_id = $1 AND lease_owner = $2 AND attempts = $3 AND lease_until > now() AND published_at IS NULL",
+		eventID, workerID, attempt)
 	if err != nil {
 		return storeUnavailable("ack Decision outbox event", err)
 	}
 	return requireOutboxLease(result)
 }
 
-// Retry releases a failed event after a bounded delay. Lease ownership and
-// expiry checks prevent a previous worker overwriting a later claim.
-func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, delay time.Duration, cause string) error {
+// Retry releases a failed event after a bounded delay. Lease owner,
+// claim attempt and expiry fence stale workers, including reused worker IDs.
+func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, attempt int, delay time.Duration, cause string) error {
 	if s == nil || s.db == nil {
 		return ErrStoreUnavailable
+	}
+	if attempt < 1 {
+		return outbox.ErrLeaseLost
 	}
 	if delay < 0 || delay > 24*time.Hour {
 		return errors.New("invalid outbox retry delay")
@@ -164,8 +171,8 @@ func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, del
 	result, err := s.db.ExecContext(ctx,
 		"UPDATE outbox_events SET available_at = now() + ($3 * interval '1 second'), "+
 			"last_error = $4, lease_owner = NULL, lease_until = NULL "+
-			"WHERE event_id = $1 AND lease_owner = $2 AND lease_until > now() AND published_at IS NULL",
-		eventID, workerID, delay.Seconds(), cause)
+			"WHERE event_id = $1 AND lease_owner = $2 AND attempts = $5 AND lease_until > now() AND published_at IS NULL",
+		eventID, workerID, delay.Seconds(), cause, attempt)
 	if err != nil {
 		return storeUnavailable("retry Decision outbox event", err)
 	}

@@ -108,10 +108,10 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID || reclaimed[0].Attempts != 2 {
 		t.Fatalf("expired lease reclaim: events=%+v err=%v", reclaimed, err)
 	}
-	if err := store.Ack(ctx, reclaimed[0].ID, "worker-a"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Ack(ctx, reclaimed[0].ID, "worker-a", claimed[0].Attempts); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner ack=%v, want ErrLeaseLost", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", 0, "stale owner"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-a", claimed[0].Attempts, 0, "stale owner"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale owner retry=%v, want ErrLeaseLost", err)
 	}
 	// A stable worker identity can be reused after a lease expires. The
@@ -121,23 +121,23 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err != nil || len(sameWorkerReclaim) != 1 || sameWorkerReclaim[0].Attempts != 3 {
 		t.Fatalf("same-worker next attempt claim: events=%+v err=%v", sameWorkerReclaim, err)
 	}
-	if err := store.Ack(ctx, reclaimed[0].ID, "worker-b"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Ack(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("previous attempt same worker must not ACK current lease: %v", err)
 	}
-	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", 0, "stale same-worker attempt"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Retry(ctx, reclaimed[0].ID, "worker-b", reclaimed[0].Attempts, 0, "stale same-worker attempt"); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("previous attempt same worker must not Retry current lease: %v", err)
 	}
-	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", 0, "publisher timeout"); err != nil {
+	if err := store.Retry(ctx, sameWorkerReclaim[0].ID, "worker-b", sameWorkerReclaim[0].Attempts, 0, "publisher timeout"); err != nil {
 		t.Fatalf("retry event: %v", err)
 	}
 	retried, err := store.Claim(ctx, "worker-c", 10, time.Second)
 	if err != nil || len(retried) != 1 || retried[0].Attempts != 4 {
 		t.Fatalf("claim retried event: events=%+v err=%v", retried, err)
 	}
-	if err := store.Ack(ctx, retried[0].ID, "worker-c"); err != nil {
+	if err := store.Ack(ctx, retried[0].ID, "worker-c", retried[0].Attempts); err != nil {
 		t.Fatalf("ack event: %v", err)
 	}
-	if err := store.Ack(ctx, retried[0].ID, "worker-c"); !errors.Is(err, outbox.ErrLeaseLost) {
+	if err := store.Ack(ctx, retried[0].ID, "worker-c", retried[0].Attempts); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("duplicate ack=%v, want ErrLeaseLost", err)
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE outbox_events SET payload = '{}'::jsonb WHERE event_id = $1", retried[0].ID); err == nil {
@@ -163,11 +163,11 @@ type fakeStore struct {
 func (s *fakeStore) Claim(context.Context, string, int, time.Duration) ([]outbox.Event, error) {
 	return s.events, nil
 }
-func (s *fakeStore) Ack(context.Context, string, string) error {
+func (s *fakeStore) Ack(context.Context, string, string, int) error {
 	s.acks++
 	return nil
 }
-func (s *fakeStore) Retry(context.Context, string, string, time.Duration, string) error {
+func (s *fakeStore) Retry(context.Context, string, string, int, time.Duration, string) error {
 	s.retries++
 	return nil
 }
