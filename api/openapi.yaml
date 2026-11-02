@@ -31,7 +31,7 @@ paths:
         Produces a deterministic read-only investigation plan or an explicit
         abstention. A first successful persistence returns 201. An exact
         idempotent replay returns the stored record with 200. Reusing the same
-        tenant-scoped idempotency key with a different authenticated request
+        tenant-scoped invocation_id with a different authenticated request
         fingerprint returns 409.
 
         The caller principal is resolved out-of-band. The deployment MUST
@@ -77,8 +77,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '409':
-          description: Tenant-scoped idempotency key was reused with a different request fingerprint
-          x-error-code: IDEMPOTENCY_CONFLICT
+          description: Tenant-scoped invocation_id was reused with a different request fingerprint
+          x-error-code: INVOCATION_ID_REUSED
           content:
             application/json:
               schema:
