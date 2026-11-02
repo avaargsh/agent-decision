@@ -68,7 +68,7 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 - The request fingerprint covers the authenticated principal and complete request.
 - Replaying the same key and fingerprint returns the existing record.
 - Reusing a key with a different fingerprint returns an idempotency conflict.
-- The current `MemoryStore` is process-local and is suitable only for development and tests. Production requires a durable store with an atomic unique constraint on the tenant-scoped idempotency key.
+- `MemoryStore` is process-local and suitable only for tests and development. `PostgresStore` uses `INSERT ... ON CONFLICT DO NOTHING` followed by a read of the winning row; the database primary key `(tenant_id, idempotency_key)` is the cross-process idempotency authority. A changed fingerprint returns an idempotency conflict. The migration is `migrations/0001_create_decision_records.sql`. Production must use a restricted application database role and a separate migration owner; the application should not receive schema-alteration privileges.
 - Decision records retain strategy/model/prompt/catalog versions, snapshot references, evidence references, reason codes, and a hash of the read-only plan.
 
 ## 6. Failure semantics
@@ -85,7 +85,13 @@ The planner emits all three steps or no steps. Missing evidence yields `ABSTAINE
 
 `/healthz` is intentionally unauthenticated and returns 204. The development binary binds to loopback and fails closed for decision calls until authentication and authority verification are configured.
 
-## 7. Next architecture increments
+## 7. Persistence contract
+
+`Store.SaveOrGet` is the persistence boundary. The PostgreSQL implementation stores the complete versioned DecisionRecord as JSONB and indexes tenant/time and tenant/run access paths. The relational columns hold the idempotency and identity keys required for atomic uniqueness. The JSON record is the immutable decision snapshot; updates are not part of the application API. Production database permissions and backup/retention policy must preserve this append-only usage model.
+
+The PostgreSQL integration suite applies the real migration and verifies first insert, exact replay, changed-input conflict, tenant isolation, and concurrent same-key insertion. CI provisions PostgreSQL 16 and runs the suite with the Go race detector.
+
+## 8. Next architecture increments
 
 The following are deliberately outside the v0.1 implementation and require separate contracts and tests:
 
