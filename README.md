@@ -46,3 +46,14 @@ PostgreSQL integration tests run when `DATABASE_URL` is set. The CI workflow pro
 Ledger reads require a trusted principal and are scoped to the principal's tenant, agent, and session. Run listings use bounded cursor pagination with descending `(created_at, decision_id)` ordering.
 
 The development server binds to loopback and fails closed for decision requests until a trusted principal resolver and authoritative snapshot verifier are configured. The in-memory store is for tests and local development only. Production deployment must apply the migration and use a restricted database role; the durable store enforces atomic tenant-scoped idempotency.
+
+
+## Kubernetes policy baseline
+
+A starter OPA/Rego policy bundle checks rendered Deployment candidates for privileged execution, host namespace sharing, non-root execution, resource requests/limits and immutable image digests. Run it with the pinned Conftest image:
+
+```bash
+docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/hardened-deployment.yaml
+```
+
+The policy bundle is currently a standalone deterministic preflight artifact. It is not yet invoked by the Decision API, and it does not calculate probabilistic risk or expected loss.
