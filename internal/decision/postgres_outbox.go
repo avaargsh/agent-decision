@@ -33,46 +33,84 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1, $2)", migrationLockClass, migrationLockObject); err != nil {
 		return storeUnavailable("lock migrations", err)
 	}
-	if _, err := tx.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		checksum TEXT NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`); err != nil {
 		return storeUnavailable("create schema_migrations", err)
+	}
+	// A previous draft's table had no checksum. Add a nullable column only
+	// to allow inspection; existing NULL rows deliberately fail closed.
+	// An operator must independently verify a legacy schema before recording
+	// a checksum, rather than the binary silently trusting historical DDL.
+	if _, err := tx.ExecContext(ctx,
+		"ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT"); err != nil {
+		return storeUnavailable("inspect legacy migration history", err)
 	}
 
 	migrations := []struct {
 		version int
-		name    string
+		name string
+		source []byte
+		checksum string
 	}{
-		{1, "0001_create_decision_records.sql"},
-		{2, "0002_decision_outbox.sql"},
+		{version: 1, name: "0001_create_decision_records.sql"},
+		{version: 2, name: "0002_decision_outbox.sql"},
 	}
-	var latest int
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&latest); err != nil {
-		return storeUnavailable("read schema version", err)
-	}
-	if latest > migrations[len(migrations)-1].version {
-		return fmt.Errorf("database schema version %d is newer than this binary", latest)
+	for i := range migrations {
+		source, err := schemamigrations.FS.ReadFile(migrations[i].name)
+		if err != nil {
+			return fmt.Errorf("read migration %d (%s): %w",
+				migrations[i].version, migrations[i].name, err)
+		}
+		sum := sha256.Sum256(source)
+		migrations[i].source = source
+		migrations[i].checksum = hex.EncodeToString(sum[:])
 	}
 
-	for _, migration := range migrations {
-		var applied bool
-		if err := tx.QueryRowContext(ctx,
-			"SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)",
-			migration.version).Scan(&applied); err != nil {
-			return storeUnavailable("read migration history", err)
+	rows, err := tx.QueryContext(ctx,
+		"SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return storeUnavailable("read migration history", err)
+	}
+	applied := 0
+	for rows.Next() {
+		var version int
+		var name string
+		var checksum sql.NullString
+		if err := rows.Scan(&version, &name, &checksum); err != nil {
+			rows.Close()
+			return storeUnavailable("scan migration history", err)
 		}
-		if applied {
-			continue
+		if applied >= len(migrations) {
+			rows.Close()
+			return fmt.Errorf("unrecognized future migration version %d", version)
 		}
-		source, err := schemamigrations.FS.ReadFile(migration.name)
-		if err != nil {
-			return fmt.Errorf("read migration %d (%s): %w", migration.version, migration.name, err)
+		expected := migrations[applied]
+		if version != expected.version || name != expected.name ||
+			!checksum.Valid || checksum.String != expected.checksum {
+			rows.Close()
+			return fmt.Errorf("migration history integrity mismatch at version %d: expected version/name/SHA-256 of approved SQL; manual attestation required for legacy unchecksummed rows", version)
 		}
-		if _, err := tx.ExecContext(ctx, string(source)); err != nil {
+		applied++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return storeUnavailable("iterate migration history", err)
+	}
+	if err := rows.Close(); err != nil {
+		return storeUnavailable("close migration history", err)
+	}
+	for _, migration := range migrations[applied:] {
+		if _, err := tx.ExecContext(ctx, string(migration.source)); err != nil {
 			return storeUnavailable(fmt.Sprintf("apply migration %d (%s)", migration.version, migration.name), err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO schema_migrations(version, name) VALUES ($1, $2)",
-			migration.version, migration.name); err != nil {
-			return storeUnavailable("record schema migration", err)
+			"INSERT INTO schema_migrations(version, name, checksum) VALUES ($1, $2, $3)",
+			migration.version, migration.name, migration.checksum); err != nil {
+			return storeUnavailable("record checksummed schema migration", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
