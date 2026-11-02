@@ -38,7 +38,8 @@
       "fixtures/semantic/unsupported-context-schema-version.request.json"
     ],
     "idempotency": [
-      "fixtures/idempotency/invocation-id-reused-different-request.json"
+      "fixtures/idempotency/invocation-id-reused-different-request.json",
+      "fixtures/idempotency/request-digest.json"
     ]
   }
 }

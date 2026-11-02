@@ -1,0 +1,9 @@
+{
+  "request_fixture": "../valid/decision-turn-request.json",
+  "excluded_fields": [
+    "trace_context"
+  ],
+  "canonicalization": "RFC 8785",
+  "expected_sha256": "sha256:09c22e75e6d78b08e72dc7e6a0987d4e87c70f6c5532ff06913f807add32ef5f",
+  "note": "This fixture intentionally uses ASCII-only strings and no JSON numbers so the canonical byte representation is also reproducible with sorted compact JSON in the reference smoke test. Production implementations must use RFC 8785."
+}

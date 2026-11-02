@@ -75,7 +75,7 @@ Cancellation is propagated from Runtime to the plugin. A cancelled request must 
 - v0.1 schema caps proposals at 16 and bounds IDs, references, text, trace state, and object sizes. Deployments additionally configure request/response byte limits, token budgets, wall-clock deadlines, concurrency, and per-tenant rate limits.
 - Unknown protocol, capability, argument-schema, or context schema versions fail closed.
 - The plugin receives only projected context and capability descriptors. No provider secrets, Permit tokens, direct executor credentials, or unmediated protected-tool access.
-- ActionProposal is untrusted input. Runtime normalizes it and EngageGuard performs fresh authorization against the actual action and target.
+- ActionProposal is untrusted input. Runtime validates the protocol and maps the proposal into an ActionRequest; EngageGuard performs authoritative canonicalization, computes ActionHash, and applies fresh authorization against the final action and target.
 - Framework metadata is bounded diagnostic data, never authoritative platform state.
 
 ## Compatibility

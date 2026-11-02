@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -96,6 +97,14 @@ def main() -> None:
     assert_valid("request", unknown_context, "unsupported context schema version request")
     if unknown_context["context_projection_ref"]["schema_version"] in supported_context_schemas:
         raise AssertionError("unsupported context schema fixture must not be in supported schema registry")
+
+    digest_vector = load("fixtures/idempotency/request-digest.json")
+    digest_request = load("fixtures/" + digest_vector["request_fixture"].replace("../", "", 1))
+    digest_input = {key: value for key, value in digest_request.items() if key not in digest_vector["excluded_fields"]}
+    canonical_bytes = json.dumps(digest_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    actual_digest = "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
+    if actual_digest != digest_vector["expected_sha256"]:
+        raise AssertionError(f"request digest vector mismatch: {actual_digest}")
 
     changed_request = load("fixtures/idempotency/invocation-id-reused-different-request.json")
     assert_valid("request", changed_request, "changed invocation request")
