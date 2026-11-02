@@ -25,7 +25,7 @@
             "AUTHORITY_REJECTED",
             "STORE_UNAVAILABLE",
             "INVALID_REQUEST",
-            "IDEMPOTENCY_CONFLICT",
+            "INVOCATION_ID_REUSED",
             "UNSUPPORTED_MEDIA_TYPE",
             "INVALID_JSON",
             "INTERNAL_ERROR",
