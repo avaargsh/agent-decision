@@ -59,7 +59,8 @@
 
 ## Production SRE decision-loop gates
 
-- [ ] Add a versioned OPA/Rego policy bundle for Kubernetes candidate manifests and run Conftest verification in CI. Conftest is a deterministic policy test gate, not the probabilistic risk model or actuation engine.
+- [x] Add a versioned OPA/Rego Deployment guardrail bundle and run pinned Conftest checks in CI against compliant and unsafe Kubernetes fixtures. Conftest is a deterministic policy test gate, not the probabilistic risk model or actuation engine.
+- [ ] Wire the policy bundle into candidate-action preflight once the candidate manifest/action contract is implemented.
 - [ ] Add candidate-action and explicit no-op contracts with impact, blast radius, reversibility, execution cost and uncertainty dimensions.
 - [ ] Build incident outcome datasets with human-verified Gold labels before claiming calibrated probabilities.
 - [ ] Publish calibration reports, uncertainty bounds, cohort/sample metadata and risk regression results as release artifacts.
