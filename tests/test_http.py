@@ -38,7 +38,7 @@ def test_http_success(server):
     status, body = request(server, json.dumps(VALID).encode())
     assert status == 200
     assert body == {'protocol_version': 'v0.1', 'invocation_id': 'inv-1',
-                    'kind': 'final', 'text': 'Accepted: hello'}
+                    'kind': 'final_response', 'text': 'Accepted: hello'}
 
 
 @pytest.mark.parametrize('body', [
