@@ -64,16 +64,17 @@
   },
   "$defs": {
     "opaqueName": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"},
+    "opaqueRef": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000]+$"},
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "snapshotRef": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "version", "sha256", "source", "attestation_ref", "trust_level", "issued_at", "expires_at"],
       "properties": {
-        "id": {"$ref": "#/$defs/opaqueName"},
-        "version": {"$ref": "#/$defs/opaqueName"},
+        "id": {"$ref": "#/$defs/opaqueRef"},
+        "version": {"$ref": "#/$defs/opaqueRef"},
         "sha256": {"$ref": "#/$defs/sha256"},
-        "source": {"$ref": "#/$defs/opaqueName"},
-        "attestation_ref": {"$ref": "#/$defs/opaqueName"},
+        "source": {"$ref": "#/$defs/opaqueRef"},
+        "attestation_ref": {"$ref": "#/$defs/opaqueRef"},
         "trust_level": {"const": "attested"},
         "issued_at": {"type": "string", "format": "date-time"},
         "expires_at": {"type": "string", "format": "date-time"}
@@ -86,8 +87,8 @@
         "id": {"$ref": "#/$defs/opaqueName"},
         "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
         "contract_sha256": {"$ref": "#/$defs/sha256"},
-        "input_schema_ref": {"$ref": "#/$defs/opaqueName"},
-        "output_schema_ref": {"$ref": "#/$defs/opaqueName"},
+        "input_schema_ref": {"$ref": "#/$defs/opaqueRef"},
+        "output_schema_ref": {"$ref": "#/$defs/opaqueRef"},
         "effect_class": {"const": "read_only"},
         "idempotency": {"const": "safe"},
         "tenant_scoped": {"const": true}
@@ -97,11 +98,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["ref", "source", "source_version", "sha256", "attestation_ref", "trust_level", "observed_at", "expires_at"],
       "properties": {
-        "ref": {"$ref": "#/$defs/opaqueName"},
-        "source": {"$ref": "#/$defs/opaqueName"},
-        "source_version": {"$ref": "#/$defs/opaqueName"},
+        "ref": {"$ref": "#/$defs/opaqueRef"},
+        "source": {"$ref": "#/$defs/opaqueRef"},
+        "source_version": {"$ref": "#/$defs/opaqueRef"},
         "sha256": {"$ref": "#/$defs/sha256"},
-        "attestation_ref": {"$ref": "#/$defs/opaqueName"},
+        "attestation_ref": {"$ref": "#/$defs/opaqueRef"},
         "trust_level": {"const": "attested"},
         "observed_at": {"type": "string", "format": "date-time"},
         "expires_at": {"type": "string", "format": "date-time"}
