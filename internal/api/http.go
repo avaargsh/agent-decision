@@ -85,6 +85,9 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 		case errors.Is(err, decision.ErrAuthorityRejected):
 			problem(w, http.StatusForbidden, "AUTHORITY_REJECTED", "authoritative snapshot verification rejected the request")
 			return
+		case errors.Is(err, decision.ErrStoreUnavailable):
+			problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "decision persistence is unavailable")
+			return
 		case errors.Is(err, decision.ErrInvalidRequest):
 			problem(w, http.StatusBadRequest, "INVALID_REQUEST", "decision request failed contract validation")
 			return
