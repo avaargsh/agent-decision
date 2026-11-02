@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -91,12 +92,13 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 				tenant_id, invocation_id, decision_id, request_sha256, record, created_at
 			) VALUES ($1, $2, $3, $4,
 				jsonb_build_object(
-					'tenant_id', $5, 'invocation_id', $6, 'decision_id', $7, 'request_sha256', $8
+					'tenant_id', $5::text, 'invocation_id', $6::text, 'decision_id', $7::text, 'request_sha256', $8::text
 				), now())`,
 				rowTenant, rowInvocation, rowDecision, rowDigest,
 				jsonTenant, jsonInvocation, jsonDecision, jsonDigest)
-			if err == nil {
-				t.Fatalf("database accepted mismatched %s between relational columns and JSONB", field)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "decision_records_json_identity_ck" {
+				t.Fatalf("mismatched %s must fail the JSON identity CHECK constraint, got %v", field, err)
 			}
 		})
 	}
