@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: Agent Decision API
+  version: 0.1.0
+  description: Authenticated, tenant-bound deterministic read-only SRE decision planning. Decision proposes; it never authorizes or executes.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Development loopback server
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        "204":
+          description: Process is alive
+  /v1/decisions:
+    post:
+      operationId: createDecision
+      summary: Create or replay an immutable DecisionRecord
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          description: Request body idempotency_key is authoritative; this header is reserved for future gateway normalization.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/decision-request.v1.json
+      responses:
+        "201":
+          description: DecisionRecord created
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/decision-record.v1.json
+        "200":
+          description: Existing DecisionRecord replayed for the same tenant and request fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/decision-record.v1.json
+        "400":
+          description: Malformed JSON or invalid DecisionRequest
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "401":
+          description: Trusted principal missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "403":
+          description: Principal binding or authoritative snapshot verification rejected
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "409":
+          description: Idempotency key reused with a different request fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "415":
+          description: Content-Type must be application/json
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "503":
+          description: Authority verifier or persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+        "500":
+          description: Unexpected internal processing error
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/error.v1.json
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
