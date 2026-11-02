@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
@@ -189,7 +188,7 @@ func (s *PostgresStore) Ack(ctx context.Context, eventID, workerID string, attem
 
 // Retry releases a failed event after a bounded delay. Lease owner,
 // claim attempt and expiry fence stale workers, including reused worker IDs.
-func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, attempt int, delay time.Duration, cause string) error {
+func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, attempt int, delay time.Duration, reasonCode string) error {
 	if s == nil || s.db == nil {
 		return ErrStoreUnavailable
 	}
@@ -199,18 +198,14 @@ func (s *PostgresStore) Retry(ctx context.Context, eventID, workerID string, att
 	if delay < 0 || delay > 24*time.Hour {
 		return errors.New("invalid outbox retry delay")
 	}
-	cause = strings.ToValidUTF8(cause, "�")
-	if len(cause) > 1024 {
-		runes := []rune(cause)
-		if len(runes) > 256 {
-			cause = string(runes[:256])
-		}
+	if reasonCode != outbox.ReasonPublishFailed {
+		return errors.New("invalid outbox retry reason code")
 	}
 	result, err := s.db.ExecContext(ctx,
 		"UPDATE outbox_events SET available_at = now() + ($3 * interval '1 second'), "+
-			"last_error = $4, lease_owner = NULL, lease_until = NULL "+
+			"last_error_code = $4, lease_owner = NULL, lease_until = NULL "+
 			"WHERE event_id = $1 AND lease_owner = $2 AND attempts = $5 AND lease_until > now() AND published_at IS NULL",
-		eventID, workerID, delay.Seconds(), cause, attempt)
+		eventID, workerID, delay.Seconds(), reasonCode, attempt)
 	if err != nil {
 		return storeUnavailable("retry Decision outbox event", err)
 	}
