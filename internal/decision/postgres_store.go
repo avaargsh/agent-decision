@@ -17,6 +17,10 @@ type PostgresStore struct { db *sql.DB }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
 
+func storeUnavailable(operation string, err error) error {
+	return fmt.Errorf("%w: %s: %v", ErrStoreUnavailable, operation, err)
+}
+
 // GetByInvocation resolves an existing immutable invocation result within one tenant.
 func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
 	if s == nil || s.db == nil {
@@ -31,7 +35,7 @@ func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocatio
 		return Record{}, ErrNotFound
 	}
 	if err != nil {
-		return Record{}, fmt.Errorf("%w: lookup Decision invocation: %v", ErrStoreUnavailable, err)
+		return Record{}, storeUnavailable("lookup Decision invocation", err)
 	}
 	var record Record
 	if err := json.Unmarshal(payload, &record); err != nil {
@@ -58,9 +62,9 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 	result, err := s.db.ExecContext(ctx,
 		"INSERT INTO decision_records (tenant_id, invocation_id, decision_id, request_sha256, record, created_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (tenant_id, invocation_id) DO NOTHING",
 		record.TenantID, record.InvocationID, record.DecisionID, record.RequestSHA256, payload, record.CreatedAt)
-	if err != nil { return Record{}, false, fmt.Errorf("insert decision record: %w", err) }
+	if err != nil { return Record{}, false, storeUnavailable("insert DecisionRecord", err) }
 	rows, err := result.RowsAffected()
-	if err != nil { return Record{}, false, fmt.Errorf("read insert result: %w", err) }
+	if err != nil { return Record{}, false, storeUnavailable("read DecisionRecord insert result", err) }
 	if rows == 1 { return clone(record), true, nil }
 	if rows != 0 { return Record{}, false, fmt.Errorf("unexpected affected row count: %d", rows) }
 
@@ -70,8 +74,8 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
 		record.TenantID, record.InvocationID).Scan(&storedFingerprint, &storedPayload)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) { return Record{}, false, fmt.Errorf("idempotency row disappeared after conflict: %w", err) }
-		return Record{}, false, fmt.Errorf("load existing decision record: %w", err)
+		if errors.Is(err, sql.ErrNoRows) { return Record{}, false, storeUnavailable("load invocation after uniqueness conflict", err) }
+		return Record{}, false, storeUnavailable("load existing DecisionRecord", err)
 	}
 	if storedFingerprint != record.RequestSHA256 { return Record{}, false, ErrConflict }
 	var stored Record
@@ -93,7 +97,7 @@ func (s *PostgresStore) GetByDecisionID(ctx context.Context, tenantID, agentID, 
 		if errors.Is(err, sql.ErrNoRows) {
 			return Record{}, ErrNotFound
 		}
-		return Record{}, fmt.Errorf("load decision record: %w", err)
+		return Record{}, storeUnavailable("load DecisionRecord", err)
 	}
 	var record Record
 	if err := json.Unmarshal(payload, &record); err != nil {
@@ -120,14 +124,14 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list decision records: %w", err)
+		return nil, storeUnavailable("list DecisionRecords", err)
 	}
 	defer rows.Close()
 	records := make([]Record, 0, limit)
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			return nil, fmt.Errorf("scan decision record: %w", err)
+			return nil, storeUnavailable("scan DecisionRecord", err)
 		}
 		var record Record
 		if err := json.Unmarshal(payload, &record); err != nil {
@@ -136,7 +140,7 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 		records = append(records, clone(record))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate decision records: %w", err)
+		return nil, storeUnavailable("iterate DecisionRecords", err)
 	}
 	return records, nil
 }
