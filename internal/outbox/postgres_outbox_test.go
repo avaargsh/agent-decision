@@ -104,7 +104,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 }
 
 func TestDispatchOnceRetriesPublishFailure(t *testing.T) {
-	store := &fakeStore{events: []outbox.outbox.Event{{ID: "event-1"}}}
+	store := &fakeStore{events: []outbox.Event{{ID: "event-1"}}}
 	publisher := fakePublisher{err: errors.New("broker unavailable")}
 	published, err := outbox.DispatchOnce(context.Background(), store, publisher, "worker-a", 1, time.Minute, 5*time.Second)
 	if published != 0 || !errors.Is(err, publisher.err) || store.retries != 1 || store.acks != 0 {
