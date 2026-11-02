@@ -72,7 +72,11 @@ func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
 	changed.Constraints.MaxTokens++
 	if _, _, err = svc.Decide(context.Background(), p, changed); err != ErrConflict { t.Fatalf("expected conflict, got %v", err) }
 	p.TenantID = "tenant-b"
-	if _, created, err = svc.Decide(context.Background(), p, validRequest()); err != nil || !created { t.Fatalf("tenant keys collided: %v", err) }
+	tenantRequest := validRequest()
+	tenantRequest.Evidence[0].TenantID = "tenant-b"
+	if _, created, err = svc.Decide(context.Background(), p, tenantRequest); err != nil || !created {
+		t.Fatalf("tenant-scoped evidence must bind to the second tenant: created=%t err=%v", created, err)
+	}
 }
 
 func TestConcurrentSameKeyIsAtomic(t *testing.T) {
