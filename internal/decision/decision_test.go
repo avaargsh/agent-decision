@@ -22,7 +22,7 @@ func validRequest() Request {
 	return Request{
 		SchemaVersion: SchemaVersion,
 		Identity: Identity{AgentID:"agent-1", SessionID:"session-1", RunID:"run-17"},
-		IdempotencyKey:"alert-17",
+		InvocationID:"alert-17",
 		Input: Input{Objective:"sre_incident_triage", Service:"payment-api", Signal:"latency"},
 		Constraints: Constraints{DeadlineMS:30000, MaxTokens:2048, MaxCostMicros:50000, MaxCandidates:3},
 		Versions: VersionSet{CapabilityCatalogVersion:"catalog-12", StrategyVersion:PolicyVersion, PromptVersion:"none", ModelProfile:"rule-only"},
