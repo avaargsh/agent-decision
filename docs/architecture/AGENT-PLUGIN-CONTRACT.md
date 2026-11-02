@@ -49,7 +49,7 @@ For the same authenticated tenant and `invocation_id`:
 3. Different request digest: return `409 INVOCATION_ID_REUSED`.
 4. A worker crash before a response is durably committed may cause inference to run again after its lease expires. This may duplicate model-provider cost, but cannot duplicate protected side effects because the plugin has no privileged executor access.
 
-The HTTP worker remains stateless. A small invocation-result store may persist invocation digest, lease/state, and completed response; it is not canonical Run/Session state and is not a framework checkpoint.
+The HTTP worker remains stateless, but the service MUST persist invocation digest, lease/state, and the completed response before returning success. This invocation-result store is not canonical Run/Session state and is not a framework checkpoint.
 
 ## Error contract
 
@@ -64,7 +64,7 @@ The normative error schema is `protocol/v0.1/schemas/decision-turn-error.schema.
 | 413 | PAYLOAD_TOO_LARGE | Do not retry |
 | 422 | UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CAPABILITY_VERSION, OUTPUT_VALIDATION_FAILED | Fail closed; do not retry |
 | 429 | RATE_LIMITED | Bounded retry; honor retry_after_ms |
-| 500 | INTERNAL_ERROR | Bounded retry only if Runtime policy allows and deadline remains |
+| 500 | INTERNAL_ERROR | Do not retry by default; alert and fail the invocation |
 | 503 | DEPENDENCY_UNAVAILABLE | Bounded retry with backoff |
 | 504 | DEADLINE_EXCEEDED | Stop retrying |
 
@@ -81,5 +81,5 @@ Cancellation is propagated from Runtime to the plugin. A cancelled request must 
 ## Compatibility
 
 - JSON Schema Draft 2020-12 is canonical.
-- Unknown fields are rejected in v0.1. Additive fields require a new compatible protocol revision and updated shared fixtures; changes to required fields, types, union semantics, or security meaning require a new protocol version.
+- v0.1 is frozen and closed-world: unknown fields are rejected. Any schema change, including an additive field, requires a new protocol version and updated shared fixtures.
 - Python and TypeScript adapters must pass the exact same fixtures. Runtime Go validation must pass them as well before integration is accepted.

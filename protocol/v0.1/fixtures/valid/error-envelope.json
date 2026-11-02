@@ -1,0 +1,9 @@
+{
+  "protocol_version": "0.1",
+  "invocation_id": "inv-001",
+  "error": {
+    "code": "DEPENDENCY_UNAVAILABLE",
+    "message": "Decision dependency temporarily unavailable",
+    "retry_after_ms": 1000
+  }
+}

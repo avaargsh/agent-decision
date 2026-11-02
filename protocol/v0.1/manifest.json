@@ -23,7 +23,8 @@
       "fixtures/valid/decision-turn-request.json",
       "fixtures/valid/final-response.json",
       "fixtures/valid/action-proposals.json",
-      "fixtures/valid/needs-input.json"
+      "fixtures/valid/needs-input.json",
+      "fixtures/valid/error-envelope.json"
     ],
     "invalid": [
       "fixtures/invalid/unknown-protocol-version.request.json",
@@ -32,7 +33,9 @@
       "fixtures/invalid/non-utc-deadline.request.json"
     ],
     "semantic": [
-      "fixtures/semantic/capability-not-allowed.json"
+      "fixtures/semantic/capability-not-allowed.json",
+      "fixtures/semantic/unsupported-capability-version.request.json",
+      "fixtures/semantic/unsupported-context-schema-version.request.json"
     ],
     "idempotency": [
       "fixtures/idempotency/invocation-id-reused-different-request.json"

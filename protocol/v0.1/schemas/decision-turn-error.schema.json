@@ -42,7 +42,8 @@
             "CANCELLED",
             "DEPENDENCY_UNAVAILABLE",
             "INTERNAL_ERROR"
-          ]
+          ],
+          "type": "string"
         },
         "message": {
           "type": "string",

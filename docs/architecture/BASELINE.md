@@ -16,7 +16,7 @@ Python-first with LangGraph as the initial adapter candidate. TypeScript is supp
 
 ## Runtime and state
 
-Start with stateless HTTP plugin workers. A small durable invocation-result store may enforce `(authenticated_tenant, invocation_id, request_digest)` deduplication and replay completed responses. It is not canonical Run/Session state and must not store framework checkpoints as platform truth. Framework-specific checkpointing is disabled or isolated in v0.1. Long-lived durable workflow state belongs to Temporal/Runtime.
+Start with stateless HTTP plugin workers. A durable invocation-result store must enforce `(authenticated_tenant, invocation_id, request_digest)` deduplication and replay completed responses before the host returns success. It is not canonical Run/Session state and must not store framework checkpoints as platform truth. Framework-specific checkpointing is disabled or isolated in v0.1. Long-lived durable workflow state belongs to Temporal/Runtime.
 
 ## Evaluation
 
