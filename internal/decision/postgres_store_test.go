@@ -90,7 +90,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 
 	otherTenant := record
 	otherTenant.TenantID = "store-integration-test-other"
-	otherTenant.DecisionID = "dec_integration_002"
+	otherTenant.DecisionID = "dec_"+strings.Repeat("c",64)
 	if _, created, err := store.SaveOrGet(ctx, otherTenant); err != nil || !created {
 		t.Fatalf("tenant isolation: created=%v err=%v", created, err)
 	}
@@ -101,7 +101,8 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 
 	concurrent := record
 	concurrent.IdempotencyKey = "concurrent-key"
-	concurrent.DecisionID = "dec_integration_003"
+	concurrent.DecisionID = "dec_"+strings.Repeat("b",64)
+	concurrent.CreatedAt = record.CreatedAt
 	const workers = 12
 	var wg sync.WaitGroup
 	createdResults := make(chan bool, workers)
@@ -131,6 +132,16 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("expected exactly one concurrent insert winner, got %d", winners)
+	}
+
+	firstPage, err := store.ListByRun(ctx, record.TenantID, record.AgentID, record.SessionID, record.RunID, nil, 1)
+	if err != nil || len(firstPage) != 1 || firstPage[0].DecisionID != concurrent.DecisionID {
+		t.Fatalf("first same-timestamp ledger page: records=%+v err=%v", firstPage, err)
+	}
+	secondPage, err := store.ListByRun(ctx, record.TenantID, record.AgentID, record.SessionID, record.RunID,
+		&DecisionCursor{CreatedAt: firstPage[0].CreatedAt, DecisionID: firstPage[0].DecisionID}, 1)
+	if err != nil || len(secondPage) != 1 || secondPage[0].DecisionID != record.DecisionID {
+		t.Fatalf("second same-timestamp ledger page: records=%+v err=%v", secondPage, err)
 	}
 
 }
