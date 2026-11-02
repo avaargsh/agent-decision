@@ -12,6 +12,8 @@ import rfc8785
 
 from agent_decision_protocol.boundary import (
     BoundaryError,
+    error_envelope,
+    validate_error,
     request_digest,
     strict_json_loads,
     validate_request,
@@ -208,6 +210,36 @@ class DigestTests(unittest.TestCase):
         baseline = fixture("valid/decision-turn-request.json")
         changed = fixture("idempotency/invocation-id-reused-different-request.json")
         self.assertNotEqual(request_digest(baseline), request_digest(changed))
+
+
+class ErrorEnvelopeTests(unittest.TestCase):
+    def test_invalid_json_is_standard_invalid_request(self) -> None:
+        error = BoundaryError("INVALID_JSON", "secret-value from malformed payload")
+        result = error_envelope(error, invocation_id="inv-001")
+        validate_error(wire(result))
+        self.assertEqual(result["error"]["code"], "INVALID_REQUEST")
+        self.assertNotIn("secret-value", result["error"]["message"])
+
+    def test_invalid_proposal_is_standard_output_validation_error(self) -> None:
+        error = BoundaryError("CAPABILITY_NOT_ALLOWED", "confidential field")
+        result = error_envelope(error, invocation_id="inv-001")
+        validate_error(wire(result))
+        self.assertEqual(result["error"]["code"], "OUTPUT_VALIDATION_FAILED")
+        self.assertNotIn("confidential", result["error"]["message"])
+
+    def test_unsupported_context_schema_is_machine_readable(self) -> None:
+        result = error_envelope(
+            BoundaryError("UNSUPPORTED_CONTEXT_SCHEMA_VERSION", "private context"),
+            invocation_id="inv-001",
+        )
+        validate_error(wire(result))
+        self.assertEqual(result["error"]["code"], "UNSUPPORTED_CONTEXT_SCHEMA_VERSION")
+
+    def test_unknown_internal_error_fails_closed(self) -> None:
+        result = error_envelope(BoundaryError("UNEXPECTED_INTERNAL_CODE", "internal secret"))
+        validate_error(wire(result))
+        self.assertEqual(result["error"]["code"], "INTERNAL_ERROR")
+        self.assertNotIn("secret", result["error"]["message"])
 
 
 if __name__ == "__main__":
