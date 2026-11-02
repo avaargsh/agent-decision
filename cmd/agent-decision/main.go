@@ -10,8 +10,18 @@ import (
 )
 
 func main() {
-	// No authentication/persistent store yet: never bind to a public interface.
-	srv := &http.Server{Addr: "127.0.0.1:8080", Handler: api.NewHandler(decision.NewService(decision.NewMemoryStore())), ReadHeaderTimeout: 5 * time.Second}
-	log.Printf("agent-decision dev server on %s (loopback only)", srv.Addr)
-	log.Fatal(srv.ListenAndServe())
+	// Deliberately fail closed: this development binary has neither an
+	// authenticated principal resolver nor an ACP snapshot verifier.
+	service := decision.NewService(decision.NewMemoryStore(), nil)
+	handler := api.NewHandler(service, nil)
+	server := &http.Server{
+		Addr:              "127.0.0.1:8080",
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Printf("agent-decision dev server on %s; decision calls fail closed until auth and ACP verification are configured", server.Addr)
+	log.Fatal(server.ListenAndServe())
 }
