@@ -216,3 +216,17 @@ func TestSLOReplayRejectsCaseVariantSemanticAliases(t *testing.T) {
 		})
 	}
 }
+
+func TestSLOReplayRejectsExcessiveJSONNesting(t *testing.T) {
+	input := replayFixture(t)
+	const depth = 129
+	nested := strings.Repeat("[", depth) + "0" + strings.Repeat("]", depth)
+	policy := strings.TrimSuffix(string(input.PolicyBytes), "}") + `, "untrusted_extension":` + nested + `}`
+	input.PolicyBytes = []byte(policy)
+	input.ExpectedPolicySHA256 = replaySHA(input.PolicyBytes)
+
+	_, err := ReplaySLOHealth(input)
+	if err == nil || !strings.Contains(err.Error(), "nesting") {
+		t.Fatalf("deeply nested policy should fail at the bounded JSON parser, got %v", err)
+	}
+}
