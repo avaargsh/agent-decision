@@ -1,5 +1,7 @@
 package decision
 
+import "regexp"
+
 // Strategy owns decision policy only. It cannot authorize or execute capabilities.
 type Strategy interface {
 	Version() string
@@ -11,6 +13,15 @@ type StrategyResult struct {
 	ReasonCodes []string
 	Steps       []PlanStep
 }
+
+var (
+	reasonCodeRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	requiredSREStepKinds = map[string]string{
+		"sre.metrics.read":  "OBSERVE_METRICS",
+		"sre.logs.read":     "INSPECT_LOGS",
+		"sre.changes.read":  "CORRELATE_CHANGE",
+	}
+)
 
 // SREReadOnlyStrategy creates a deterministic, all-or-nothing investigation plan.
 type SREReadOnlyStrategy struct{}
@@ -47,7 +58,7 @@ func (SREReadOnlyStrategy) Plan(req Request, decisionID string) StrategyResult {
 		}
 		result.Steps = append(result.Steps, PlanStep{
 			StepID: "step_" + digest(struct {
-				DecisionID  string
+				DecisionID   string
 				CapabilityID string
 			}{decisionID, item.id})[:24],
 			Kind:            item.kind,
@@ -65,18 +76,33 @@ func validateStrategyResult(req Request, result StrategyResult) error {
 	if result.Status != StatusProposed && result.Status != StatusAbstained {
 		return ErrInvalidRequest
 	}
+	seenReasons := make(map[string]struct{}, len(result.ReasonCodes))
+	for _, reason := range result.ReasonCodes {
+		if !reasonCodeRe.MatchString(reason) {
+			return ErrInvalidRequest
+		}
+		if _, exists := seenReasons[reason]; exists {
+			return ErrInvalidRequest
+		}
+		seenReasons[reason] = struct{}{}
+	}
 	if result.Status == StatusAbstained {
 		if len(result.Steps) != 0 || len(result.ReasonCodes) == 0 {
 			return ErrInvalidRequest
 		}
 		return nil
 	}
-	if len(result.Steps) == 0 || len(result.Steps) > 3 {
+	// sre-readonly-v1 is intentionally all-or-nothing: all three required
+	// investigation steps appear once, with a fixed capability-to-kind mapping.
+	if len(result.Steps) != len(requiredSREStepKinds) {
 		return ErrInvalidRequest
 	}
-	seen := make(map[string]struct{}, len(result.Steps))
+	seenSteps := make(map[string]struct{}, len(result.Steps))
+	seenCapabilities := make(map[string]struct{}, len(result.Steps))
 	for _, step := range result.Steps {
-		if !validOpaque(step.StepID) || !step.ReadOnly ||
+		expectedKind, supported := requiredSREStepKinds[step.Capability.ID]
+		if !supported || step.Kind != expectedKind ||
+			!validOpaque(step.StepID) || !step.ReadOnly ||
 			step.Capability.EffectClass != "read_only" ||
 			step.Capability.Idempotency != "safe" || !step.Capability.TenantScoped ||
 			step.TargetRef != req.Input.Service ||
@@ -88,10 +114,14 @@ func validateStrategyResult(req Request, result StrategyResult) error {
 		if !ok || digest(bound) != digest(step.Capability) {
 			return ErrInvalidRequest
 		}
-		if _, exists := seen[step.StepID]; exists {
+		if _, exists := seenSteps[step.StepID]; exists {
 			return ErrInvalidRequest
 		}
-		seen[step.StepID] = struct{}{}
+		if _, exists := seenCapabilities[step.Capability.ID]; exists {
+			return ErrInvalidRequest
+		}
+		seenSteps[step.StepID] = struct{}{}
+		seenCapabilities[step.Capability.ID] = struct{}{}
 	}
 	return nil
 }
