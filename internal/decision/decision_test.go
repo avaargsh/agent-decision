@@ -186,7 +186,6 @@ func TestEvidenceEnvelopeRejectsScopeWindowAndRevocationMismatch(t *testing.T) {
 }
 
 func TestEvidenceEnvelopeBindsTenantInAuthorityVerifier(t *testing.T) {
-	type tenantVerifier struct{}
 	// The request-level envelope tenant is only a claim. The authoritative
 	// verifier must bind it to the trusted principal tenant.
 	verifier := authorityFunc(func(_ context.Context, p Principal, req Request) error {
