@@ -20,8 +20,10 @@ Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestra
 ## Go implementation
 
 - Core domain and strategy SPI: `internal/decision`
+- PostgreSQL persistence: `internal/decision/postgres_store.go`
 - HTTP transport: `internal/api`
 - Development entry point: `cmd/agent-decision`
+- Database migration: `migrations/0001_create_decision_records.sql`
 - Architecture contract: `docs/architecture.md`
 - Delivery roadmap: `docs/roadmap.md`
 
@@ -35,4 +37,6 @@ go vet ./...
 go run ./cmd/agent-decision
 ```
 
-The development server binds to loopback and fails closed for decision requests until a trusted principal resolver and authoritative snapshot verifier are configured. The in-memory store is for tests and local development only; production requires a durable store with an atomic tenant-scoped idempotency constraint.
+PostgreSQL integration tests run when `DATABASE_URL` is set. The CI workflow provisions PostgreSQL 16 and exercises the migration, tenant-scoped idempotency, replay, conflict detection, and concurrent inserts.
+
+The development server binds to loopback and fails closed for decision requests until a trusted principal resolver and authoritative snapshot verifier are configured. The in-memory store is for tests and local development only. Production deployment must apply the migration and use a restricted database role; the durable store enforces atomic tenant-scoped idempotency.
