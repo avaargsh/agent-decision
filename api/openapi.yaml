@@ -33,62 +33,62 @@ paths:
         content:
           application/json:
             schema:
-              $ref: ./schemas/decision-request.v1.json
+              $ref: ./schemas/decision-request.schema.json
       responses:
         "201":
           description: DecisionRecord created
           content:
             application/json:
               schema:
-                $ref: ./schemas/decision-record.v1.json
+                $ref: ./schemas/decision-record.schema.json
         "200":
           description: Existing DecisionRecord replayed for the same tenant and request fingerprint
           content:
             application/json:
               schema:
-                $ref: ./schemas/decision-record.v1.json
+                $ref: ./schemas/decision-record.schema.json
         "400":
           description: Malformed JSON or invalid DecisionRequest
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "401":
           description: Trusted principal missing or unauthenticated
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "403":
           description: Principal binding or authoritative snapshot verification rejected
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "409":
           description: Idempotency key reused with a different request fingerprint
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "415":
           description: Content-Type must be application/json
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "503":
           description: Authority verifier or persistence is unavailable
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
         "500":
           description: Unexpected internal processing error
           content:
             application/json:
               schema:
-                $ref: ./schemas/error.v1.json
+                $ref: ./schemas/problem.schema.json
 components:
   securitySchemes:
     bearerAuth:
