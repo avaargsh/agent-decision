@@ -73,7 +73,7 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 		record, created, err := svc.Decide(r.Context(), principal, req)
 		switch {
 		case errors.Is(err, decision.ErrConflict):
-			problem(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "idempotency key belongs to a different request")
+			problem(w, http.StatusConflict, "INVOCATION_ID_REUSED", "invocation_id belongs to a different request")
 			return
 		case errors.Is(err, decision.ErrUnauthenticated):
 			problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
