@@ -285,7 +285,7 @@ func (r Request) Validate() error {
 		}
 		// A source reference identifies one immutable observation. Repeating it
 		// must not inflate evidence coverage or create ambiguous provenance.
-		evidenceKey := evidence.SourceID + "\\x00" + evidence.Ref
+		evidenceKey := evidence.SourceID + "\x00" + evidence.Ref
 		if _, exists := seenEvidence[evidenceKey]; exists {
 			return fmt.Errorf("%w: duplicate evidence reference", ErrInvalidRequest)
 		}
