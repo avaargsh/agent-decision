@@ -1,17 +1,38 @@
 # Agent Decision
 
-Managed Agent Framework plugin host for Open Agent Infrastructure.
+Go-first Decision Intelligence Core for Open Agent Infrastructure.
 
-## Product boundary
+Agent Decision turns authenticated, evidence-backed context into deterministic and auditable decision records. The initial vertical is read-only SRE incident investigation planning.
 
-Owns framework-specific model reasoning, structured decision output, tool selection and decision evaluation. It does not own Run lifecycle, durable workflow history, approval state or privileged tool execution.
+## Responsibilities
 
-## Initial architecture
+- Validate versioned DecisionRequest contracts.
+- Bind requests to a trusted tenant and caller principal.
+- Verify externally owned context, evidence, and capability snapshots.
+- Run a replaceable, versioned decision strategy.
+- Persist an idempotent DecisionRecord and a bounded read-only PlanCandidate.
+- Abstain explicitly when evidence or required capabilities are missing.
 
-- Python-first plugin adapter; TypeScript adapter remains supported by the versioned plugin contract.
-- Framework adapters are replaceable (initial candidate: LangGraph).
-- Each invocation is bounded to one decision step and returns a final response or typed tool-call proposals.
-- Tool proposals are executed by Agent Runtime through EngageGuard.
-- Model access uses the platform gateway; plugin workers do not receive long-lived provider credentials.
+## Explicit non-goals
 
-The platform workflow and retries are owned by agent-runtime and Temporal.
+Agent Decision does not own Agent, Session, or Run lifecycle; workflow orchestration; approval state; capability authorization; credentials; execution permits; or tool execution. Agent Control Plane governs, Agent Runtime orchestrates and executes through EngageGuard, and Agent Decision proposes.
+
+## Go implementation
+
+- Core domain and strategy SPI: `internal/decision`
+- HTTP transport: `internal/api`
+- Development entry point: `cmd/agent-decision`
+- Architecture contract: `docs/architecture.md`
+- Delivery roadmap: `docs/roadmap.md`
+
+The default `sre-readonly-v1` strategy emits a deterministic all-or-nothing plan using metrics, logs, and change-history read capabilities. Missing evidence or capabilities produces an explicit abstention. Strategy output is independently checked by the core for read-only safety invariants.
+
+## Development
+
+```bash
+go test -race ./...
+go vet ./...
+go run ./cmd/agent-decision
+```
+
+The development server binds to loopback and fails closed for decision requests until a trusted principal resolver and authoritative snapshot verifier are configured. The in-memory store is for tests and local development only; production requires a durable store with an atomic tenant-scoped idempotency constraint.
