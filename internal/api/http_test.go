@@ -113,3 +113,28 @@ func TestHealthDoesNotRequireAuthentication(t *testing.T) {
 	h.ServeHTTP(w,httptest.NewRequest(http.MethodGet,"/healthz",nil))
 	if w.Code!=http.StatusNoContent { t.Fatalf("health: %d",w.Code) }
 }
+
+
+func TestHTTPRequiresExplicitEvidenceCollections(t *testing.T) {
+	h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(validBody(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	delete(payload, "evidence_refs")
+	missing, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := send(h, missing, "application/json"); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing evidence_refs: got %d body=%s", w.Code, w.Body.String())
+	}
+	payload["evidence_refs"] = json.RawMessage("null")
+	nullArray, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := send(h, nullArray, "application/json"); w.Code != http.StatusBadRequest {
+		t.Fatalf("null evidence_refs: got %d body=%s", w.Code, w.Body.String())
+	}
+}
