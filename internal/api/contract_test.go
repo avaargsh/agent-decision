@@ -107,6 +107,26 @@ func TestDecisionJSONSchemasMatchGoContracts(t *testing.T) {
 	assertGoTypeMatchesSchema(t, recordSchema, reflect.TypeOf(decision.Record{}), recordSchema, "DecisionRecord")
 }
 
+func TestEvidenceEnvelopeSchemaIsConsistentAcrossRequestAndRecord(t *testing.T) {
+	request := loadSchema(t, "../../api/schemas/decision-request.schema.json")
+	record := loadSchema(t, "../../api/schemas/decision-record.schema.json")
+	requestDefs := request["$defs"].(map[string]any)
+	recordDefs := record["$defs"].(map[string]any)
+	requestEvidence := requestDefs["EvidenceRef"]
+	recordEvidence := recordDefs["EvidenceRef"]
+	if !reflect.DeepEqual(requestEvidence, recordEvidence) {
+		t.Fatal("DecisionRequest and DecisionRecord EvidenceRef schemas must be identical")
+	}
+	evidence := requestEvidence.(map[string]any)
+	properties := evidence["properties"].(map[string]any)
+	version := properties["schema_version"].(map[string]any)
+	if version["pattern"] != StringRawSemverPattern {
+		t.Fatalf("unexpected evidence schema_version pattern: %v", version["pattern"])
+	}
+}
+
+const StringRawSemverPattern = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+
 func TestOpenAPIContractReferencesVersionedSchemas(t *testing.T) {
 	data, err := os.ReadFile("../../api/openapi.yaml")
 	if err != nil { t.Fatal(err) }
