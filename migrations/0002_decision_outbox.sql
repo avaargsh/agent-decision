@@ -46,3 +46,15 @@ DROP TRIGGER IF EXISTS outbox_event_identity_immutable ON outbox_events;
 CREATE TRIGGER outbox_event_identity_immutable
 BEFORE UPDATE ON outbox_events
 FOR EACH ROW EXECUTE FUNCTION reject_decision_outbox_identity_mutation();
+
+CREATE OR REPLACE FUNCTION reject_decision_outbox_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'outbox events are append-only';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS outbox_events_no_delete ON outbox_events;
+CREATE TRIGGER outbox_events_no_delete
+BEFORE DELETE ON outbox_events
+FOR EACH ROW EXECUTE FUNCTION reject_decision_outbox_delete();
