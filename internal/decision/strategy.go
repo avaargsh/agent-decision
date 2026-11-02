@@ -61,7 +61,7 @@ func (SREReadOnlyStrategy) Plan(req Request, decisionID string) StrategyResult {
 	return result
 }
 
-func validateStrategyResult(result StrategyResult) error {
+func validateStrategyResult(req Request, result StrategyResult) error {
 	if result.Status != StatusProposed && result.Status != StatusAbstained {
 		return ErrInvalidRequest
 	}
@@ -78,7 +78,14 @@ func validateStrategyResult(result StrategyResult) error {
 	for _, step := range result.Steps {
 		if !validOpaque(step.StepID) || !step.ReadOnly ||
 			step.Capability.EffectClass != "read_only" ||
-			step.Capability.Idempotency != "safe" || !step.Capability.TenantScoped {
+			step.Capability.Idempotency != "safe" || !step.Capability.TenantScoped ||
+			step.TargetRef != req.Input.Service ||
+			step.InputSchemaRef != step.Capability.InputSchemaRef ||
+			step.OutputSchemaRef != step.Capability.OutputSchemaRef {
+			return ErrInvalidRequest
+		}
+		bound, ok := findCapability(req.Capabilities, step.Capability.ID)
+		if !ok || digest(bound) != digest(step.Capability) {
 			return ErrInvalidRequest
 		}
 		if _, exists := seen[step.StepID]; exists {
