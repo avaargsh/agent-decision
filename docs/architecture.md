@@ -128,3 +128,95 @@ The following are deliberately outside the v0.1 implementation and require separ
 8. Ledger export, retention and archival evidence for long-running audit requirements.
 
 These increments must preserve the boundary: Decision proposes and explains; Control Plane owns canonical identity and policy bindings; EngageGuard authorizes actions; Runtime owns durable execution semantics and executes.
+
+
+## 11. Production SRE decision loop
+
+The production target is an evidence-backed, risk-aware decision loop. The current v0.1 implementation is only the deterministic, read-only proposal core; the following stages are architecture direction, not shipped capabilities.
+
+### 11.1 Responsibility mapping
+
+| Reference capability | Responsibility | Agent Decision integration boundary |
+|---|---|---|
+| Google AI Operator | Parallel investigation, hypothesis formation, mitigation proposal, post-action re-investigation | Decision supplies typed evidence, bounded hypotheses and candidate proposals; Runtime owns the durable agent loop |
+| Google Actus / Actuation Agent | Discovery, concrete action planning, deterministic preflight checks, progressive authorization, long-running actuation, emergency stop | EngageGuard owns authorization/permit/trusted execution; Agent Runtime owns durable execution and recovery |
+| Google IRM Analyzer | Reconstruct human incident trajectories, capture operational memory, curate Bronze/Silver/Gold evaluation data | Separate evidence/evaluation pipeline consumes Decision records and Runtime receipts; it does not become a runtime dependency of the decision core |
+| Conftest + OPA/Rego | Deterministic policy-as-code checks over structured configuration, including rendered Kubernetes YAML | Preflight policy adapter validates candidate manifests and returns structured violations; it does not estimate probabilistic risk or execute changes |
+
+Conftest is a policy-testing utility built on OPA/Rego for structured configuration. It supports Kubernetes YAML and other structured formats. Its role here is the deterministic policy gate around a proposed configuration or action. Probability calibration, expected-loss comparison, authorization, actuation and post-condition verification must be implemented by their respective components, not attributed to Conftest. See [Conftest documentation](https://github.com/open-policy-agent/conftest) and [Conftest policy testing](https://www.conftest.dev/).
+
+### 11.2 Target decision pipeline
+
+```text
+Alert / SLO / change / topology / incident history
+                    |
+                    v
+       Evidence collection + provenance
+                    |
+                    v
+    Investigation / hypotheses / verification
+                    |
+                    v
+  Candidate actions + explicit no-op alternative
+                    |
+          +---------+----------+
+          |                    |
+          v                    v
+ Deterministic constraints   Calibrated risk model
+ (OPA/Rego/Conftest)         P(outcome | evidence, action)
+          |                    |
+          +---------+----------+
+                    v
+       Expected-loss evaluation
+                    |
+                    v
+     Proposal + explanation + confidence
+                    |
+                    v
+ Control Plane policy / EngageGuard authorization
+                    |
+                    v
+ Agent Runtime staged execution and recovery
+                    |
+                    v
+ Post-condition checks / rollback / stop
+                    |
+                    v
+ Runtime receipts + outcome evidence + human labels
+                    |
+                    v
+ IRM-style trajectory store / eval / recalibration
+```
+
+### 11.3 Expected-loss and calibration contract
+
+For a candidate action (a), compare its expected loss with the explicit no-op/continue-observing alternative:
+
+[
+EL(a \mid E)=\sum_{s \in S}P(s\mid E,a)\cdot Impact(s,a)
++ ExecutionCost(a)+ReversibilityPenalty(a)
+]
+
+An action is eligible for proposal only when its expected loss is lower than the no-op baseline by a policy-defined margin and its confidence, evidence freshness, blast radius and reversibility constraints are satisfied. A low model score alone never grants authority.
+
+The probability term must come from a calibrated model measured against incident outcomes and human-verified labels. Record calibration version, training/evaluation window, cohort, sample count, reliability metrics and uncertainty bounds. Keep model confidence separate from probability until calibration evidence exists. Use stratified human review to promote programmatic labels into a trusted Gold set; avoid training and evaluating on leakage-correlated incident trajectories.
+
+### 11.4 Progressive authorization and feedback
+
+- L0/L1: monitor and investigate; Decision may emit read-only findings and verification plans.
+- L2: propose or stage a bounded mitigation; human approval is mandatory before actuation.
+- L3: allow autonomous actuation only for explicitly allow-listed scenarios with statistically supported precision, bounded blast radius, deterministic preflight checks and a working stop/rollback path.
+- L4: multi-step autonomous resolution requires evidence of end-to-end recovery, not merely a successful API call.
+
+Decision remains proposal-only at every level. Control Plane owns autonomy policy; EngageGuard verifies authorization and issues/consumes one-time permits; Runtime owns durable execution, retries, operation state and recovery. A post-action decision must consume a Runtime receipt and fresh post-condition evidence. Unknown execution outcomes, Guard denial and incomplete post-condition checks must not be converted into automatic retries.
+
+### 11.5 Delivery sequence and exit criteria
+
+1. **Evidence/hypothesis slice:** producer-backed envelope semantics, freshness/coverage policy, contradictory evidence representation, provenance verification and investigation outcome ingestion.
+2. **Deterministic policy slice:** versioned OPA/Rego bundle, Kubernetes manifest fixtures, Conftest verification in CI, policy decision artifact and fail-closed behavior on evaluation errors.
+3. **Risk slice:** candidate action contract, no-op baseline, calibrated probability model, uncertainty bounds and risk regression dataset.
+4. **Expected-loss slice:** explicit loss taxonomy, unit/scale ownership, counterfactual evaluation and policy thresholds; reject uncalibrated probabilities.
+5. **Governed actuation slice:** staged approvals and autonomy profiles through Control Plane/EngageGuard/Runtime; no direct executor in this repository.
+6. **Feedback/evaluation slice:** execution receipts, post-condition evidence, human trajectory capture, Gold-label workflow, offline eval and release gates.
+
+No probabilistic risk or expected-loss behavior is considered production-ready until the evaluation dataset, calibration report, reproducible thresholds and incident-level regression evidence are checked into the release artifacts.
