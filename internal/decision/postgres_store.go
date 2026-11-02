@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/avaargsh/agent-decision/internal/outbox"
 )
 
 var ErrStoreUnavailable = errors.New("decision store unavailable")
