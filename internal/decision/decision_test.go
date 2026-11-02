@@ -62,12 +62,22 @@ func TestAbstainsWithoutEvidenceOrRequiredCapability(t *testing.T) {
 }
 
 func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
-	svc := NewService(NewMemoryStore(), allowAuthority{})
+	store := NewMemoryStore()
+	svc := NewService(store, allowAuthority{})
 	p := testPrincipal()
 	a, _, err := svc.Decide(context.Background(), p, validRequest())
 	if err != nil { t.Fatal(err) }
 	b, created, err := svc.Decide(context.Background(), p, validRequest())
 	if err != nil || created || a.DecisionID != b.DecisionID { t.Fatalf("replay failed: %v", err) }
+
+	// Exact retries of a completed invocation must return the durable result
+	// even when the live evidence verifier is unavailable on the retry.
+	replayService := NewService(store, nil)
+	replayed, created, err := replayService.Decide(context.Background(), p, validRequest())
+	if err != nil || created || replayed.DecisionID != a.DecisionID || replayed.Plan.PlanHash != a.Plan.PlanHash {
+		t.Fatalf("completed invocation replay must not depend on a second authority lookup: created=%t err=%v", created, err)
+	}
+
 	changed := validRequest()
 	changed.Constraints.MaxTokens++
 	if _, _, err = svc.Decide(context.Background(), p, changed); err != ErrConflict { t.Fatalf("expected conflict, got %v", err) }
