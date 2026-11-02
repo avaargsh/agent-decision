@@ -1,0 +1,36 @@
+name: protocol-contract
+
+on:
+  pull_request:
+    paths:
+      - "protocol/**"
+      - "docs/architecture/AGENT-PLUGIN-CONTRACT.md"
+      - "scripts/validate_protocol.py"
+      - "requirements-contract.txt"
+      - ".github/workflows/protocol-contract.yml"
+  push:
+    branches: [main, feature/platform-foundation]
+    paths:
+      - "protocol/**"
+      - "docs/architecture/AGENT-PLUGIN-CONTRACT.md"
+      - "scripts/validate_protocol.py"
+      - "requirements-contract.txt"
+      - ".github/workflows/protocol-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-contract.txt
+      - name: Install contract validator
+        run: python -m pip install -r requirements-contract.txt
+      - name: Validate schemas and fixtures
+        run: python scripts/validate_protocol.py
