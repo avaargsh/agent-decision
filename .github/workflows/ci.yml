@@ -41,6 +41,13 @@ jobs:
       - name: Validate OpenAPI YAML
         run: |
           ruby -e 'require "yaml"; document = YAML.load_file("api/openapi.yaml"); abort "invalid OpenAPI structure" unless document["openapi"] == "3.1.0" && document.fetch("paths").key?("/v1/decisions")'
+      - name: Validate Kubernetes SRE policies with Conftest
+        run: |
+          docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/hardened-deployment.yaml
+          if docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/unsafe-deployment.yaml; then
+            echo "unsafe Kubernetes fixture unexpectedly passed policy validation"
+            exit 1
+          fi
       - name: Test
         run: go test -race ./...
       - name: Vet
