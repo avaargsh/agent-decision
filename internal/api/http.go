@@ -126,6 +126,10 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 				problem(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be an integer")
 				return
 			}
+			if parsed < 1 || parsed > 100 {
+				problem(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be between 1 and 100")
+				return
+			}
 			limit = parsed
 		}
 		page, err := svc.ListRunDecisions(r.Context(), principal, r.PathValue("run_id"), r.URL.Query().Get("cursor"), limit)
