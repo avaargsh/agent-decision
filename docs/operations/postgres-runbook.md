@@ -74,7 +74,7 @@ Perform a periodic isolated restore rehearsal and after material schema/backup c
 
 1. Restore the backup/PITR point to an isolated database.
 2. Confirm migration/schema version and indexes are present.
-3. Run checks for row counts, required columns, JSONB object validity and duplicate tenant/idempotency keys.
+3. Run checks for row counts, required columns, JSONB object validity and duplicate tenant/invocation_ids.
 4. Compare a deterministic sample of DecisionRecord JSON and request fingerprints with the backup evidence manifest.
 5. Start a staging instance with the app role and run repository integration checks for same-key replay and changed-fingerprint conflict.
 6. Record backup timestamp, restore point, duration, validation results and operator in an immutable evidence location.
@@ -82,7 +82,7 @@ Perform a periodic isolated restore rehearsal and after material schema/backup c
 
 ## 5. Incident response and migration safety
 
-- Database unavailable: API returns `503 STORE_UNAVAILABLE`; caller may retry the same tenant-scoped idempotency key and request fingerprint after recovery.
-- Idempotency conflict: return `409 IDEMPOTENCY_CONFLICT`; never overwrite the stored record.
+- Database unavailable: API returns `503 STORE_UNAVAILABLE`; caller may retry the same tenant-scoped invocation_id and request fingerprint after recovery.
+- Idempotency conflict: return `409 INVOCATION_ID_REUSED`; never overwrite the stored record.
 - Schema migration: run as the migrator role, review SQL and lock impact, back up before destructive changes, and use forward-compatible expand/contract changes. v0001 currently creates the DecisionRecord table and indexes.
 - A successful backup job is not a restore proof. Track restore rehearsal evidence independently.
