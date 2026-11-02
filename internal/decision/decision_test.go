@@ -122,7 +122,9 @@ func TestTenantScopedIdempotencyAndFullFingerprint(t *testing.T) {
 	}
 	p.TenantID = "tenant-b"
 	tenantRequest := validRequest()
-	tenantRequest.Evidence[0].TenantID = "tenant-b"
+	for i := range tenantRequest.Evidence {
+		tenantRequest.Evidence[i].TenantID = "tenant-b"
+	}
 	if _, created, err = svc.Decide(context.Background(), p, tenantRequest); err != nil || !created {
 		t.Fatalf("tenant-scoped evidence must bind to the second tenant: created=%t err=%v", created, err)
 	}
