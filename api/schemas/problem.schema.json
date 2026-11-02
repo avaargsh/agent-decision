@@ -17,7 +17,19 @@
       ],
       "properties": {
         "code": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "UNAUTHENTICATED",
+            "IDENTITY_MISMATCH",
+            "AUTHORITY_UNAVAILABLE",
+            "AUTHORITY_REJECTED",
+            "STORE_UNAVAILABLE",
+            "INVALID_REQUEST",
+            "IDEMPOTENCY_CONFLICT",
+            "UNSUPPORTED_MEDIA_TYPE",
+            "INVALID_JSON",
+            "INTERNAL_ERROR"
+          ]
         },
         "message": {
           "type": "string"
