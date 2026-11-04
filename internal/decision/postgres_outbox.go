@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
@@ -208,6 +209,62 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	}
 	if !identityConstraintOK {
 		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
+	}
+
+	// A same-name CREATE OR REPLACE FUNCTION preserves the function OID and
+	// every trigger binding checked above. Validate the *actual* installed
+	// source against the immutable v1/v2 migration's reviewed function bodies.
+	// Privileged schema owners can still alter these between checks; this is
+	// startup drift detection, not a claim of privileged-user tamper resistance.
+	immutableFunctions := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "reject_decision_record_mutation()",
+			body: `BEGIN
+    RAISE EXCEPTION 'decision_records are append-only';
+END;`,
+		},
+		{
+			name: "reject_decision_outbox_delete()",
+			body: `BEGIN
+    RAISE EXCEPTION 'outbox events are append-only';
+END;`,
+		},
+		{
+			name: "reject_decision_outbox_identity_mutation()",
+			body: `BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
+       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
+       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
+       OR NEW.event_type IS DISTINCT FROM OLD.event_type
+       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+       OR NEW.payload IS DISTINCT FROM OLD.payload
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'outbox event identity and payload are immutable';
+    END IF;
+    RETURN NEW;
+END;`,
+		},
+	}
+	for _, expected := range immutableFunctions {
+		var actualSource string
+		err := tx.QueryRowContext(ctx, `
+			SELECT p.prosrc FROM pg_proc p
+			WHERE p.oid=to_regprocedure($1)
+			  AND p.pronargs=0
+			  AND p.prokind='f'
+			  AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql')
+			  AND p.prorettype='pg_catalog.trigger'::regtype
+			  AND p.provolatile='v'
+			  AND NOT p.prosecdef AND p.proconfig IS NULL
+		`, expected.name).Scan(&actualSource)
+		if err != nil || strings.TrimSpace(actualSource) != expected.body {
+			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
+		}
 	}
 	return nil
 }
