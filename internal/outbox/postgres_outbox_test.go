@@ -421,6 +421,57 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			}
 		})
 	}
+	// PostgreSQL TRUNCATE skips DELETE row triggers. Use a rollback-only
+	// transaction so a vulnerable migration cannot erase test evidence while
+	// proving the append-only contract is not actually enforced.
+	for _, tc := range []struct {
+		name, command string
+	}{
+		{"outbox", "TRUNCATE TABLE outbox_events"},
+		{"decision_and_outbox", "TRUNCATE TABLE decision_records, outbox_events"},
+	} {
+		t.Run("truncate_guard_"+tc.name, func(t *testing.T) {
+			truncateTx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, truncateErr := truncateTx.ExecContext(ctx, tc.command)
+			if err := truncateTx.Rollback(); err != nil {
+				t.Fatalf("rollback destructive probe: %v", err)
+			}
+			if truncateErr == nil {
+				t.Errorf("append-only Decision/Outbox accepted %q", tc.command)
+			}
+		})
+	}
+	// Once v3 is installed, a missing TRUNCATE guard must be detected on
+	// migration re-entry instead of trusting the migration checksum ledger.
+	for _, tc := range []struct {
+		table, trigger, function string
+	}{
+		{"decision_records", "decision_records_no_truncate", "reject_decision_record_mutation"},
+		{"outbox_events", "outbox_events_no_truncate", "reject_decision_outbox_delete"},
+	} {
+		t.Run("catalog_truncate_guard_"+tc.table, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx,
+				fmt.Sprintf("DROP TRIGGER %s ON %s", tc.trigger, tc.table),
+			); err != nil {
+				t.Fatalf("drop installed guard %s: %v", tc.trigger, err)
+			}
+			if err := decision.Migrate(ctx, db); !errors.Is(err, decision.ErrCatalogDrift) {
+				t.Errorf("migration accepted missing TRUNCATE guard on %s: %v", tc.table, err)
+			}
+			if _, err := db.ExecContext(ctx, fmt.Sprintf(
+				"CREATE TRIGGER %s BEFORE TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION %s()",
+				tc.trigger, tc.table, tc.function,
+			)); err != nil {
+				t.Fatalf("restore TRUNCATE guard %s: %v", tc.trigger, err)
+			}
+			if err := decision.Migrate(ctx, db); err != nil {
+				t.Fatalf("restore %s TRUNCATE protection: %v", tc.table, err)
+			}
+		})
+	}
 	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
 		t.Fatal(err)
 	}
