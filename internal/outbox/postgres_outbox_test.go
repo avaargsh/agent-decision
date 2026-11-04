@@ -201,6 +201,40 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE outbox_events SET payload = '{}'::jsonb WHERE event_id = $1", retried[0].ID); err == nil {
 		t.Fatal("outbox immutable payload update unexpectedly succeeded")
 	}
+
+	// RED: matching checksums cannot authorize a damaged installed catalog.
+	// A restart must reject missing immutable triggers, broken foreign keys,
+	// and deleted Outbox relations instead of accepting the version ledger.
+	if _, err := db.ExecContext(ctx, "DROP TRIGGER outbox_event_identity_immutable ON outbox_events"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("migration accepted an Outbox missing the immutable-identity trigger")
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER outbox_event_identity_immutable BEFORE UPDATE ON outbox_events FOR EACH ROW EXECUTE FUNCTION reject_decision_outbox_identity_mutation()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err != nil {
+		t.Fatalf("restored trigger must pass migration re-entry: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE outbox_events DROP CONSTRAINT outbox_decision_fk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("migration accepted Outbox without tenant-bound Decision foreign key")
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE outbox_events ADD CONSTRAINT outbox_decision_fk FOREIGN KEY (tenant_id, aggregate_id) REFERENCES decision_records (tenant_id, decision_id)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err != nil {
+		t.Fatalf("restored foreign key must pass migration re-entry: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.Migrate(ctx, db); err == nil {
+		t.Fatal("migration accepted recorded v2 with the Outbox relation missing")
+	}
 }
 
 func TestDispatchOnceRetriesPublishFailure(t *testing.T) {
