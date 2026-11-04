@@ -1,7 +1,7 @@
 # PostgreSQL Operations Runbook — Agent Decision
 
 **Status:** operational design baseline; deployment-specific credentials and restore evidence are not yet configured.  
-**Applies to:** PostgreSQL 16 and `decision_records` migration v0001.
+**Applies to:** PostgreSQL 16 and checksummed Decision migrations v0001–v0003.
 
 ## 1. Role separation
 
@@ -28,10 +28,20 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO agent_decision_app;
 
 -- Apply migrations as agent_decision_migrator.
--- After migration 0001:
+-- After migrations 0001–0003; the application needs scoped reads,
+-- immutable inserts and lease/ack updates only.
 GRANT SELECT, INSERT ON TABLE public.decision_records TO agent_decision_app;
+GRANT SELECT, INSERT ON TABLE public.outbox_events TO agent_decision_app;
+GRANT UPDATE (lease_owner, lease_until, attempts, available_at,
+              published_at, last_error_code)
+  ON TABLE public.outbox_events TO agent_decision_app;
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
   ON TABLE public.decision_records FROM agent_decision_app;
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER
+  ON TABLE public.outbox_events FROM agent_decision_app;
+
+-- Production deployments must also review owner membership, inherited
+-- grants, PUBLIC privileges and the trusted search_path; grants are templates.
 ```
 
 The runtime repository uses scoped SQL for tenant/idempotency lookup. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
@@ -46,7 +56,7 @@ The runtime repository uses scoped SQL for tenant/idempotency lookup. The append
 
 ## 3. Backup and retention
 
-The v0.1 DecisionRecord ledger is append-only at both the SQL trigger and application-role privilege layers: UPDATE and DELETE are rejected by the table triggers, and the runtime role must not receive UPDATE, DELETE or TRUNCATE. No automatic deletion/retention job is defined.
+The v0.1 DecisionRecord ledger and Outbox preserve append-only identity at both SQL trigger and role-privilege layers: v0001/v0002 reject row UPDATE/DELETE of protected data, and v0003 separately rejects statement-level TRUNCATE on both tables. The runtime role must not receive UPDATE/DELETE/TRUNCATE on DecisionRecord or DELETE/TRUNCATE on Outbox. No automatic deletion/retention job is defined.
 
 Minimum deployment policy to establish before production:
 - Nightly logical backup using a custom-format dump or a managed PostgreSQL backup service.
@@ -84,7 +94,7 @@ Perform a periodic isolated restore rehearsal and after material schema/backup c
 
 - Database unavailable: API returns `503 STORE_UNAVAILABLE`; caller may retry the same tenant-scoped invocation_id and request fingerprint after recovery.
 - Idempotency conflict: return `409 INVOCATION_ID_REUSED`; never overwrite the stored record.
-- Schema migration: run as the migrator role, review SQL and lock impact, back up before destructive changes, and use forward-compatible expand/contract changes. v0001 currently creates the DecisionRecord table and indexes.
+- Schema migration: run as the migrator role, review SQL and lock impact, back up before destructive changes, and use forward-compatible expand/contract changes. v0001 creates DecisionRecord, v0002 creates Outbox, and additive v0003 installs statement-level TRUNCATE guards on both tables.
 - A successful backup job is not a restore proof. Track restore rehearsal evidence independently.
 
 
@@ -102,3 +112,17 @@ Before accepting a historical migration, an authorized database migrator must:
 4. Never skip a missing migration, falsify version history or mark failed SQL as applied. Keep migration privileges separate from the runtime API role.
 
 Repository CI tests new-schema re-entry, tampered name/digest, missing earlier version and correctly restored history with PostgreSQL 16. These tests are **not** a production upgrade rehearsal or proof of actual backups, RLS or approved migration custody.
+
+## 7. v0002 → v0003 append-only upgrade acceptance
+
+Migration v0003 introduces `decision_records_no_truncate` and `outbox_events_no_truncate` as **BEFORE TRUNCATE FOR EACH STATEMENT** guards. PostgreSQL does not invoke row DELETE triggers for TRUNCATE, so v0001/v0002 alone were insufficient to prevent wholesale erasure by a schema/table owner. The immutable earlier SQL and checksums are unchanged.
+
+Before any production rollout, apply this procedure to a fresh **isolated restored copy**:
+
+1. Confirm the restored migration ledger has matching version/name/checksum for v0001 and v0002; reject unchecksummed, missing or unrecognized records. Record pre-upgrade Decision/Outbox row counts and a sample of immutable request hashes and pending event IDs.
+2. Run `decision.Migrate` as the migrator role. Verify exactly three ordered migration records and that v0003 was applied once. Confirm both TRUNCATE guards with `pg_trigger`: `tgtype=34`, `tgenabled='O'`, and the expected rejecting PL/pgSQL function.
+3. In an isolated disposable database transaction, attempt `TRUNCATE outbox_events` and `TRUNCATE decision_records, outbox_events`; each must return an error. Roll back the transaction and confirm rows are still present.
+4. Confirm the same DecisionRecord/Outbox sample IDs and counts survived the upgrade and that running `Migrate` again is idempotent.
+5. Test a deployment with **application** credentials: verify unauthorized DDL/DELETE/TRUNCATE fail, normal scoped Decision insert/replay and Outbox lease/ACK still work, and a real backup/PITR restore meets the target RPO/RTO. Record exact image/head, PostgreSQL version, migration hashes, grants and test receipts.
+
+The repository's PostgreSQL 16 CI covers a simulated existing v0002 installation with committed data, upgrading to v0003, safe replay and TRUNCATE-denial cases. This does **not** prove a production cutover or resistance to a database owner/superuser who can disable triggers. Use strict role separation, restricted migration credentials and independent backup/retention evidence.
