@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
@@ -112,8 +113,86 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return storeUnavailable("record checksummed schema migration", err)
 		}
 	}
+	// The migration ledger attests approved SQL bytes, not live catalog state.
+	// A disabled or replaced trigger would compromise append-only guarantees
+	// even if the schema_migrations metadata has not changed.
+	if err := verifyLedgerProtectionTriggers(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return storeUnavailable("commit migrations", err)
+	}
+	return nil
+}
+
+
+// verifyLedgerProtectionTriggers checks that the live PostgreSQL safeguards
+// still match the approved DDL. SQL-byte migration hashes alone cannot detect
+// edits to trigger WHEN/UPDATE OF clauses or CREATE OR REPLACE FUNCTION bodies.
+// PostgreSQL tgtype flags: ROW (1), BEFORE (2), DELETE (8), UPDATE (16).
+func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
+	const recordMutationBody = `BEGIN
+    RAISE EXCEPTION 'decision_records are append-only';
+END;`
+	const outboxMutationBody = `BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
+       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
+       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
+       OR NEW.event_type IS DISTINCT FROM OLD.event_type
+       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+       OR NEW.payload IS DISTINCT FROM OLD.payload
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'outbox event identity and payload are immutable';
+    END IF;
+    RETURN NEW;
+END;`
+	const outboxDeleteBody = `BEGIN
+    RAISE EXCEPTION 'outbox events are append-only';
+END;`
+	required := []struct {
+		table string
+		name string
+		function string
+		triggerType int
+		body string
+	}{
+		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19, recordMutationBody},
+		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11, recordMutationBody},
+		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19, outboxMutationBody},
+		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11, outboxDeleteBody},
+	}
+	const query = `SELECT t.tgenabled::text, t.tgtype::integer,
+		t.tgfoid = to_regprocedure($3),
+		t.tgqual IS NULL, t.tgattr::text,
+		p.prosrc, l.lanname, p.prosecdef
+		FROM pg_trigger AS t
+		JOIN pg_proc AS p ON p.oid = t.tgfoid
+		JOIN pg_language AS l ON l.oid = p.prolang
+		WHERE t.tgrelid = to_regclass($1)
+		  AND t.tgname = $2 AND NOT t.tgisinternal`
+	for _, item := range required {
+		var enabled, updateColumns, handlerBody, language string
+		var triggerType int
+		var expectedFunction sql.NullBool
+		var noWhen bool
+		var securityDefiner bool
+		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
+			Scan(&enabled, &triggerType, &expectedFunction, &noWhen,
+				&updateColumns, &handlerBody, &language, &securityDefiner)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("critical ledger protection trigger %s.%s missing", item.table, item.name)
+		}
+		if err != nil {
+			return storeUnavailable("inspect ledger protection trigger", err)
+		}
+		if (enabled != "O" && enabled != "A") || triggerType != item.triggerType ||
+			!expectedFunction.Valid || !expectedFunction.Bool || !noWhen ||
+			updateColumns != "" || language != "plpgsql" || securityDefiner ||
+			strings.TrimSpace(handlerBody) != strings.TrimSpace(item.body) {
+			return fmt.Errorf("critical ledger protection trigger %s.%s disabled or altered", item.table, item.name)
+		}
 	}
 	return nil
 }
