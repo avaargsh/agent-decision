@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"time"
 	"strings"
+	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
 	schemamigrations "github.com/avaargsh/agent-decision/migrations"
