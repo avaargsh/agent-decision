@@ -62,6 +62,89 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatalf("migration re-entry should be safe: %v", err)
 	}
+	// A correct migration-history checksum does not prove that its installed
+	// PostgreSQL triggers are still enabled. Fail closed on disabled append-only
+	// protections even when all schema_migrations rows remain unchanged.
+	for _, tc := range []struct {
+		name string
+		table string
+		trigger string
+	}{
+		{name: "DecisionRecord UPDATE", table: "decision_records", trigger: "decision_records_no_update"},
+		{name: "DecisionRecord DELETE", table: "decision_records", trigger: "decision_records_no_delete"},
+		{name: "Outbox payload UPDATE", table: "outbox_events", trigger: "outbox_event_identity_immutable"},
+		{name: "Outbox DELETE", table: "outbox_events", trigger: "outbox_events_no_delete"},
+	} {
+		t.Run("disabled_trigger_"+strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			// Names are a closed list of repository-defined identifiers, not caller input.
+			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" DISABLE TRIGGER "+tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err == nil {
+				t.Fatalf("disabled %s trigger must reject migration history", tc.name)
+			}
+			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" ENABLE TRIGGER "+tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err != nil {
+				t.Fatalf("re-enabled %s trigger must restore valid migration: %v", tc.name, err)
+			}
+		})
+	}
+	// The trigger's name/OID/event bits can remain correct while its handler
+	// body is overwritten, or a WHEN/UPDATE OF clause disables protection.
+	// These are live catalog drifts not detected by a migration filename hash.
+	t.Run("rewritten_trigger_function", func(t *testing.T) {
+		var original string
+		if err := db.QueryRowContext(ctx,
+			"SELECT pg_get_functiondef(to_regprocedure('reject_decision_record_mutation()'))",
+		).Scan(&original); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `CREATE OR REPLACE FUNCTION reject_decision_record_mutation()
+			RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END;'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := decision.Migrate(ctx, db); err == nil {
+			t.Fatal("rewritten trigger handler with unchanged OID must fail closed")
+		}
+		if _, err := db.ExecContext(ctx, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := decision.Migrate(ctx, db); err != nil {
+			t.Fatalf("restored handler must pass migration integrity: %v", err)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		replacement string
+	}{
+		{"conditional_when_false", `BEFORE UPDATE ON decision_records
+			FOR EACH ROW WHEN (false) EXECUTE FUNCTION reject_decision_record_mutation()`},
+		{"restricted_update_columns", `BEFORE UPDATE OF created_at ON decision_records
+			FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation()`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, "DROP TRIGGER decision_records_no_update ON decision_records"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx,
+				"CREATE TRIGGER decision_records_no_update "+tc.replacement); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err == nil {
+				t.Fatalf("modified trigger definition (%s) must fail closed", tc.name)
+			}
+			if _, err := db.ExecContext(ctx, `DROP TRIGGER decision_records_no_update ON decision_records;
+				CREATE TRIGGER decision_records_no_update BEFORE UPDATE ON decision_records
+				FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation()`); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err != nil {
+				t.Fatalf("restored trigger (%s) must pass migration integrity: %v", tc.name, err)
+			}
+		})
+	}
 	// Applied migrations must be byte-pinned and contiguous. A version-only
 	// presence check silently accepts a tampered name, changed checksum or
 	// missing earlier migration while claiming that the schema is current.
