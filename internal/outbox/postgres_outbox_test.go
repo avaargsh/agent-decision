@@ -103,7 +103,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := db.ExecContext(ctx, `CREATE OR REPLACE FUNCTION reject_decision_record_mutation()
-			RETURNS trigger LANGUAGE plpgsql AS $ BEGIN RETURN NEW; END; $`); err != nil {
+			RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END;'`); err != nil {
 			t.Fatal(err)
 		}
 		if err := decision.Migrate(ctx, db); err == nil {
