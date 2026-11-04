@@ -372,6 +372,55 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			t.Fatalf("restored identity CHECK must pass: %v", err)
 		}
 	})
+	// A matching migration ledger and same-name CHECK are insufficient
+	// when the installed predicate has been replaced by a permissive one.
+	for _, tc := range []struct {
+		name, table, constraint string
+	}{
+		{"decision JSON identity binding", "decision_records", "decision_records_json_identity_ck"},
+		{"decision request SHA256", "decision_records", "decision_records_request_sha256_check"},
+		{"outbox lease owner and expiry pairing", "outbox_events", "outbox_lease_pair_ck"},
+		{"outbox aggregate kind", "outbox_events", "outbox_events_aggregate_type_check"},
+		{"outbox sanitized error code", "outbox_events", "outbox_events_last_error_code_check"},
+	} {
+		t.Run("same_name_weakened_"+tc.constraint, func(t *testing.T) {
+			var approvedDefinition, approvedExpression string
+			if err := db.QueryRowContext(ctx, `
+				SELECT pg_get_constraintdef(c.oid), pg_get_expr(c.conbin, c.conrelid)
+				FROM pg_constraint c
+				WHERE c.conrelid=to_regclass($1) AND c.conname=$2 AND c.contype='c'
+			`, tc.table, tc.constraint).Scan(&approvedDefinition, &approvedExpression); err != nil {
+				t.Fatalf("load canonical %s CHECK: %v", tc.name, err)
+			}
+			t.Logf("approved PostgreSQL 16 expression %s: %s", tc.constraint, approvedExpression)
+			if _, err := db.ExecContext(ctx,
+				fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", tc.table, tc.constraint),
+			); err != nil {
+				t.Fatalf("remove original %s CHECK: %v", tc.name, err)
+			}
+			if _, err := db.ExecContext(ctx,
+				fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (true)", tc.table, tc.constraint),
+			); err != nil {
+				t.Fatalf("install same-name weakened %s CHECK: %v", tc.name, err)
+			}
+			if err := decision.Migrate(ctx, db); !errors.Is(err, decision.ErrCatalogDrift) {
+				t.Errorf("same-name weakened %s CHECK was not rejected as catalog drift: %v", tc.name, err)
+			}
+			if _, err := db.ExecContext(ctx,
+				fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", tc.table, tc.constraint),
+			); err != nil {
+				t.Fatalf("remove weakened %s CHECK: %v", tc.name, err)
+			}
+			if _, err := db.ExecContext(ctx,
+				fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", tc.table, tc.constraint, approvedDefinition),
+			); err != nil {
+				t.Fatalf("restore approved %s CHECK: %v", tc.name, err)
+			}
+			if err := decision.Migrate(ctx, db); err != nil {
+				t.Fatalf("restored %s CHECK should be accepted: %v", tc.name, err)
+			}
+		})
+	}
 	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
 		t.Fatal(err)
 	}
