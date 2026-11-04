@@ -1,7 +1,7 @@
 # PostgreSQL Operations Runbook — Agent Decision
 
 **Status:** operational design baseline; deployment-specific credentials and restore evidence are not yet configured.  
-**Applies to:** PostgreSQL 16 and `decision_records` migration v0001.
+**Applies to:** PostgreSQL 16 and migrations v0001 (DecisionRecord) and v0002 (Outbox).
 
 ## 1. Role separation
 
@@ -32,6 +32,13 @@ GRANT USAGE ON SCHEMA public TO agent_decision_app;
 GRANT SELECT, INSERT ON TABLE public.decision_records TO agent_decision_app;
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
   ON TABLE public.decision_records FROM agent_decision_app;
+
+-- After migration 0002, the API role must atomically insert the Outbox
+-- event alongside its immutable DecisionRecord.
+GRANT SELECT, INSERT ON TABLE public.outbox_events TO agent_decision_app;
+-- The dispatcher additionally requires SELECT and UPDATE of delivery metadata.
+-- Use a separate least-privilege dispatcher login in production; the role
+-- configuration and split-credential deployment are not yet implemented.
 ```
 
 The runtime repository uses scoped SQL for tenant/idempotency lookup. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
@@ -90,7 +97,7 @@ Perform a periodic isolated restore rehearsal and after material schema/backup c
 
 ## 6. Checksummed schema migration gate (PR #10)
 
-The Go Outbox baseline's `decision.Migrate` serializes migrations under a PostgreSQL transaction-scoped advisory lock, hashes the exact embedded SQL bytes, and writes `schema_migrations(version, name, checksum, applied_at)`. Every startup/migration invocation verifies the **entire applied prefix**, ordered and contiguous from version 1, against the binary's exact migration filename and SHA-256. Unrecognized future versions, missing earlier versions, changed names or mismatched digests stop before applying new DDL.
+The Go Outbox baseline's `decision.Migrate` serializes migrations under a PostgreSQL transaction-scoped advisory lock, hashes the exact embedded SQL bytes, and writes `schema_migrations(version, name, checksum, applied_at)`. Each explicit `decision.Migrate` invocation verifies the **entire applied prefix**, ordered and contiguous from version 1, against the binary's exact migration filename and SHA-256. Unrecognized future versions, missing earlier versions, changed names or mismatched digests stop before applying new DDL.
 
 **Upgrading from unchecksummed draft history:** an existing `schema_migrations` table without `checksum` is inspected with a nullable compatibility column, but any pre-existing row without a stored checksum **fails closed**. The application does not silently backfill hashes from the currently deployed binary: that would attest to a file, not prove what the database actually executed.
 
@@ -102,3 +109,17 @@ Before accepting a historical migration, an authorized database migrator must:
 4. Never skip a missing migration, falsify version history or mark failed SQL as applied. Keep migration privileges separate from the runtime API role.
 
 Repository CI tests new-schema re-entry, tampered name/digest, missing earlier version and correctly restored history with PostgreSQL 16. These tests are **not** a production upgrade rehearsal or proof of actual backups, RLS or approved migration custody.
+
+## 7. Installed immutability trigger integrity gate (PR #13)
+
+After applying/checking the approved migration history and while holding the migration transaction/advisory lock, `decision.Migrate` now examines PostgreSQL's live catalog for four critical protections:
+
+- `decision_records_no_update` and `decision_records_no_delete`, both bound to `reject_decision_record_mutation()`;
+- `outbox_event_identity_immutable`, bound to `reject_decision_outbox_identity_mutation()`;
+- `outbox_events_no_delete`, bound to `reject_decision_outbox_delete()`.
+
+Each trigger must exist on its intended table, be enabled for the normal origin role, use the expected row/BEFORE event type and reference the expected trigger function. Missing, disabled or rewired triggers fail closed; the application does **not** automatically repair them. This complements historical SQL-byte checksums, which cannot independently attest the live PostgreSQL catalog.
+
+**Scope limitation:** this check runs when `decision.Migrate` is explicitly invoked. The development server does not invoke it at startup. It does not hash the installed function body, prove every index/constraint, monitor later DDL changes, provide RLS, or prove least-privilege database roles and actual backup/restore readiness. Production startup should have an independently operated schema health gate; a periodic deployment attestation remains unimplemented.
+
+**On a failure:** stop deployment/migration, preserve catalog/role metadata and prior migration evidence, investigate why the trigger was disabled or replaced, and restore the approved schema under a controlled, auditable migration/recovery process. Do not just re-enable an untrusted handler in production. Verify against an isolated restored database before reopening writes.
