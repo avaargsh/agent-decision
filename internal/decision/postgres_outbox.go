@@ -275,69 +275,44 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: Decision immutable trigger missing, disabled, or rebound", ErrCatalogDrift)
 	}
 
-	var identityConstraintOK bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM pg_constraint c
-			WHERE c.conrelid=to_regclass('decision_records')
-				AND c.conname='decision_records_json_identity_ck'
-				AND c.contype='c' AND c.convalidated
+	// Verify the actual CHECK expression, not only its name and validated flag.
+	// An operator can replace the approved predicate with CHECK (true) while
+	// preserving those catalog attributes and the historical migration ledger.
+	// Parse the approved predicate on this PostgreSQL version into a temporary
+	// reference relation, then compare the server's canonical deparsing of
+	// both constraints. The reference relation is transaction-local and drops
+	// automatically at commit; no permanent schema object is repaired here.
+	const expectedIdentityDDL = `CREATE TEMP TABLE decision_expected_identity_catalog (
+		tenant_id TEXT NOT NULL,
+		invocation_id TEXT NOT NULL,
+		decision_id TEXT NOT NULL,
+		request_sha256 CHAR(64) NOT NULL,
+		record JSONB NOT NULL,
+		CONSTRAINT decision_records_json_identity_ck CHECK (
+			record->>'tenant_id' IS NOT DISTINCT FROM tenant_id
+			AND record->>'invocation_id' IS NOT DISTINCT FROM invocation_id
+			AND record->>'decision_id' IS NOT DISTINCT FROM decision_id
+			AND record->>'request_sha256' IS NOT DISTINCT FROM request_sha256::text
 		)
-	`).Scan(&identityConstraintOK); err != nil {
-		return fmt.Errorf("%w: inspect Decision identity CHECK: %v", ErrCatalogDrift, err)
+	) ON COMMIT DROP`
+	if _, err := tx.ExecContext(ctx, expectedIdentityDDL); err != nil {
+		return fmt.Errorf("%w: construct approved identity constraint reference: %v", ErrCatalogDrift, err)
 	}
-	if !identityConstraintOK {
-		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
+	const constraintQuery = `SELECT pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		WHERE c.conrelid = to_regclass($1)
+		  AND c.conname = 'decision_records_json_identity_ck'
+		  AND c.contype = 'c' AND c.convalidated`
+	var expectedIdentity, installedIdentity string
+	if err := tx.QueryRowContext(ctx, constraintQuery,
+		"pg_temp.decision_expected_identity_catalog").Scan(&expectedIdentity); err != nil {
+		return fmt.Errorf("%w: read approved identity CHECK: %v", ErrCatalogDrift, err)
 	}
-	return probeDecisionIdentityConstraint(ctx, tx)
-}
-
-// probeDecisionIdentityConstraint verifies the identity CHECK's *behavior*.
-// Same-name CHECK(true) catalog drift still has contype='c' and convalidated.
-// Every synthetic write is undone via a savepoint, including successful
-// inserts that would otherwise demonstrate weakened protection.
-func probeDecisionIdentityConstraint(ctx context.Context, tx *sql.Tx) error {
-	const insert = `INSERT INTO decision_records (
-		tenant_id, invocation_id, decision_id, request_sha256, record, created_at
-	) VALUES ($1, $2, $3, $4,
-		jsonb_build_object(
-			'tenant_id', $5::text, 'invocation_id', $6::text,
-			'decision_id', $7::text, 'request_sha256', $8::text
-		), now())`
-	const savepoint = "decision_identity_constraint_probe"
-	for i, field := range []string{"tenant_id", "invocation_id", "decision_id", "request_sha256"} {
-		tenant := fmt.Sprintf("__decision_catalog_probe_%d_%d", time.Now().UnixNano(), i)
-		invocation := fmt.Sprintf("catalog-probe-invocation-%d", i)
-		decisionID := fmt.Sprintf("catalog-probe-decision-%d", i)
-		digest := strings.Repeat("a", 64)
-		jsonTenant, jsonInvocation, jsonDecision, jsonDigest := tenant, invocation, decisionID, digest
-		switch field {
-		case "tenant_id":
-			jsonTenant += "-mismatch"
-		case "invocation_id":
-			jsonInvocation += "-mismatch"
-		case "decision_id":
-			jsonDecision += "-mismatch"
-		case "request_sha256":
-			jsonDigest = strings.Repeat("b", 64)
-		}
-		if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
-			return storeUnavailable("start Decision identity CHECK probe", err)
-		}
-		_, insertErr := tx.ExecContext(ctx, insert, tenant, invocation, decisionID, digest,
-			jsonTenant, jsonInvocation, jsonDecision, jsonDigest)
-		if _, err := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); err != nil {
-			return storeUnavailable("undo Decision identity CHECK probe", err)
-		}
-		if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
-			return storeUnavailable("release Decision identity CHECK probe", err)
-		}
-		var pgErr *pgconn.PgError
-		if !errors.As(insertErr, &pgErr) || pgErr.Code != "23514" ||
-			pgErr.ConstraintName != "decision_records_json_identity_ck" {
-			return fmt.Errorf("%w: Decision JSON identity CHECK did not reject mismatched %s",
-				ErrCatalogDrift, field)
-		}
+	if err := tx.QueryRowContext(ctx, constraintQuery, "decision_records").Scan(&installedIdentity); err != nil {
+		return fmt.Errorf("%w: inspect installed Decision identity CHECK: %v", ErrCatalogDrift, err)
+	}
+	if installedIdentity != expectedIdentity {
+		return fmt.Errorf("%w: installed Decision JSON identity CHECK predicate drifted", ErrCatalogDrift)
 	}
 	return nil
 }
