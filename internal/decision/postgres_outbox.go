@@ -13,6 +13,10 @@ import (
 	schemamigrations "github.com/avaargsh/agent-decision/migrations"
 )
 
+// ErrCatalogDrift means migration checksums match but the live PostgreSQL
+// tables, tenant-bound foreign key, or append-only triggers are not intact.
+var ErrCatalogDrift = errors.New("Decision PostgreSQL catalog integrity drift")
+
 const migrationLockClass int32 = 71002
 const migrationLockObject int32 = 1
 
@@ -112,8 +116,98 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return storeUnavailable("record checksummed schema migration", err)
 		}
 	}
+	if err := verifyDecisionCatalog(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return storeUnavailable("commit migrations", err)
+	}
+	return nil
+}
+
+// verifyDecisionCatalog checks the *installed* schema in the caller's
+// migration-locked transaction. A correct historical SQL digest does not
+// prove an operator has not dropped a table, FK, or append-only trigger.
+func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
+	var relationsOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT to_regclass('decision_records') IS NOT NULL
+			AND to_regclass('outbox_events') IS NOT NULL
+	`).Scan(&relationsOK); err != nil {
+		return fmt.Errorf("%w: inspect Decision relations: %v", ErrCatalogDrift, err)
+	}
+	if !relationsOK {
+		return fmt.Errorf("%w: missing Decision ledger or Outbox relation", ErrCatalogDrift)
+	}
+
+	// The Outbox can only describe a Decision owned by the same tenant.
+	// Compare the actual column bindings, not just a same-name constraint.
+	var fkOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_constraint c
+			WHERE c.conrelid=to_regclass('outbox_events')
+				AND c.conname='outbox_decision_fk'
+				AND c.contype='f' AND c.convalidated
+				AND NOT c.condeferrable AND NOT c.condeferred
+				AND c.confrelid=to_regclass('decision_records')
+				AND (
+					SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+					FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum,ord)
+					JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
+				)='tenant_id,aggregate_id'
+				AND (
+					SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+					FROM unnest(c.confkey) WITH ORDINALITY AS k(attnum,ord)
+					JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum
+				)='tenant_id,decision_id'
+		)
+	`).Scan(&fkOK); err != nil {
+		return fmt.Errorf("%w: inspect tenant-bound Decision Outbox FK: %v", ErrCatalogDrift, err)
+	}
+	if !fkOK {
+		return fmt.Errorf("%w: tenant-bound Decision Outbox FK missing or rebound", ErrCatalogDrift)
+	}
+
+	// pg_trigger.tgtype exact bitmasks: BEFORE=2, ROW=1, UPDATE=16,
+	// DELETE=8. Checking enabled state, event and function catches same-name
+	// replacements as well as completely missing immutability triggers.
+	var validTriggers int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM (
+			VALUES
+				('decision_records','decision_records_no_update',19,'reject_decision_record_mutation()'),
+				('decision_records','decision_records_no_delete',11,'reject_decision_record_mutation()'),
+				('outbox_events','outbox_event_identity_immutable',19,'reject_decision_outbox_identity_mutation()'),
+				('outbox_events','outbox_events_no_delete',11,'reject_decision_outbox_delete()')
+		) AS expected(table_name,trigger_name,event_bits,proc_name)
+		JOIN pg_trigger t
+			ON t.tgrelid=to_regclass(expected.table_name)
+			AND t.tgname=expected.trigger_name
+			AND t.tgtype=expected.event_bits
+			AND t.tgfoid=to_regprocedure(expected.proc_name)
+			AND NOT t.tgisinternal
+			AND t.tgenabled='O'
+	`).Scan(&validTriggers); err != nil {
+		return fmt.Errorf("%w: inspect Decision immutability triggers: %v", ErrCatalogDrift, err)
+	}
+	if validTriggers != 4 {
+		return fmt.Errorf("%w: Decision immutable trigger missing, disabled, or rebound", ErrCatalogDrift)
+	}
+
+	var identityConstraintOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_constraint c
+			WHERE c.conrelid=to_regclass('decision_records')
+				AND c.conname='decision_records_json_identity_ck'
+				AND c.contype='c' AND c.convalidated
+		)
+	`).Scan(&identityConstraintOK); err != nil {
+		return fmt.Errorf("%w: inspect Decision identity CHECK: %v", ErrCatalogDrift, err)
+	}
+	if !identityConstraintOK {
+		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
 	}
 	return nil
 }
