@@ -62,6 +62,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}{
 		{version: 1, name: "0001_create_decision_records.sql"},
 		{version: 2, name: "0002_decision_outbox.sql"},
+		{version: 3, name: "0003_append_only_truncate_guards.sql"},
 	}
 	for i := range migrations {
 		source, err := schemamigrations.FS.ReadFile(migrations[i].name)
@@ -171,7 +172,8 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	}
 
 	// pg_trigger.tgtype exact bitmasks: BEFORE=2, ROW=1, UPDATE=16,
-	// DELETE=8. Checking enabled state, event and function catches same-name
+	// DELETE=8, TRUNCATE=32 (statement=34). Checking enabled state, event
+	// and function catches same-name
 	// replacements as well as completely missing immutability triggers.
 	var validTriggers int
 	if err := tx.QueryRowContext(ctx, `
@@ -180,7 +182,9 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 				('decision_records','decision_records_no_update',19,'reject_decision_record_mutation()'),
 				('decision_records','decision_records_no_delete',11,'reject_decision_record_mutation()'),
 				('outbox_events','outbox_event_identity_immutable',19,'reject_decision_outbox_identity_mutation()'),
-				('outbox_events','outbox_events_no_delete',11,'reject_decision_outbox_delete()')
+				('outbox_events','outbox_events_no_delete',11,'reject_decision_outbox_delete()'),
+				('decision_records','decision_records_no_truncate',34,'reject_decision_record_mutation()'),
+				('outbox_events','outbox_events_no_truncate',34,'reject_decision_outbox_delete()')
 		) AS expected(table_name,trigger_name,event_bits,proc_name)
 		JOIN pg_trigger t
 			ON t.tgrelid=to_regclass(expected.table_name)
@@ -192,7 +196,7 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	`).Scan(&validTriggers); err != nil {
 		return fmt.Errorf("%w: inspect Decision immutability triggers: %v", ErrCatalogDrift, err)
 	}
-	if validTriggers != 4 {
+	if validTriggers != 6 {
 		return fmt.Errorf("%w: Decision immutable trigger missing, disabled, or rebound", ErrCatalogDrift)
 	}
 
