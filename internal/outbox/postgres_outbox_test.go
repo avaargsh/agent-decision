@@ -198,6 +198,79 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	}
 	store := decision.NewPostgresStore(db)
 
+	t.Run("outbox_insert_failure_rolls_back_decision", func(t *testing.T) {
+		// Reject the event after the DecisionRecord INSERT has succeeded.
+		// PostgreSQL must undo both writes; a same-invocation retry after
+		// removing the fault must produce one durable record and one event.
+		faulty := decision.Record{
+			DecisionID: "dec_" + strings.Repeat("f", 64),
+			TenantID: fmt.Sprintf("outbox-rollback-%d", time.Now().UnixNano()),
+			AgentID: "agent-1",
+			SessionID: "session-1",
+			RunID: "run-1",
+			InvocationID: "outbox-insert-fault",
+			RequestSHA256: strings.Repeat("e", 64),
+			CreatedAt: time.Now().UTC(),
+			Status: decision.StatusProposed,
+			ReasonCodes: []string{},
+			Evidence: []decision.EvidenceRef{},
+			Plan: decision.PlanCandidate{PlanID: "fault-plan", SchemaVersion: decision.SchemaVersion, Steps: []decision.PlanStep{}},
+		}
+		if _, err := db.ExecContext(ctx, `CREATE FUNCTION reject_outbox_insert_test()
+			RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''injected outbox insert failure''; END;'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_outbox_insert_test
+			BEFORE INSERT ON outbox_events FOR EACH ROW
+			EXECUTE FUNCTION reject_outbox_insert_test()`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS reject_outbox_insert_test ON outbox_events")
+			_, _ = db.ExecContext(context.Background(), "DROP FUNCTION IF EXISTS reject_outbox_insert_test()")
+		})
+		if _, created, err := store.SaveOrGet(ctx, faulty); !errors.Is(err, decision.ErrStoreUnavailable) || created {
+			t.Fatalf("injected Outbox INSERT failure must rollback DecisionRecord: created=%t err=%v", created, err)
+		}
+		var records, events int
+		if err := db.QueryRowContext(ctx,
+			"SELECT count(*) FROM decision_records WHERE tenant_id=$1 AND invocation_id=$2",
+			faulty.TenantID, faulty.InvocationID).Scan(&records); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx,
+			"SELECT count(*) FROM outbox_events WHERE tenant_id=$1 AND aggregate_id=$2",
+			faulty.TenantID, faulty.DecisionID).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		if records != 0 || events != 0 {
+			t.Fatalf("partial commit after Outbox failure: records=%d events=%d", records, events)
+		}
+		if _, err := db.ExecContext(ctx, "DROP TRIGGER reject_outbox_insert_test ON outbox_events"); err != nil {
+			t.Fatal(err)
+		}
+		got, created, err := store.SaveOrGet(ctx, faulty)
+		if err != nil || !created || got.DecisionID != faulty.DecisionID {
+			t.Fatalf("same-invocation retry after rollback must create record: created=%t err=%v", created, err)
+		}
+		if _, created, err := store.SaveOrGet(ctx, faulty); err != nil || created {
+			t.Fatalf("idempotent replay after recovery: created=%t err=%v", created, err)
+		}
+		if err := db.QueryRowContext(ctx,
+			"SELECT count(*) FROM decision_records WHERE tenant_id=$1 AND invocation_id=$2",
+			faulty.TenantID, faulty.InvocationID).Scan(&records); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx,
+			"SELECT count(*) FROM outbox_events WHERE tenant_id=$1 AND aggregate_id=$2",
+			faulty.TenantID, faulty.DecisionID).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		if records != 1 || events != 1 {
+			t.Fatalf("recovered invocation must have one record/event: records=%d events=%d", records, events)
+		}
+	})
+
 	record := decision.Record{
 		DecisionID: "dec_" + strings.Repeat("a", 64),
 		TenantID: "outbox-test-" + strconv.FormatInt(time.Now().UnixNano(), 10),
