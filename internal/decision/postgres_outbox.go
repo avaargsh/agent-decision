@@ -124,9 +124,6 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := verifyDecisionCatalog(ctx, tx); err != nil {
 		return err
 	}
-	if err := verifyLedgerProtectionTriggers(ctx, tx); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return storeUnavailable("commit migrations", err)
 	}
@@ -134,72 +131,38 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 }
 
 
-// verifyLedgerProtectionTriggers checks that the live PostgreSQL safeguards
-// still match the approved DDL. SQL-byte migration hashes alone cannot detect
-// edits to trigger WHEN/UPDATE OF clauses or CREATE OR REPLACE FUNCTION bodies.
-// PostgreSQL tgtype flags: ROW (1), BEFORE (2), DELETE (8), UPDATE (16).
+// verifyLedgerProtectionTriggers fails closed if a named trigger is disabled,
+// conditional, limited to UPDATE OF a subset of columns, or rebound. Handler
+// source and execution attributes are checked by verifyDecisionCatalog.
 func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
-	const recordMutationBody = `BEGIN
-    RAISE EXCEPTION 'decision_records are append-only';
-END;`
-	const outboxMutationBody = `BEGIN
-    IF NEW.event_id IS DISTINCT FROM OLD.event_id
-       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
-       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
-       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
-       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
-       OR NEW.event_type IS DISTINCT FROM OLD.event_type
-       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
-       OR NEW.payload IS DISTINCT FROM OLD.payload
-       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
-        RAISE EXCEPTION 'outbox event identity and payload are immutable';
-    END IF;
-    RETURN NEW;
-END;`
-	const outboxDeleteBody = `BEGIN
-    RAISE EXCEPTION 'outbox events are append-only';
-END;`
 	required := []struct {
-		table string
-		name string
-		function string
+		table, name, function string
 		triggerType int
-		body string
 	}{
-		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19, recordMutationBody},
-		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11, recordMutationBody},
-		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19, outboxMutationBody},
-		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11, outboxDeleteBody},
+		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19},
+		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11},
+		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19},
+		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11},
 	}
 	const query = `SELECT t.tgenabled::text, t.tgtype::integer,
-		t.tgfoid = to_regprocedure($3),
-		t.tgqual IS NULL, t.tgattr::text,
-		p.prosrc, l.lanname, p.prosecdef
+		t.tgfoid = to_regprocedure($3), t.tgqual IS NULL, t.tgattr::text
 		FROM pg_trigger AS t
-		JOIN pg_proc AS p ON p.oid = t.tgfoid
-		JOIN pg_language AS l ON l.oid = p.prolang
 		WHERE t.tgrelid = to_regclass($1)
 		  AND t.tgname = $2 AND NOT t.tgisinternal`
 	for _, item := range required {
-		var enabled, updateColumns, handlerBody, language string
-		var triggerType int
+		var enabled, restrictedColumns string
+		var eventType int
 		var expectedFunction sql.NullBool
-		var noWhen bool
-		var securityDefiner bool
+		var unconditional bool
 		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
-			Scan(&enabled, &triggerType, &expectedFunction, &noWhen,
-				&updateColumns, &handlerBody, &language, &securityDefiner)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("critical ledger protection trigger %s.%s missing", item.table, item.name)
-		}
+			Scan(&enabled, &eventType, &expectedFunction, &unconditional, &restrictedColumns)
 		if err != nil {
-			return storeUnavailable("inspect ledger protection trigger", err)
+			return fmt.Errorf("%w: missing or unreadable trigger %s.%s", ErrCatalogDrift, item.table, item.name)
 		}
-		if (enabled != "O" && enabled != "A") || triggerType != item.triggerType ||
-			!expectedFunction.Valid || !expectedFunction.Bool || !noWhen ||
-			updateColumns != "" || language != "plpgsql" || securityDefiner ||
-			strings.TrimSpace(handlerBody) != strings.TrimSpace(item.body) {
-			return fmt.Errorf("critical ledger protection trigger %s.%s disabled or altered", item.table, item.name)
+		if enabled != "O" || eventType != item.triggerType ||
+			!expectedFunction.Valid || !expectedFunction.Bool || !unconditional ||
+			restrictedColumns != "" {
+			return fmt.Errorf("%w: altered or restricted trigger %s.%s", ErrCatalogDrift, item.table, item.name)
 		}
 	}
 	return nil
@@ -249,30 +212,10 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: tenant-bound Decision Outbox FK missing or rebound", ErrCatalogDrift)
 	}
 
-	// pg_trigger.tgtype exact bitmasks: BEFORE=2, ROW=1, UPDATE=16,
-	// DELETE=8. Checking enabled state, event and function catches same-name
-	// replacements as well as completely missing immutability triggers.
-	var validTriggers int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT count(*) FROM (
-			VALUES
-				('decision_records','decision_records_no_update',19,'reject_decision_record_mutation()'),
-				('decision_records','decision_records_no_delete',11,'reject_decision_record_mutation()'),
-				('outbox_events','outbox_event_identity_immutable',19,'reject_decision_outbox_identity_mutation()'),
-				('outbox_events','outbox_events_no_delete',11,'reject_decision_outbox_delete()')
-		) AS expected(table_name,trigger_name,event_bits,proc_name)
-		JOIN pg_trigger t
-			ON t.tgrelid=to_regclass(expected.table_name)
-			AND t.tgname=expected.trigger_name
-			AND t.tgtype=expected.event_bits
-			AND t.tgfoid=to_regprocedure(expected.proc_name)
-			AND NOT t.tgisinternal
-			AND t.tgenabled='O'
-	`).Scan(&validTriggers); err != nil {
-		return fmt.Errorf("%w: inspect Decision immutability triggers: %v", ErrCatalogDrift, err)
-	}
-	if validTriggers != 4 {
-		return fmt.Errorf("%w: Decision immutable trigger missing, disabled, or rebound", ErrCatalogDrift)
+	// Trigger events, conditions, enabled state and handler identity are checked
+	// separately from table/FK/CHECK and installed function-body attestations.
+	if err := verifyLedgerProtectionTriggers(ctx, tx); err != nil {
+		return err
 	}
 
 	var identityConstraintOK bool
@@ -289,7 +232,114 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	if !identityConstraintOK {
 		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
 	}
-	return probeDecisionIdentityConstraint(ctx, tx)
+
+
+	// Same-name CHECK constraints can be recreated with a permissive body.
+	// Pin critical expressions to the reviewed v1/v2 SQL as parsed by PG16.
+	// An unreviewed PostgreSQL deparser change fails closed and requires a
+	// deliberate compatibility review rather than implicit acceptance.
+	criticalChecks := []struct {
+		table, name, expression string
+	}{
+		{
+			"decision_records",
+			"decision_records_json_identity_ck",
+			`((NOT ((record ->> 'tenant_id'::text) IS DISTINCT FROM tenant_id)) AND (NOT ((record ->> 'invocation_id'::text) IS DISTINCT FROM invocation_id)) AND (NOT ((record ->> 'decision_id'::text) IS DISTINCT FROM decision_id)) AND (NOT ((record ->> 'request_sha256'::text) IS DISTINCT FROM (request_sha256)::text)))`,
+		},
+		{
+			"decision_records",
+			"decision_records_request_sha256_check",
+			`(request_sha256 ~ '^[a-f0-9]{64}$'::text)`,
+		},
+		{
+			"outbox_events",
+			"outbox_lease_pair_ck",
+			`((lease_owner IS NULL) = (lease_until IS NULL))`,
+		},
+		{
+			"outbox_events",
+			"outbox_events_aggregate_type_check",
+			`(aggregate_type = 'decision_record'::text)`,
+		},
+		{
+			"outbox_events",
+			"outbox_events_last_error_code_check",
+			`((last_error_code IS NULL) OR (last_error_code = 'publish_failed'::text))`,
+		},
+	}
+	for _, expected := range criticalChecks {
+		var installed string
+		err := tx.QueryRowContext(ctx, `
+			SELECT pg_get_expr(c.conbin, c.conrelid)
+			FROM pg_constraint c
+			WHERE c.conrelid = to_regclass($1)
+			  AND c.conname = $2
+			  AND c.contype = 'c'
+			  AND c.convalidated
+			  AND NOT c.connoinherit
+		`, expected.table, expected.name).Scan(&installed)
+		if err != nil || installed != expected.expression {
+			return fmt.Errorf("%w: altered CHECK predicate %s.%s", ErrCatalogDrift,
+				expected.table, expected.name)
+		}
+	}
+
+	// A same-name CREATE OR REPLACE FUNCTION preserves the function OID and
+	// every trigger binding checked above. Validate the *actual* installed
+	// source against the immutable v1/v2 migration's reviewed function bodies.
+	// Privileged schema owners can still alter these between checks; this is
+	// startup drift detection, not a claim of privileged-user tamper resistance.
+	immutableFunctions := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "reject_decision_record_mutation()",
+			body: `BEGIN
+    RAISE EXCEPTION 'decision_records are append-only';
+END;`,
+		},
+		{
+			name: "reject_decision_outbox_delete()",
+			body: `BEGIN
+    RAISE EXCEPTION 'outbox events are append-only';
+END;`,
+		},
+		{
+			name: "reject_decision_outbox_identity_mutation()",
+			body: `BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
+       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
+       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
+       OR NEW.event_type IS DISTINCT FROM OLD.event_type
+       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+       OR NEW.payload IS DISTINCT FROM OLD.payload
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'outbox event identity and payload are immutable';
+    END IF;
+    RETURN NEW;
+END;`,
+		},
+	}
+	for _, expected := range immutableFunctions {
+		var actualSource string
+		err := tx.QueryRowContext(ctx, `
+			SELECT p.prosrc FROM pg_proc p
+			WHERE p.oid=to_regprocedure($1)
+			  AND p.pronargs=0
+			  AND p.prokind='f'
+			  AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql')
+			  AND p.prorettype='pg_catalog.trigger'::regtype
+			  AND p.provolatile='v'
+			  AND NOT p.prosecdef AND p.proconfig IS NULL
+		`, expected.name).Scan(&actualSource)
+		if err != nil || strings.TrimSpace(actualSource) != expected.body {
+			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
+		}
+	}
+	return nil
 }
 
 // probeDecisionIdentityConstraint verifies the identity CHECK's *behavior*.
