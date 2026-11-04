@@ -1,7 +1,7 @@
 # PostgreSQL Operations Runbook — Agent Decision
 
 **Status:** operational design baseline; deployment-specific credentials and restore evidence are not yet configured.  
-**Applies to:** PostgreSQL 16 and migrations v0001 (DecisionRecord) and v0002 (Outbox).
+**Applies to:** PostgreSQL 16 and migrations v0001 (DecisionRecord), v0002 (Outbox), and v0003 (TRUNCATE guards).
 
 ## 1. Role separation
 
@@ -112,11 +112,13 @@ Repository CI tests new-schema re-entry, tampered name/digest, missing earlier v
 
 ## 7. Installed immutability trigger integrity gate (PR #13)
 
-After applying/checking the approved migration history and while holding the migration transaction/advisory lock, `decision.Migrate` now examines PostgreSQL's live catalog for four critical protections:
+After applying/checking the approved migration history and while holding the migration transaction/advisory lock, `decision.Migrate` now examines PostgreSQL's live catalog for six critical protections:
 
 - `decision_records_no_update` and `decision_records_no_delete`, both bound to `reject_decision_record_mutation()`;
 - `outbox_event_identity_immutable`, bound to `reject_decision_outbox_identity_mutation()`;
-- `outbox_events_no_delete`, bound to `reject_decision_outbox_delete()`.
+- `outbox_events_no_delete`, bound to `reject_decision_outbox_delete()`;
+- `decision_records_no_truncate`, a BEFORE TRUNCATE statement-level guard bound to `reject_decision_record_mutation()`;
+- `outbox_events_no_truncate`, a BEFORE TRUNCATE statement-level guard bound to `reject_decision_outbox_delete()`.
 
 Each trigger must exist on its intended table, be enabled for the normal origin role, use the expected row/BEFORE event type and reference the expected trigger function. The check also rejects conditional `WHEN` clauses, column-specific `UPDATE OF` triggers and any mismatch in the approved PL/pgSQL function source (`pg_proc.prosrc`, compared with the pinned Go-side definition). Missing, disabled or rewired triggers fail closed; the application does **not** automatically repair them. This complements historical SQL-byte checksums, which cannot independently attest the live PostgreSQL catalog.
 
@@ -132,4 +134,4 @@ Matching migration-history SHA-256, table names and constraint names are not suf
 
 **Compatibility boundary:** expression strings here are reviewed for PostgreSQL 16. A future PostgreSQL deparser/version difference must fail closed and receive a specific upgrade review; it is not automatically equivalent. The probes are an additional regression guard, not proof of resistance to a privileged database owner modifying the schema after the check.
 
-**Outstanding P0:** PostgreSQL `TRUNCATE` bypasses row-level DELETE triggers. A separate reviewed versioned migration must install and verify BEFORE TRUNCATE statement-level guards on the DecisionRecord and Outbox tables. Until that is implemented and tests pass at the exact merged head, neither the append-only ledger nor the Outbox is approved for production. Least-privilege runtime roles must also exclude TRUNCATE, UPDATE/DELETE of immutable payload fields, schema ownership and migration privileges.
+**TRUNCATE gate (v0003):** PostgreSQL `TRUNCATE` bypasses row-level DELETE triggers. The Draft integration now includes a checksummed v0003 migration that installs BEFORE TRUNCATE statement-level guards on DecisionRecord and Outbox; the migration catalog verifier requires both guards to remain enabled and bound to the reviewed handlers. PostgreSQL 16 integration tests attempt TRUNCATE inside rollback-only transactions and exercise missing-trigger recovery. This is code/CI evidence, not production restore or deployment acceptance. Least-privilege runtime roles must also exclude TRUNCATE, UPDATE/DELETE of immutable payload fields, schema ownership and migration privileges.
