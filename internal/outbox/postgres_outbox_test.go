@@ -62,6 +62,36 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatalf("migration re-entry should be safe: %v", err)
 	}
+
+	// A correct migration-history checksum does not prove that its installed
+	// PostgreSQL triggers are still enabled. Fail closed on disabled append-only
+	// protections even when all schema_migrations rows remain unchanged.
+	for _, tc := range []struct {
+		name string
+		table string
+		trigger string
+	}{
+		{name: "DecisionRecord UPDATE", table: "decision_records", trigger: "decision_records_no_update"},
+		{name: "DecisionRecord DELETE", table: "decision_records", trigger: "decision_records_no_delete"},
+		{name: "Outbox payload UPDATE", table: "outbox_events", trigger: "outbox_event_identity_immutable"},
+		{name: "Outbox DELETE", table: "outbox_events", trigger: "outbox_events_no_delete"},
+	} {
+		t.Run("disabled_trigger_"+strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			// Names are a closed list of repository-defined identifiers, not caller input.
+			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" DISABLE TRIGGER "+tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err == nil {
+				t.Fatalf("disabled %s trigger must reject migration history", tc.name)
+			}
+			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" ENABLE TRIGGER "+tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err := decision.Migrate(ctx, db); err != nil {
+				t.Fatalf("re-enabled %s trigger must restore valid migration: %v", tc.name, err)
+			}
+		})
+	}
 	// Applied migrations must be byte-pinned and contiguous. A version-only
 	// presence check silently accepts a tampered name, changed checksum or
 	// missing earlier migration while claiming that the schema is current.
