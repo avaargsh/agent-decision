@@ -63,6 +63,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}{
 		{version: 1, name: "0001_create_decision_records.sql"},
 		{version: 2, name: "0002_decision_outbox.sql"},
+		{version: 3, name: "0003_append_only_truncate_guards.sql"},
 	}
 	for i := range migrations {
 		source, err := schemamigrations.FS.ReadFile(migrations[i].name)
@@ -143,6 +144,8 @@ func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11},
 		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19},
 		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11},
+		{"decision_records", "decision_records_no_truncate", "reject_decision_record_mutation()", 34},
+		{"outbox_events", "outbox_events_no_truncate", "reject_decision_outbox_delete()", 34},
 	}
 	const query = `SELECT t.tgenabled::text, t.tgtype::integer,
 		t.tgfoid = to_regprocedure($3), t.tgqual IS NULL, t.tgattr::text
