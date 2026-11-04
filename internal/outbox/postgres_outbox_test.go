@@ -269,6 +269,15 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		if records != 1 || events != 1 {
 			t.Fatalf("recovered invocation must have one record/event: records=%d events=%d", records, events)
 		}
+		// Finish this subtest's own Outbox event before the parent test
+		// exercises its single-event lease/retry protocol.
+		pending, err := store.Claim(ctx, "rollback-recovery-worker", 1, time.Minute)
+		if err != nil || len(pending) != 1 || pending[0].AggregateID != faulty.DecisionID {
+			t.Fatalf("recovered Outbox event must be claimable: events=%+v err=%v", pending, err)
+		}
+		if err := store.Ack(ctx, pending[0].ID, "rollback-recovery-worker", pending[0].Attempts); err != nil {
+			t.Fatalf("ack recovered Outbox event: %v", err)
+		}
 	})
 
 	record := decision.Record{
