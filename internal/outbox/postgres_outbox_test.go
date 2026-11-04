@@ -312,6 +312,37 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatalf("restored foreign key must pass migration re-entry: %v", err)
 	}
+	// A same-name CREATE OR REPLACE FUNCTION retains the OID and all of the
+	// trigger metadata checked above. The installed function body itself must
+	// still reject immutable-record writes instead of becoming a no-op.
+	for _, procedure := range []string{
+		"reject_decision_record_mutation()",
+		"reject_decision_outbox_identity_mutation()",
+		"reject_decision_outbox_delete()",
+	} {
+		var approvedDefinition string
+		if err := db.QueryRowContext(ctx,
+			"SELECT pg_get_functiondef(to_regprocedure($1))", procedure,
+		).Scan(&approvedDefinition); err != nil {
+			t.Fatalf("load approved trigger definition %s: %v", procedure, err)
+		}
+		changedDefinition := fmt.Sprintf(
+			"CREATE OR REPLACE FUNCTION %s RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END;'",
+			procedure,
+		)
+		if _, err := db.ExecContext(ctx, changedDefinition); err != nil {
+			t.Fatalf("weaken same-named trigger body %s: %v", procedure, err)
+		}
+		if err := decision.Migrate(ctx, db); err == nil {
+			t.Fatalf("migration accepted a same-name no-op trigger function %s", procedure)
+		}
+		if _, err := db.ExecContext(ctx, approvedDefinition); err != nil {
+			t.Fatalf("restore reviewed trigger function %s: %v", procedure, err)
+		}
+		if err := decision.Migrate(ctx, db); err != nil {
+			t.Fatalf("restored trigger function %s rejected: %v", procedure, err)
+		}
+	}
 	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
 		t.Fatal(err)
 	}
