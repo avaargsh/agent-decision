@@ -222,3 +222,37 @@ func TestHTTPRejectsOutOfRangeLedgerPageSize(t *testing.T) {
 		}
 	}
 }
+
+
+func TestHTTPRejectsUnicodeCaseFoldFieldAliases(t *testing.T) {
+	base := validBody()
+	cases := []struct {
+		name string
+		exact []byte
+		aliased []byte
+	}{
+		{
+			name: "top-level schema_version shadowing",
+			exact: []byte(`"schema_version":"decision.v1"`),
+			aliased: []byte(`"schema_version":"invalid","ſchema_version":"decision.v1"`),
+		},
+		{
+			name: "nested source_id shadowing",
+			exact: []byte(`"source_id":"slo-adapter-prod"`),
+			aliased: []byte(`"source_id":"wrong-source","ſource_id":"slo-adapter-prod"`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.Replace(base, tc.exact, tc.aliased, 1)
+			if bytes.Equal(body, base) {
+				t.Fatal("test fixture did not contain expected original field")
+			}
+			h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+			w := send(h, body, "application/json")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("Unicode case-fold alias must fail closed: got %d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
