@@ -211,6 +211,57 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
 	}
 
+
+	// Same-name CHECK constraints can be recreated with a permissive body.
+	// Pin critical expressions to the reviewed v1/v2 SQL as parsed by PG16.
+	// An unreviewed PostgreSQL deparser change fails closed and requires a
+	// deliberate compatibility review rather than implicit acceptance.
+	criticalChecks := []struct {
+		table, name, expression string
+	}{
+		{
+			"decision_records",
+			"decision_records_json_identity_ck",
+			`((NOT ((record ->> 'tenant_id'::text) IS DISTINCT FROM tenant_id)) AND (NOT ((record ->> 'invocation_id'::text) IS DISTINCT FROM invocation_id)) AND (NOT ((record ->> 'decision_id'::text) IS DISTINCT FROM decision_id)) AND (NOT ((record ->> 'request_sha256'::text) IS DISTINCT FROM (request_sha256)::text)))`,
+		},
+		{
+			"decision_records",
+			"decision_records_request_sha256_check",
+			`(request_sha256 ~ '^[a-f0-9]{64}$'::text)`,
+		},
+		{
+			"outbox_events",
+			"outbox_lease_pair_ck",
+			`((lease_owner IS NULL) = (lease_until IS NULL))`,
+		},
+		{
+			"outbox_events",
+			"outbox_events_aggregate_type_check",
+			`(aggregate_type = 'decision_record'::text)`,
+		},
+		{
+			"outbox_events",
+			"outbox_events_last_error_code_check",
+			`((last_error_code IS NULL) OR (last_error_code = 'publish_failed'::text))`,
+		},
+	}
+	for _, expected := range criticalChecks {
+		var installed string
+		err := tx.QueryRowContext(ctx, `
+			SELECT pg_get_expr(c.conbin, c.conrelid)
+			FROM pg_constraint c
+			WHERE c.conrelid = to_regclass($1)
+			  AND c.conname = $2
+			  AND c.contype = 'c'
+			  AND c.convalidated
+			  AND NOT c.connoinherit
+		`, expected.table, expected.name).Scan(&installed)
+		if err != nil || installed != expected.expression {
+			return fmt.Errorf("%w: altered CHECK predicate %s.%s", ErrCatalogDrift,
+				expected.table, expected.name)
+		}
+	}
+
 	// A same-name CREATE OR REPLACE FUNCTION preserves the function OID and
 	// every trigger binding checked above. Validate the *actual* installed
 	// source against the immutable v1/v2 migration's reviewed function bodies.
