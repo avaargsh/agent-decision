@@ -11,7 +11,6 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
@@ -143,6 +142,22 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 	return mux
 }
 
+// validJSONFieldName requires canonical ASCII snake_case keys. Go's
+// encoding/json matches struct field names with Unicode case folding, so
+// Unicode lowercase alone cannot rule out semantic field aliases.
+func validJSONFieldName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		b := key[i]
+		if (b < 'a' || b > 'z') && (b < '0' || b > '9') && b != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 // validateJSONObjects rejects duplicate keys at every depth.
 func validateJSONObjects(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -168,7 +183,7 @@ func validateJSONObjects(body []byte) error {
 				if !ok {
 					return errors.New("invalid JSON object key")
 				}
-				if key != strings.ToLower(key) {
+				if !validJSONFieldName(key) {
 					return fmt.Errorf("non-canonical JSON key %q", key)
 				}
 				if _, exists := seen[key]; exists {
