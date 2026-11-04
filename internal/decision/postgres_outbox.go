@@ -112,8 +112,56 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return storeUnavailable("record checksummed schema migration", err)
 		}
 	}
+	// The migration ledger attests approved SQL bytes, not live catalog state.
+	// A disabled or replaced trigger would compromise append-only guarantees
+	// even if the schema_migrations metadata has not changed.
+	if err := verifyLedgerProtectionTriggers(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return storeUnavailable("commit migrations", err)
+	}
+	return nil
+}
+
+
+// verifyLedgerProtectionTriggers checks the essential installed append-only
+// safeguards. It never repairs drift, which requires an operator-reviewed
+// recovery and an isolated restore rehearsal. PostgreSQL tgtype flags are:
+// ROW (1), BEFORE (2), DELETE (8), UPDATE (16).
+func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
+	required := []struct {
+		table string
+		name string
+		function string
+		triggerType int
+	}{
+		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19},
+		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11},
+		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19},
+		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11},
+	}
+	const query = `SELECT t.tgenabled::text, t.tgtype::integer,
+		t.tgfoid = to_regprocedure($3)
+		FROM pg_trigger AS t
+		WHERE t.tgrelid = to_regclass($1)
+		  AND t.tgname = $2 AND NOT t.tgisinternal`
+	for _, item := range required {
+		var enabled string
+		var triggerType int
+		var expectedFunction sql.NullBool
+		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
+			Scan(&enabled, &triggerType, &expectedFunction)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("critical ledger protection trigger %s.%s missing", item.table, item.name)
+		}
+		if err != nil {
+			return storeUnavailable("inspect ledger protection trigger", err)
+		}
+		if (enabled != "O" && enabled != "A") || triggerType != item.triggerType ||
+			!expectedFunction.Valid || !expectedFunction.Bool {
+			return fmt.Errorf("critical ledger protection trigger %s.%s disabled or altered", item.table, item.name)
+		}
 	}
 	return nil
 }
