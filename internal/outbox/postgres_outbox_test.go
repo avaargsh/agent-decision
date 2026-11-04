@@ -343,6 +343,35 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			t.Fatalf("restored trigger function %s rejected: %v", procedure, err)
 		}
 	}
+
+	// Same-name constraints can be replaced with permissive predicates while
+	// retaining their name, CHECK type and validated catalog flag.
+	t.Run("weakened_decision_identity_check", func(t *testing.T) {
+		var approved string
+		if err := db.QueryRowContext(ctx, `SELECT pg_get_constraintdef(oid)
+			FROM pg_constraint WHERE conrelid = 'decision_records'::regclass
+			  AND conname = 'decision_records_json_identity_ck'`).Scan(&approved); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE decision_records
+			DROP CONSTRAINT decision_records_json_identity_ck;
+			ALTER TABLE decision_records ADD CONSTRAINT decision_records_json_identity_ck CHECK (true)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := decision.Migrate(ctx, db); err == nil {
+			t.Fatal("migration accepted a same-name always-true Decision identity CHECK")
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE decision_records
+			DROP CONSTRAINT decision_records_json_identity_ck`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE decision_records ADD CONSTRAINT decision_records_json_identity_ck "+approved); err != nil {
+			t.Fatal(err)
+		}
+		if err := decision.Migrate(ctx, db); err != nil {
+			t.Fatalf("restored identity CHECK must pass: %v", err)
+		}
+	})
 	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
 		t.Fatal(err)
 	}
