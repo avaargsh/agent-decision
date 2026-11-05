@@ -27,7 +27,12 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil { t.Fatal(err) }
 	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
 	if _, err := admin.ExecContext(ctx, "CREATE ROLE "+role+" NOLOGIN"); err != nil { t.Fatal(err) }
-	defer admin.ExecContext(context.Background(), "DROP ROLE "+role)
+	defer func() {
+		// Grants on the test schema/table are dependencies of the role.
+		// Revoke them before dropping the role to avoid leaking CI roles.
+		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+role)
+		_, _ = admin.ExecContext(context.Background(), "DROP ROLE "+role)
+	}()
 	if err := MigrateInSchema(ctx, admin, schema); err != nil { t.Fatal(err) }
 	if _, err := admin.ExecContext(ctx, "GRANT USAGE ON SCHEMA "+schema+" TO "+role); err != nil { t.Fatal(err) }
 	if _, err := admin.ExecContext(ctx, "GRANT SELECT ON "+schema+".schema_migrations TO "+role); err != nil { t.Fatal(err) }
