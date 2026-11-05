@@ -174,3 +174,18 @@ The attestation role requires `USAGE` on the trusted schema and `SELECT` on its 
 `api.NewCatalogGuardedHandler(service, resolver, attest)` implements `GET /readyz` and verifies the callback before **every** `POST /v1/decisions`; a nil or failing callback returns HTTP 503 / `STORE_UNAVAILABLE` without leaking catalog details. `GET /healthz` remains a separate liveness check. The concrete wiring must call `decision.VerifyInstalledCatalogInSchema` on the **same trusted schema/database** as the durable DecisionStore and use an application connection pool whose own `search_path` is safely pinned independently. The verifier's transaction-local `search_path` does not change the Store's other pool connections. A disabled trigger after a healthy request therefore blocks the next write **when this guarded handler is actually used**.
 
 The repository's `cmd/agent-decision` remains a loopback-only in-memory **development** binary using the unguarded `NewHandler`, with no trusted PrincipalResolver/AuthorityVerifier. No production Postgres-backed entrypoint currently proves that the guarded handler is deployed. Real staging acceptance must verify the actual server composition, TLS/auth, restricted DB users, immutable log of fail-closed events, readiness/writes under post-start catalog drift, worker/dispatcher paths, RLS or equivalent tenant isolation, and a restored copy. Rechecking catalog on every write adds PostgreSQL round trips and still has a privileged-DDL time-of-check/time-of-use window; deployment policy and audit remain necessary. G02/G05 cross-service evidence is a separate gate.
+
+
+### Deployment preflight CLI (not yet wired into a live deployment)
+
+After an authorized migration job has succeeded, run the standalone read-only command with **separate restricted credentials**:
+
+```bash
+export DECISION_ATTEST_DATABASE_URL="<secret-manager-supplied PostgreSQL DSN>"
+export DECISION_ATTEST_SCHEMA="public"  # or the approved dedicated schema
+go run ./cmd/decision-catalog-attest
+```
+
+The command fails with a nonzero exit code if required configuration is absent, migration-history checksums are missing/tampered, or critical installed catalog protection has drifted. It emits a generic failure message instead of a DSN or tenant payload. PostgreSQL permissions should be scoped to `USAGE` on the approved schema and `SELECT` on its `schema_migrations`; test this with actual deployed credentials. The CI test of this CLI creates a disposable schema, verifies success, disables the Outbox TRUNCATE guard, and verifies that the command refuses the altered schema.
+
+**Integration contract:** the deployer must treat a failed CLI check as a hard block *before* enabling the application Deployment; the application must also compose `NewCatalogGuardedHandler` with `VerifyInstalledCatalogInSchema` and a trusted schema-pinned DecisionStore pool. The repository supplies the building blocks and tests, **not** a deployed Kubernetes initContainer, real restricted secrets, authenticated ingress or independent production approval.
