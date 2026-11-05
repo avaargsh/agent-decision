@@ -68,14 +68,14 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	// denial forces migration to stop while the approved CHECK remains intact.
 	t.Run("identity_probe_is_part_of_migration_gate", func(t *testing.T) {
 		const install = `CREATE FUNCTION deny_decision_catalog_probe() RETURNS trigger
-			LANGUAGE plpgsql AS $
+			LANGUAGE plpgsql AS $probe$
 			BEGIN
 				IF NEW.tenant_id LIKE '__decision_catalog_probe_%' THEN
 					RAISE EXCEPTION 'blocked catalog probe';
 				END IF;
 				RETURN NEW;
 			END;
-			$;
+			$probe$;
 			CREATE TRIGGER deny_decision_catalog_probe
 			BEFORE INSERT ON decision_records FOR EACH ROW
 			EXECUTE FUNCTION deny_decision_catalog_probe();`
