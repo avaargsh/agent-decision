@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,6 +65,12 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 			db.Close()
 			t.Fatalf("role identity mismatch %q: %v", who, err)
 		}
+		// Pin runtime Store sessions independently of the verifier's own
+		// transaction-local catalog search_path.
+		if _, err := db.ExecContext(ctx, "SET search_path TO "+schema+", pg_catalog, pg_temp"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
 		return db
 	}
 	app := openRole(appRole)
@@ -76,6 +83,44 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
+
+	// Exercise actual runtime SQL under the effective role rather than
+	// assuming the GRANT matrix is sufficient for SaveOrGet/Claim/Ack.
+	record := Record{
+		TenantID: "roles-tenant-"+seed,
+		InvocationID: "roles-invocation",
+		DecisionID: "dec_"+strings.Repeat("a", 64),
+		AgentID: "roles-agent",
+		SessionID: "roles-session",
+		RunID: "roles-run",
+		RequestSHA256: strings.Repeat("b", 64),
+		CreatedAt: time.Now().UTC(),
+		Status: StatusProposed,
+		ReasonCodes: []string{},
+		Evidence: []EvidenceRef{},
+		Plan: PlanCandidate{PlanID: "plan_roles", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+	}
+	appStore := NewPostgresStore(app)
+	if _, created, err := appStore.SaveOrGet(ctx, record); err != nil || !created {
+		t.Fatalf("restricted application SaveOrGet: created=%t err=%v", created, err)
+	}
+	if _, created, err := appStore.SaveOrGet(ctx, record); err != nil || created {
+		t.Fatalf("restricted application replay: created=%t err=%v", created, err)
+	}
+	if _, err := dispatcher.ExecContext(ctx, "SELECT record FROM decision_records LIMIT 1"); err == nil {
+		t.Fatal("dispatcher must not directly read the immutable DecisionRecord payload")
+	}
+	worker := NewPostgresStore(dispatcher)
+	events, err := worker.Claim(ctx, "roles-dispatcher", 1, 2*time.Minute)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("restricted dispatcher Claim: events=%d err=%v", len(events), err)
+	}
+	if err := worker.Ack(ctx, events[0].ID, "roles-dispatcher", events[0].Attempts); err != nil {
+		t.Fatalf("restricted dispatcher Ack: %v", err)
+	}
+	if _, err := app.ExecContext(ctx, "SELECT event_id FROM outbox_events LIMIT 1"); err == nil {
+		t.Fatal("application must not list the Outbox")
+	}
 	if err := VerifyRuntimeDatabaseRole(ctx, admin, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("privileged migrator incorrectly accepted as application: %v", err)
 	}
