@@ -7,44 +7,55 @@
 
 Use a dedicated database and schema for Agent Decision. Keep migration ownership separate from the application login.
 
-- `agent_decision_migrator`: schema owner; used only by the migration job. It may create/alter tables and indexes.
-- `agent_decision_app`: runtime login; no schema ownership, DDL, role membership, or database-wide privileges.
-- Human/automation backup role: read access required by the selected backup method; credentials live in the secrets manager and are not mounted into the API process.
+- `agent_decision_migrator`: schema owner; used only by the migration job, never mounted in API/dispatcher/attestor pods.
+- `agent_decision_app`: Decision HTTP/API runtime; `SELECT/INSERT` DecisionRecord and `INSERT` Outbox only, **no Outbox lease/ACK UPDATE or SELECT**.
+- `agent_decision_dispatcher`: claims and ACKs/retries Outbox events with `SELECT` plus narrowly scoped column `UPDATE`; **no DecisionRecord SELECT/INSERT or Outbox INSERT**.
+- `agent_decision_attestor`: isolated read-only catalog verification; schema `USAGE` and `SELECT` on `schema_migrations`, never DDL or runtime DML.
+- Human/automation backup role: only the backup access required by the selected backup method; secrets must not be mounted into API/dispatcher processes.
 
 Example bootstrap (run as the database administrator; replace database/schema and secret provisioning for the target environment):
 
 ```sql
 CREATE ROLE agent_decision_migrator LOGIN;
 CREATE ROLE agent_decision_app LOGIN;
+CREATE ROLE agent_decision_dispatcher LOGIN;
+CREATE ROLE agent_decision_attestor LOGIN;
 
 CREATE DATABASE agent_decision OWNER agent_decision_migrator;
 
 \connect agent_decision
 
 REVOKE ALL ON DATABASE agent_decision FROM PUBLIC;
-GRANT CONNECT ON DATABASE agent_decision TO agent_decision_app;
+GRANT CONNECT ON DATABASE agent_decision TO
+  agent_decision_app, agent_decision_dispatcher, agent_decision_attestor;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO agent_decision_app;
+GRANT USAGE ON SCHEMA public TO
+  agent_decision_app, agent_decision_dispatcher, agent_decision_attestor;
 
--- Apply migrations as agent_decision_migrator.
--- After migrations 0001–0003; the application needs scoped reads,
--- immutable inserts and lease/ack updates only.
+-- Apply migrations 0001-0003 first as agent_decision_migrator.
+-- API: immutable Decision + atomic Outbox INSERT only.
 GRANT SELECT, INSERT ON TABLE public.decision_records TO agent_decision_app;
-GRANT SELECT, INSERT ON TABLE public.outbox_events TO agent_decision_app;
+GRANT INSERT ON TABLE public.outbox_events TO agent_decision_app;
+
+-- Dispatcher: bounded SKIP LOCKED Claim, fenced Ack/Retry; cannot forge events.
+GRANT SELECT ON TABLE public.outbox_events TO agent_decision_dispatcher;
 GRANT UPDATE (lease_owner, lease_until, attempts, available_at,
               published_at, last_error_code)
-  ON TABLE public.outbox_events TO agent_decision_app;
-REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-  ON TABLE public.decision_records FROM agent_decision_app;
-REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER
-  ON TABLE public.outbox_events FROM agent_decision_app;
+  ON TABLE public.outbox_events TO agent_decision_dispatcher;
 
--- Production deployments must also review owner membership, inherited
--- grants, PUBLIC privileges and the trusted search_path; grants are templates.
+-- Independent read-only deployment/startup attestor.
+GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
+
+-- Validate ALL effective privileges, including inherited/column grants,
+-- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
+-- These GRANTs assume new roles in a dedicated DB: check and revoke any
+-- preexisting PUBLIC/role memberships before production.
+-- No API/dispatcher role may own tables, use DDL/TRUNCATE/DELETE, bypass RLS,
+-- be a member of the migrator or inherit schema/database CREATE privileges.
 ```
 
-The runtime repository uses scoped SQL for tenant/idempotency lookup. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
+The Decision API uses scoped SQL for tenant/idempotency lookup, while a separate dispatcher owns Outbox Claim/Ack/Retry. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
 
 ## 2. Secret and connection handling
 
@@ -189,3 +200,10 @@ go run ./cmd/decision-catalog-attest
 The command fails with a nonzero exit code if required configuration is absent, migration-history checksums are missing/tampered, or critical installed catalog protection has drifted. It emits a generic failure message instead of a DSN or tenant payload. PostgreSQL permissions should be scoped to `USAGE` on the approved schema and `SELECT` on its `schema_migrations`; test this with actual deployed credentials. The CI test of this CLI creates a disposable schema, verifies success, disables the Outbox TRUNCATE guard, and verifies that the command refuses the altered schema.
 
 **Integration contract:** the deployer must treat a failed CLI check as a hard block *before* enabling the application Deployment; the application must also compose `NewCatalogGuardedHandler` with `VerifyInstalledCatalogInSchema` and a trusted schema-pinned DecisionStore pool. The repository supplies the building blocks and tests, **not** a deployed Kubernetes initContainer, real restricted secrets, authenticated ingress or independent production approval.
+
+
+### Effective runtime database privilege gate (PR #14)
+
+After executing the approved GRANTs above, call `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleApplication)` on the **actual API connection identity**, and `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleDispatcher)` on the **actual dispatcher identity**. This read-only gate checks the role's superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS flags, schema/database CREATE, schema owner membership, and exact effective per-column SELECT/INSERT/UPDATE permissions plus DELETE/TRUNCATE/REFERENCES/TRIGGER bans. It rejects overprivileged sessions, including table-wide or inherited grants. The read-only `VerifyInstalledCatalogInSchema` uses separate attestor credentials, not either of these runtime credentials.
+
+Repository PostgreSQL 16 tests use disposable NOLOGIN roles under `SET ROLE`; they are effective-privilege checks but do not prove separate production logins or workload identities. The API role's SELECT on all DecisionRecord rows still has a **cross-tenant exposure risk** without RLS or a trusted, independently verified tenant-isolation layer. The role check is not RLS, not a security audit of every object in the database, and not authorization to release.
