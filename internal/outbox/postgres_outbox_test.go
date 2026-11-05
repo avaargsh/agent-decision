@@ -62,6 +62,40 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if err := decision.Migrate(ctx, db); err != nil {
 		t.Fatalf("migration re-entry should be safe: %v", err)
 	}
+
+	// The catalog gate must execute its four-field behavioral probe, not only
+	// compare the deparsed CHECK expression. A probe-specific BEFORE INSERT
+	// denial forces migration to stop while the approved CHECK remains intact.
+	t.Run("identity_probe_is_part_of_migration_gate", func(t *testing.T) {
+		const install = `CREATE FUNCTION deny_decision_catalog_probe() RETURNS trigger
+			LANGUAGE plpgsql AS $
+			BEGIN
+				IF NEW.tenant_id LIKE '__decision_catalog_probe_%' THEN
+					RAISE EXCEPTION 'blocked catalog probe';
+				END IF;
+				RETURN NEW;
+			END;
+			$;
+			CREATE TRIGGER deny_decision_catalog_probe
+			BEFORE INSERT ON decision_records FOR EACH ROW
+			EXECUTE FUNCTION deny_decision_catalog_probe();`
+		if _, err := db.ExecContext(ctx, install); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS deny_decision_catalog_probe ON decision_records")
+			_, _ = db.ExecContext(context.Background(), "DROP FUNCTION IF EXISTS deny_decision_catalog_probe()")
+		})
+		if err := decision.Migrate(ctx, db); err == nil {
+			t.Fatal("migration bypassed the behavior probe and accepted a probe-specific INSERT denial")
+		}
+		if _, err := db.ExecContext(ctx, "DROP TRIGGER deny_decision_catalog_probe ON decision_records"); err != nil {
+			t.Fatal(err)
+		}
+		if err := decision.Migrate(ctx, db); err != nil {
+			t.Fatalf("migration should succeed after removing probe denial: %v", err)
+		}
+	})
 	// A correct migration-history checksum does not prove that its installed
 	// PostgreSQL triggers are still enabled. Fail closed on disabled append-only
 	// protections even when all schema_migrations rows remain unchanged.
