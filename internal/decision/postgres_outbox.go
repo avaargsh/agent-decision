@@ -342,6 +342,12 @@ END;`,
 			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
 		}
 	}
+	// The expression pin guards reviewed PG16 syntax. Verify its actual
+	// relational/JSON identity behavior as defense in depth; each synthetic
+	// insert is rolled back within its own savepoint.
+	if err := probeDecisionIdentityConstraint(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
