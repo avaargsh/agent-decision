@@ -22,12 +22,41 @@ var ErrCatalogDrift = errors.New("Decision PostgreSQL catalog integrity drift")
 const migrationLockClass int32 = 71002
 const migrationLockObject int32 = 1
 
-// Migrate applies the immutable Decision ledger and transactional Outbox
-// schema under one transaction and advisory lock. Run with a migration-capable
-// database role.
+// validDecisionSchema is intentionally narrower than PostgreSQL identifiers:
+// only deployment-reviewed lowercase ASCII schemas are eligible, avoiding
+// truncation, quoting ambiguities and reserved internal namespaces.
+func validDecisionSchema(schema string) bool {
+	if schema == "" || len(schema) > 63 || strings.HasPrefix(schema, "pg_") ||
+		schema == "information_schema" {
+		return false
+	}
+	for i := 0; i < len(schema); i++ {
+		ch := schema[i]
+		if (ch < 'a' || ch > 'z') && ch != '_' && (i == 0 || ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// Migrate applies the immutable Decision ledger to the explicit default
+// schema "public", never to a schema supplied by the connection search_path.
+// Deployments using another trusted schema must call MigrateInSchema.
 func Migrate(ctx context.Context, db *sql.DB) error {
+	return MigrateInSchema(ctx, db, "public")
+}
+
+// MigrateInSchema applies the ledger within a trusted, caller-configured
+// PostgreSQL schema. The schema must come from deployment configuration, never
+// from an HTTP request or untrusted data. All unqualified legacy v1-v3 DDL
+// resolves inside a transaction-local schema-first search_path, with pg_temp
+// explicitly LAST so temporary tables cannot shadow protected relations.
+func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
 	if db == nil {
 		return ErrStoreUnavailable
+	}
+	if !validDecisionSchema(schema) {
+		return fmt.Errorf("%w: invalid or untrusted migration schema", ErrCatalogDrift)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -35,6 +64,22 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
+	// Bind the schema before any DDL, catalog lookup or advisory lock.
+	// Qualified pg_catalog functions prevent ambient function shadowing;
+	// format(%I) safely quotes the configured SQL identifier.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_catalog.set_config('search_path',
+		    pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`,
+		schema); err != nil {
+		return storeUnavailable("pin trusted migration schema", err)
+	}
+	var resolvedSchema string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_schema()").Scan(&resolvedSchema); err != nil {
+		return storeUnavailable("resolve trusted migration schema", err)
+	}
+	if resolvedSchema != schema {
+		return fmt.Errorf("%w: trusted migration schema %q is not accessible", ErrCatalogDrift, schema)
+	}
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1, $2)", migrationLockClass, migrationLockObject); err != nil {
 		return storeUnavailable("lock migrations", err)
 	}
