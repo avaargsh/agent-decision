@@ -216,10 +216,19 @@ func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// verifyDecisionCatalog checks the *installed* schema in the caller's
-// migration-locked transaction. A correct historical SQL digest does not
-// prove an operator has not dropped a table, FK, or append-only trigger.
+// verifyDecisionCatalog performs the read-only catalog attestation followed
+// by the migration-only, rollback-safe INSERT behavior probes. Never call the
+// behavioral probes from a restricted application-role readiness check.
 func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
+	if err := verifyDecisionCatalogReadOnly(ctx, tx); err != nil {
+		return err
+	}
+	return probeDecisionIdentityConstraint(ctx, tx)
+}
+
+// verifyDecisionCatalogReadOnly examines only installed PostgreSQL catalog
+// metadata; it may run inside a READ ONLY transaction with a restricted role.
+func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 	var relationsOK bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT to_regclass('decision_records') IS NOT NULL
@@ -386,12 +395,6 @@ END;`,
 		if err != nil || strings.TrimSpace(actualSource) != expected.body {
 			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
 		}
-	}
-	// The expression pin guards reviewed PG16 syntax. Verify its actual
-	// relational/JSON identity behavior as defense in depth; each synthetic
-	// insert is rolled back within its own savepoint.
-	if err := probeDecisionIdentityConstraint(ctx, tx); err != nil {
-		return err
 	}
 	return nil
 }
