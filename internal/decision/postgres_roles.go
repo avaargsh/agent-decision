@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 // RuntimeDatabaseRole specifies exactly one database permission boundary.
@@ -49,7 +48,7 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		            r.rolreplication OR r.rolbypassrls)
 		       AND pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')
 		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
-		       AND NOT pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
+		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
 		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
 		FROM pg_catalog.pg_roles AS r
 		JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1
@@ -129,4 +128,3 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	return nil
 }
 
-var _ = strings.TrimSpace
