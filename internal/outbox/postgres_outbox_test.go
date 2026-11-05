@@ -56,10 +56,10 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		_ = admin.Close()
 	}()
 
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("migration re-entry should be safe: %v", err)
 	}
 
@@ -86,13 +86,13 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS deny_decision_catalog_probe ON decision_records")
 			_, _ = db.ExecContext(context.Background(), "DROP FUNCTION IF EXISTS deny_decision_catalog_probe()")
 		})
-		if err := decision.Migrate(ctx, db); err == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 			t.Fatal("migration bypassed the behavior probe and accepted a probe-specific INSERT denial")
 		}
 		if _, err := db.ExecContext(ctx, "DROP TRIGGER deny_decision_catalog_probe ON decision_records"); err != nil {
 			t.Fatal(err)
 		}
-		if err := decision.Migrate(ctx, db); err != nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 			t.Fatalf("migration should succeed after removing probe denial: %v", err)
 		}
 	})
@@ -114,13 +114,13 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" DISABLE TRIGGER "+tc.trigger); err != nil {
 				t.Fatal(err)
 			}
-			if err := decision.Migrate(ctx, db); err == nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 				t.Fatalf("disabled %s trigger must reject migration history", tc.name)
 			}
 			if _, err := db.ExecContext(ctx, "ALTER TABLE "+tc.table+" ENABLE TRIGGER "+tc.trigger); err != nil {
 				t.Fatal(err)
 			}
-			if err := decision.Migrate(ctx, db); err != nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 				t.Fatalf("re-enabled %s trigger must restore valid migration: %v", tc.name, err)
 			}
 		})
@@ -139,13 +139,13 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END;'`); err != nil {
 			t.Fatal(err)
 		}
-		if err := decision.Migrate(ctx, db); err == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 			t.Fatal("rewritten trigger handler with unchanged OID must fail closed")
 		}
 		if _, err := db.ExecContext(ctx, original); err != nil {
 			t.Fatal(err)
 		}
-		if err := decision.Migrate(ctx, db); err != nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 			t.Fatalf("restored handler must pass migration integrity: %v", err)
 		}
 	})
@@ -166,7 +166,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 				"CREATE TRIGGER decision_records_no_update "+tc.replacement); err != nil {
 				t.Fatal(err)
 			}
-			if err := decision.Migrate(ctx, db); err == nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 				t.Fatalf("modified trigger definition (%s) must fail closed", tc.name)
 			}
 			if _, err := db.ExecContext(ctx, `DROP TRIGGER decision_records_no_update ON decision_records;
@@ -174,7 +174,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 				FOR EACH ROW EXECUTE FUNCTION reject_decision_record_mutation()`); err != nil {
 				t.Fatal(err)
 			}
-			if err := decision.Migrate(ctx, db); err != nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 				t.Fatalf("restored trigger (%s) must pass migration integrity: %v", tc.name, err)
 			}
 		})
@@ -194,7 +194,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET name = 'substituted.sql' WHERE version = 2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("migration name substitution must fail closed")
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET name = $1 WHERE version = 2", name); err != nil {
@@ -203,7 +203,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = repeat('0', 64) WHERE version = 2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("migration checksum substitution must fail closed")
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = $1 WHERE version = 2", checksum); err != nil {
@@ -218,7 +218,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("missing earlier migration must not be silently re-applied")
 	}
 	if _, err := db.ExecContext(ctx,
@@ -227,7 +227,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("restored authentic migration history must be accepted: %v", err)
 	}
 	store := decision.NewPostgresStore(db)
@@ -356,7 +356,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 3"); err != nil {
 		t.Fatalf("simulate v2 migration ledger: %v", err)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("v2-to-v3 in-place migration: %v", err)
 	}
 	var appliedVersions, preservedDecisions, preservedEvents int
@@ -379,7 +379,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		t.Fatalf("v2-to-v3 migration lost data/history: versions=%d records=%d events=%d",
 			appliedVersions, preservedDecisions, preservedEvents)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("v3 upgrade idempotent replay: %v", err)
 	}
 
@@ -450,25 +450,25 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DROP TRIGGER outbox_event_identity_immutable ON outbox_events"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("migration accepted an Outbox missing the immutable-identity trigger")
 	}
 	if _, err := db.ExecContext(ctx, `CREATE TRIGGER outbox_event_identity_immutable BEFORE UPDATE ON outbox_events FOR EACH ROW EXECUTE FUNCTION reject_decision_outbox_identity_mutation()`); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("restored trigger must pass migration re-entry: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, "ALTER TABLE outbox_events DROP CONSTRAINT outbox_decision_fk"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("migration accepted Outbox without tenant-bound Decision foreign key")
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE outbox_events ADD CONSTRAINT outbox_decision_fk FOREIGN KEY (tenant_id, aggregate_id) REFERENCES decision_records (tenant_id, decision_id)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err != nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("restored foreign key must pass migration re-entry: %v", err)
 	}
 	// A same-name CREATE OR REPLACE FUNCTION retains the OID and all of the
@@ -492,13 +492,13 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		if _, err := db.ExecContext(ctx, changedDefinition); err != nil {
 			t.Fatalf("weaken same-named trigger body %s: %v", procedure, err)
 		}
-		if err := decision.Migrate(ctx, db); err == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 			t.Fatalf("migration accepted a same-name no-op trigger function %s", procedure)
 		}
 		if _, err := db.ExecContext(ctx, approvedDefinition); err != nil {
 			t.Fatalf("restore reviewed trigger function %s: %v", procedure, err)
 		}
-		if err := decision.Migrate(ctx, db); err != nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 			t.Fatalf("restored trigger function %s rejected: %v", procedure, err)
 		}
 	}
@@ -517,7 +517,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			ALTER TABLE decision_records ADD CONSTRAINT decision_records_json_identity_ck CHECK (true)`); err != nil {
 			t.Fatal(err)
 		}
-		if err := decision.Migrate(ctx, db); err == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 			t.Fatal("migration accepted a same-name always-true Decision identity CHECK")
 		}
 		if _, err := db.ExecContext(ctx, `ALTER TABLE decision_records
@@ -527,7 +527,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "ALTER TABLE decision_records ADD CONSTRAINT decision_records_json_identity_ck "+approved); err != nil {
 			t.Fatal(err)
 		}
-		if err := decision.Migrate(ctx, db); err != nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 			t.Fatalf("restored identity CHECK must pass: %v", err)
 		}
 	})
@@ -562,7 +562,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			); err != nil {
 				t.Fatalf("install same-name weakened %s CHECK: %v", tc.name, err)
 			}
-			if err := decision.Migrate(ctx, db); !errors.Is(err, decision.ErrCatalogDrift) {
+			if err := decision.MigrateInSchema(ctx, db, schema); !errors.Is(err, decision.ErrCatalogDrift) {
 				t.Errorf("same-name weakened %s CHECK was not rejected as catalog drift: %v", tc.name, err)
 			}
 			if _, err := db.ExecContext(ctx,
@@ -575,7 +575,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			); err != nil {
 				t.Fatalf("restore approved %s CHECK: %v", tc.name, err)
 			}
-			if err := decision.Migrate(ctx, db); err != nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 				t.Fatalf("restored %s CHECK should be accepted: %v", tc.name, err)
 			}
 		})
@@ -617,7 +617,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			); err != nil {
 				t.Fatalf("drop installed guard %s: %v", tc.trigger, err)
 			}
-			if err := decision.Migrate(ctx, db); !errors.Is(err, decision.ErrCatalogDrift) {
+			if err := decision.MigrateInSchema(ctx, db, schema); !errors.Is(err, decision.ErrCatalogDrift) {
 				t.Errorf("migration accepted missing TRUNCATE guard on %s: %v", tc.table, err)
 			}
 			if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -626,7 +626,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			)); err != nil {
 				t.Fatalf("restore TRUNCATE guard %s: %v", tc.trigger, err)
 			}
-			if err := decision.Migrate(ctx, db); err != nil {
+			if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
 				t.Fatalf("restore %s TRUNCATE protection: %v", tc.table, err)
 			}
 		})
@@ -634,7 +634,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DROP TABLE outbox_events"); err != nil {
 		t.Fatal(err)
 	}
-	if err := decision.Migrate(ctx, db); err == nil {
+	if err := decision.MigrateInSchema(ctx, db, schema); err == nil {
 		t.Fatal("migration accepted recorded v2 with the Outbox relation missing")
 	}
 }
