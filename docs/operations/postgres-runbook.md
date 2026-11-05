@@ -207,3 +207,22 @@ The command fails with a nonzero exit code if required configuration is absent, 
 After executing the approved GRANTs above, call `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleApplication)` on the **actual API connection identity**, and `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleDispatcher)` on the **actual dispatcher identity**. This read-only gate checks the role's superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS flags, schema/database CREATE, schema owner membership, and exact effective per-column SELECT/INSERT/UPDATE permissions plus DELETE/TRUNCATE/REFERENCES/TRIGGER bans. It rejects overprivileged sessions, including table-wide or inherited grants. The read-only `VerifyInstalledCatalogInSchema` uses separate attestor credentials, not either of these runtime credentials.
 
 Repository PostgreSQL 16 tests use disposable NOLOGIN roles under `SET ROLE`; they are effective-privilege checks but do not prove separate production logins or workload identities. The API role's SELECT on all DecisionRecord rows still has a **cross-tenant exposure risk** without RLS or a trusted, independently verified tenant-isolation layer. The role check is not RLS, not a security audit of every object in the database, and not authorization to release.
+
+
+### Standalone runtime-role preflight (CI capability; deployment not integrated)
+
+Run the separate role-audit command twice with credentials belonging to the actual deployed non-owner **LOGIN** identity of each service. Do **not** supply the migrator or attestor connection string, and do not put credentials in shell history or CI artifacts.
+
+```bash
+DECISION_ROLE_DATABASE_URL="$DECISION_APP_DSN" \
+  DECISION_ROLE_SCHEMA="$APPROVED_DECISION_SCHEMA" \
+  DECISION_ROLE_KIND=application go run ./cmd/decision-role-audit
+
+DECISION_ROLE_DATABASE_URL="$DECISION_DISPATCHER_DSN" \
+  DECISION_ROLE_SCHEMA="$APPROVED_DECISION_SCHEMA" \
+  DECISION_ROLE_KIND=dispatcher go run ./cmd/decision-role-audit
+```
+
+Each check must exit successfully before that workload starts. The command rejects absent/unknown role kind and overly privileged effective credentials, returns a nonzero exit status, and prints only a generic pass/fail result. The existing read-only `cmd/decision-catalog-attest` must run separately under the attestor identity after migrations. Tests also authenticate through three distinct disposable PostgreSQL 16 LOGIN passwords (rather than only `SET ROLE`) and exercise app SaveOrGet/replay, dispatcher Claim/Ack, attestor catalog reads, and unauthorized cross-role operations. These tests do **not** validate RLS, K8s workload identities, production credential custody, actual TLS or a real deployment.
+
+Do not use a successful role audit to claim complete tenant isolation: the current application role has broad table-level `SELECT` on DecisionRecord and requires trusted caller authorization; PostgreSQL row-level enforcement or independently reviewed equivalent isolation remains a **P0 production blocker**. Role grants are also point-in-time, not an effective substitute for DDL audit, independent security review and actual restart/restore evidence.
