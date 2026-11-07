@@ -150,4 +150,20 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("REVOKE SELECT ON "+schema+".decision_records FROM "+dispatcherRole)
 	check(dispatcher, RuntimeRoleDispatcher)
+
+	// Non-inheriting membership still allows SET ROLE and must fail closed.
+	exec("GRANT "+dispatcherRole+" TO "+appRole+" WITH INHERIT FALSE, SET TRUE")
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("application accepted SET ROLE access to dispatcher: %v", err)
+	}
+	exec("REVOKE "+dispatcherRole+" FROM "+appRole)
+	check(app, RuntimeRoleApplication)
+
+	// REFERENCES may be granted on a single column without a table-wide ACL.
+	exec("GRANT REFERENCES (event_id) ON "+schema+".outbox_events TO "+appRole)
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("application accepted column REFERENCES grant: %v", err)
+	}
+	exec("REVOKE REFERENCES (event_id) ON "+schema+".outbox_events FROM "+appRole)
+	check(app, RuntimeRoleApplication)
 }
