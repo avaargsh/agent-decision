@@ -46,6 +46,7 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	if err := tx.QueryRowContext(ctx, `
 		SELECT NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
 		            r.rolreplication OR r.rolbypassrls)
+		       AND session_user = current_user
 		       AND pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')
 		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
 		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
