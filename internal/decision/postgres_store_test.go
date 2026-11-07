@@ -172,6 +172,8 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// Bound database connections independently of concurrent callers.
+	db.SetMaxOpenConns(16)
 	ctx := context.Background()
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
@@ -236,39 +238,95 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant isolation: created=%v err=%v", created, err)
 	}
 
+	// Issue #4 requires 50+ concurrently arriving invocations. Exercise 64
+	// callers across a bounded pool, with a single commit and one Outbox event.
 	concurrent := record
 	concurrent.InvocationID = "concurrent-key"
-	concurrent.DecisionID = "dec_"+strings.Repeat("b",64)
+	concurrent.DecisionID = "dec_" + strings.Repeat("b", 64)
 	concurrent.CreatedAt = record.CreatedAt
-	const workers = 12
+	const workers = 64
+	start := make(chan struct{})
+	type result struct {
+		record Record
+		created bool
+		err error
+	}
+	results := make(chan result, workers)
 	var wg sync.WaitGroup
-	createdResults := make(chan bool, workers)
-	errResults := make(chan error, workers)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, created, err := store.SaveOrGet(ctx, concurrent)
-			createdResults <- created
-			errResults <- err
+			<-start
+			rec, created, err := store.SaveOrGet(ctx, concurrent)
+			results <- result{record: rec, created: created, err: err}
 		}()
 	}
+	close(start)
 	wg.Wait()
-	close(createdResults)
-	close(errResults)
-	winners := 0
-	for created := range createdResults {
-		if created {
+	close(results)
+	winners, replays := 0, 0
+	for outcome := range results {
+		if outcome.err != nil {
+			t.Fatalf("contended same-fingerprint invocation failed: %v", outcome.err)
+		}
+		if outcome.record.DecisionID != concurrent.DecisionID ||
+			outcome.record.RequestSHA256 != concurrent.RequestSHA256 {
+			t.Fatalf("contended invocation returned wrong record: %+v", outcome.record)
+		}
+		if outcome.created {
 			winners++
+		} else {
+			replays++
 		}
 	}
-	for err := range errResults {
-		if err != nil {
-			t.Fatal(err)
-		}
+	if winners != 1 || replays != workers-1 {
+		t.Fatalf("64 concurrent identical requests: created=%d replayed=%d, want 1 and 63", winners, replays)
 	}
-	if winners != 1 {
-		t.Fatalf("expected exactly one concurrent insert winner, got %d", winners)
+	var decisionRows, eventRows int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM decision_records WHERE tenant_id=$1 AND invocation_id=$2",
+		concurrent.TenantID, concurrent.InvocationID).Scan(&decisionRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM outbox_events WHERE tenant_id=$1 AND aggregate_id=$2",
+		concurrent.TenantID, concurrent.DecisionID).Scan(&eventRows); err != nil {
+		t.Fatal(err)
+	}
+	if decisionRows != 1 || eventRows != 1 {
+		t.Fatalf("contended invocation must atomically persist one record and one event: records=%d events=%d", decisionRows, eventRows)
+	}
+
+	// A changed fingerprint on the completed invocation is always a conflict;
+	// contention must not create or replace an immutable record or Outbox event.
+	changedConcurrent := concurrent
+	changedConcurrent.RequestSHA256 = strings.Repeat("f", 64)
+	conflictStart := make(chan struct{})
+	conflictResults := make(chan result, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-conflictStart
+			rec, created, err := store.SaveOrGet(ctx, changedConcurrent)
+			conflictResults <- result{record: rec, created: created, err: err}
+		}()
+	}
+	close(conflictStart)
+	wg.Wait()
+	close(conflictResults)
+	conflicts := 0
+	for outcome := range conflictResults {
+		if !errors.Is(outcome.err, ErrConflict) || outcome.created {
+			t.Fatalf("contended changed fingerprint must conflict: %+v", outcome)
+		}
+		conflicts++
+	}
+	if conflicts != workers {
+		t.Fatalf("concurrent changed-fingerprint conflicts=%d, want %d", conflicts, workers)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM outbox_events WHERE tenant_id=$1 AND aggregate_id=$2",
+		concurrent.TenantID, concurrent.DecisionID).Scan(&eventRows); err != nil || eventRows != 1 {
+		t.Fatalf("conflicting request created a duplicate Outbox event: events=%d err=%v", eventRows, err)
 	}
 
 	firstPage, err := store.ListByRun(ctx, record.TenantID, record.AgentID, record.SessionID, record.RunID, nil, 1)

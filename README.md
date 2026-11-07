@@ -57,3 +57,14 @@ docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71
 ```
 
 CI also verifies that an unsafe init container is rejected even when the regular application container is compliant. The policy bundle is currently a standalone deterministic preflight artifact. It is not yet invoked by the Decision API, and it does not calculate probabilistic risk or expected loss.
+
+
+## PostgreSQL catalog preflight (Draft integration)
+
+The migrator owns `decision.MigrateInSchema(ctx, db, approvedSchema)`; the restricted application must **never** run migrations. Independently verify a deployed PostgreSQL 16 schema after migration and before enabling writes, using a read-only database role:
+
+```bash
+DECISION_ATTEST_DATABASE_URL="$READONLY_POSTGRES_DSN" DECISION_ATTEST_SCHEMA=public go run ./cmd/decision-catalog-attest
+```
+
+For a durable HTTP service, explicitly compose `api.NewCatalogGuardedHandler` using `decision.VerifyInstalledCatalogInSchema` on the same approved database/schema. `GET /readyz` and each `POST /v1/decisions` are denied while the catalog check fails; `GET /healthz` remains liveness-only. The existing `cmd/agent-decision` is an **in-memory development entrypoint**, not that production composition. See `docs/operations/postgres-runbook.md` for privilege bounds, schema-pinned application connections, limitations and still-open production/G02/G05 gates.

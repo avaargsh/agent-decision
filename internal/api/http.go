@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
@@ -26,6 +26,44 @@ type PrincipalResolverFunc func(*http.Request) (decision.Principal, error)
 
 func (f PrincipalResolverFunc) Resolve(r *http.Request) (decision.Principal, error) {
 	return f(r)
+}
+
+// CatalogAttestor is a read-only, fail-closed verification callback bound to
+// the SAME PostgreSQL schema used by the Decision store. Deployments should
+// wire decision.VerifyInstalledCatalogInSchema using a restricted role.
+// Its error details are intentionally not disclosed through HTTP.
+type CatalogAttestor func(context.Context) error
+
+// NewCatalogGuardedHandler adds a separate readiness endpoint and an explicit
+// pre-write attestation gate without giving the API migration permissions.
+// The existing NewHandler remains development-only and has no catalog gate.
+// Each POST is rechecked, so catalog drift after readiness is not silently
+// accepted; this is not WORM protection against privileged concurrent DDL.
+func NewCatalogGuardedHandler(svc *decision.Service, resolver PrincipalResolver, attest CatalogAttestor) http.Handler {
+	inner := NewHandler(svc, resolver)
+	verify := func(w http.ResponseWriter, r *http.Request) bool {
+		if attest == nil || attest(r.Context()) != nil {
+			problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "Decision catalog attestation unavailable")
+			return false
+		}
+		return true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/readyz" {
+			if verify(w, r) {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/decisions" && !verify(w, r) {
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler {
@@ -143,6 +181,22 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 	return mux
 }
 
+// validJSONFieldName requires canonical ASCII snake_case keys. Go's
+// encoding/json matches struct field names with Unicode case folding, so
+// Unicode lowercase alone cannot rule out semantic field aliases.
+func validJSONFieldName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		b := key[i]
+		if (b < 'a' || b > 'z') && (b < '0' || b > '9') && b != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 // validateJSONObjects rejects duplicate keys at every depth.
 func validateJSONObjects(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -168,7 +222,7 @@ func validateJSONObjects(body []byte) error {
 				if !ok {
 					return errors.New("invalid JSON object key")
 				}
-				if key != strings.ToLower(key) {
+				if !validJSONFieldName(key) {
 					return fmt.Errorf("non-canonical JSON key %q", key)
 				}
 				if _, exists := seen[key]; exists {
