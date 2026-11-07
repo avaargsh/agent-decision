@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Exercise PostgreSQL 16 *effective* ACLs via distinct restricted session identities.
@@ -35,8 +38,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
-	exec("CREATE ROLE "+appRole+" NOLOGIN")
-	exec("CREATE ROLE "+dispatcherRole+" NOLOGIN")
+	password := "ephemeral_role_gate_" + seed
+	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD \'"+password+"\'")
+	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD \'"+password+"\'")
 	defer func() {
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+appRole)
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+dispatcherRole)
@@ -51,28 +55,28 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	exec("GRANT UPDATE (lease_owner, lease_until, attempts, available_at, published_at, last_error_code) ON "+
 		schema+".outbox_events TO "+dispatcherRole)
 
+	// Positive security acceptance must use actual PostgreSQL LOGIN roles,
+	// never a privileged session with SET SESSION AUTHORIZATION.
 	openRole := func(name string) *sql.DB {
 		t.Helper()
-		db, err := sql.Open("pgx", dsn)
+		cfg, err := pgx.ParseConfig(dsn)
 		if err != nil { t.Fatal(err) }
+		cfg.User = name
+		cfg.Password = password
+		db := stdlib.OpenDB(*cfg)
 		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET SESSION AUTHORIZATION "+name); err != nil {
-			db.Close()
-			t.Fatal(err)
-		}
 		var who string
 		if err := db.QueryRowContext(ctx, "SELECT current_user").Scan(&who); err != nil || who != name {
 			db.Close()
-			t.Fatalf("role identity mismatch %q: %v", who, err)
+			t.Fatalf("restricted login identity mismatch %q: %v", who, err)
 		}
-		// Pin runtime Store sessions independently of the verifier's own
-		// transaction-local catalog search_path.
 		if _, err := db.ExecContext(ctx, "SET search_path TO "+schema+", pg_catalog, pg_temp"); err != nil {
 			db.Close()
 			t.Fatal(err)
 		}
 		return db
 	}
+
 	// An elevated login that merely switches current_user is not a restricted
 	// login: SET ROLE NONE can restore its original privileges.
 	roleSwitched, err := sql.Open("pgx", dsn)
@@ -86,6 +90,20 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		t.Fatalf("accepted privileged session_user after SET ROLE: %v", err)
 	}
 	roleSwitched.Close()
+
+	// A privileged originally authenticated login can reset session
+	// authorization even when current_user == session_user.
+	resettable, err := sql.Open("pgx", dsn)
+	if err != nil { t.Fatal(err) }
+	resettable.SetMaxOpenConns(1)
+	if _, err := resettable.ExecContext(ctx, "SET SESSION AUTHORIZATION "+appRole); err != nil {
+		resettable.Close()
+		t.Fatal(err)
+	}
+	if err := VerifyRuntimeDatabaseRole(ctx, resettable, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("accepted resettable privileged session authorization: %v", err)
+	}
+	resettable.Close()
 
 	app := openRole(appRole)
 	defer app.Close()
@@ -169,6 +187,15 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	exec("GRANT "+dispatcherRole+" TO "+appRole+" WITH INHERIT FALSE, SET TRUE")
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("application accepted SET ROLE access to dispatcher: %v", err)
+	}
+	exec("REVOKE "+dispatcherRole+" FROM "+appRole)
+	check(app, RuntimeRoleApplication)
+
+	// ADMIN TRUE can allow a role to re-grant itself SET TRUE later.
+	// The initial membership deliberately has no inherited/SET access.
+	exec("GRANT "+dispatcherRole+" TO "+appRole+" WITH INHERIT FALSE, SET FALSE, ADMIN TRUE")
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("application accepted ADMIN membership with SET FALSE: %v", err)
 	}
 	exec("REVOKE "+dispatcherRole+" FROM "+appRole)
 	check(app, RuntimeRoleApplication)
