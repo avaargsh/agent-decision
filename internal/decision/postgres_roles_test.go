@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Exercise PostgreSQL 16 *effective* ACLs via distinct SET ROLE sessions.
+// Exercise PostgreSQL 16 *effective* ACLs via distinct restricted session identities.
 // CI simulates NOLOGIN roles under one privileged test connection; it does
 // not prove production identities, TLS, RLS or secret separation.
 func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
@@ -56,7 +56,7 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		db, err := sql.Open("pgx", dsn)
 		if err != nil { t.Fatal(err) }
 		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET ROLE "+name); err != nil {
+		if _, err := db.ExecContext(ctx, "SET SESSION AUTHORIZATION "+name); err != nil {
 			db.Close()
 			t.Fatal(err)
 		}
@@ -73,6 +73,20 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		}
 		return db
 	}
+	// An elevated login that merely switches current_user is not a restricted
+	// login: SET ROLE NONE can restore its original privileges.
+	roleSwitched, err := sql.Open("pgx", dsn)
+	if err != nil { t.Fatal(err) }
+	roleSwitched.SetMaxOpenConns(1)
+	if _, err := roleSwitched.ExecContext(ctx, "SET ROLE "+appRole); err != nil {
+		roleSwitched.Close()
+		t.Fatal(err)
+	}
+	if err := VerifyRuntimeDatabaseRole(ctx, roleSwitched, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("accepted privileged session_user after SET ROLE: %v", err)
+	}
+	roleSwitched.Close()
+
 	app := openRole(appRole)
 	defer app.Close()
 	dispatcher := openRole(dispatcherRole)
