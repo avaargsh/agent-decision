@@ -50,6 +50,11 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
 		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
 		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
+		       AND NOT EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
+		           WHERE reachable.rolname <> current_user
+		             AND pg_catalog.pg_has_role(current_user, reachable.oid, 'SET')
+		       )
 		FROM pg_catalog.pg_roles AS r
 		JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1
 		WHERE r.rolname = current_user
@@ -88,7 +93,8 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 				SELECT a.attname,
 				       pg_catalog.has_column_privilege(current_user, a.attrelid, a.attname, 'SELECT') AS can_read,
 				       pg_catalog.has_column_privilege(current_user, a.attrelid, a.attname, 'INSERT') AS can_insert,
-				       pg_catalog.has_column_privilege(current_user, a.attrelid, a.attname, 'UPDATE') AS can_update
+				       pg_catalog.has_column_privilege(current_user, a.attrelid, a.attname, 'UPDATE') AS can_update,
+				       pg_catalog.has_column_privilege(current_user, a.attrelid, a.attname, 'REFERENCES') AS can_reference
 				FROM pg_catalog.pg_attribute AS a, rel
 				WHERE a.attrelid = rel.oid AND a.attnum > 0 AND NOT a.attisdropped
 			)
@@ -103,6 +109,7 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			           OR pg_catalog.has_table_privilege(current_user, oid, 'TRUNCATE')
 			           OR pg_catalog.has_table_privilege(current_user, oid, 'REFERENCES')
 			           OR pg_catalog.has_table_privilege(current_user, oid, 'TRIGGER')
+			           OR EXISTS (SELECT 1 FROM rights WHERE can_reference)
 			        FROM rel
 			       ), true)
 		`, schema, item.table).Scan(&n, &all, &selected, &inserted, &updated, &anyForbidden)
