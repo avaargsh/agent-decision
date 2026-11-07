@@ -42,11 +42,20 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
 		return fmt.Errorf("%w: bind runtime role schema: %v", ErrCatalogDrift, err)
 	}
+	// pg_stat_activity.usesysid identifies the originally authenticated login,
+	// unlike session_user/current_user, both of which a superuser may reset.
+	// Disallow ADMIN membership even without current SET or INHERIT access.
 	var identityOK bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
+		SELECT r.rolcanlogin
+		       AND NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
 		            r.rolreplication OR r.rolbypassrls)
 		       AND session_user = current_user
+		       AND EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_stat_activity AS login
+		           WHERE login.pid = pg_catalog.pg_backend_pid()
+		             AND login.usesysid = r.oid
+		       )
 		       AND pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')
 		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
 		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
@@ -55,6 +64,11 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
 		           WHERE reachable.rolname <> current_user
 		             AND pg_catalog.pg_has_role(current_user, reachable.oid, 'SET')
+		       )
+		       AND NOT EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+		           WHERE membership.admin_option
+		             AND pg_catalog.pg_has_role(r.oid, membership.member, 'MEMBER')
 		       )
 		FROM pg_catalog.pg_roles AS r
 		JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1
