@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,12 +23,14 @@ const (
 )
 
 var (
-	ErrConflict = errors.New("idempotency key reused with different request")
+	ErrConflict = errors.New("invocation_id reused with different request")
 	ErrUnauthenticated = errors.New("authenticated principal required")
 	ErrUnauthorized = errors.New("principal is not authorized for this decision request")
 	ErrAuthorityUnavailable = errors.New("authoritative snapshot verifier unavailable")
 	ErrAuthorityRejected = errors.New("authoritative snapshot verification rejected")
 	ErrInvalidRequest = errors.New("invalid decision request")
+	ErrNotFound = errors.New("decision record not found")
+	ErrInvalidCursor = errors.New("invalid decision page cursor")
 )
 
 var (
@@ -98,15 +99,29 @@ type SnapshotRef struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// EvidenceRef is a versioned, scoped evidence envelope. All fields are claims
+// until AuthorityVerifier verifies tenant ownership, digest, attestation, and revocation.
 type EvidenceRef struct {
 	Ref string `json:"ref"`
+	EvidenceType string `json:"evidence_type"`
+	SchemaVersion string `json:"schema_version"`
+	TenantID string `json:"tenant_id"`
+	AgentID string `json:"agent_id"`
+	RunID string `json:"run_id"`
+	Service string `json:"service"`
+	ResourceRef string `json:"resource_ref"`
+	SourceID string `json:"source_id"`
 	Source string `json:"source"`
 	SourceVersion string `json:"source_version"`
 	SHA256 string `json:"sha256"`
 	AttestationRef string `json:"attestation_ref"`
 	TrustLevel string `json:"trust_level"`
+	ObservedFrom time.Time `json:"observed_from"`
+	ObservedTo time.Time `json:"observed_to"`
 	ObservedAt time.Time `json:"observed_at"`
+	CollectedAt time.Time `json:"collected_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	RevocationState string `json:"revocation_state"`
 }
 
 // CapabilityRef is published and versioned by Agent Control Plane.
@@ -133,7 +148,7 @@ type ReplanContext struct {
 type Request struct {
 	SchemaVersion string `json:"schema_version"`
 	Identity Identity `json:"identity"`
-	IdempotencyKey string `json:"idempotency_key"`
+	InvocationID string `json:"invocation_id"`
 	Input Input `json:"input"`
 	Constraints Constraints `json:"constraints"`
 	Versions VersionSet `json:"versions"`
@@ -144,6 +159,15 @@ type Request struct {
 	Replan *ReplanContext `json:"replan,omitempty"`
 }
 
+type EvidenceBinding struct {
+	SourceID string `json:"source_id"`
+	Ref string `json:"ref"`
+}
+
+func evidenceBindingKey(binding EvidenceBinding) string {
+	return binding.SourceID + "\\x00" + binding.Ref
+}
+
 type PlanStep struct {
 	StepID string `json:"step_id"`
 	Kind string `json:"kind"`
@@ -151,6 +175,7 @@ type PlanStep struct {
 	TargetRef string `json:"target_ref"`
 	InputSchemaRef string `json:"input_schema_ref"`
 	OutputSchemaRef string `json:"output_schema_ref"`
+	EvidenceRefs []EvidenceBinding `json:"evidence_refs"`
 	ReadOnly bool `json:"read_only"`
 }
 
@@ -168,7 +193,7 @@ type Record struct {
 	AgentID string `json:"agent_id"`
 	SessionID string `json:"session_id"`
 	RunID string `json:"run_id"`
-	IdempotencyKey string `json:"idempotency_key"`
+	InvocationID string `json:"invocation_id"`
 	RequestSHA256 string `json:"request_sha256"`
 	StrategyVersion string `json:"strategy_version"`
 	PromptVersion string `json:"prompt_version"`
@@ -197,10 +222,19 @@ func validSnapshot(s SnapshotRef) bool {
 		!s.IssuedAt.IsZero() && s.ExpiresAt.After(s.IssuedAt)
 }
 
-func validEvidence(e EvidenceRef) bool {
-	return validOpaque(e.Ref) && validOpaque(e.Source) && validOpaque(e.SourceVersion) &&
-		digestRe.MatchString(e.SHA256) && validOpaque(e.AttestationRef) &&
-		e.TrustLevel == "attested" && !e.ObservedAt.IsZero() && e.ExpiresAt.After(e.ObservedAt)
+func validEvidence(e EvidenceRef, req Request) bool {
+	return validOpaque(e.Ref) &&
+		(e.EvidenceType == "metrics" || e.EvidenceType == "logs" || e.EvidenceType == "traces" || e.EvidenceType == "change" || e.EvidenceType == "slo") &&
+		semverRe.MatchString(e.SchemaVersion) &&
+		nameRe.MatchString(e.TenantID) && e.AgentID == req.Identity.AgentID && e.RunID == req.Identity.RunID &&
+		e.Service == req.Input.Service && validOpaque(e.ResourceRef) && validOpaque(e.SourceID) &&
+		validOpaque(e.Source) && validOpaque(e.SourceVersion) && digestRe.MatchString(e.SHA256) &&
+		validOpaque(e.AttestationRef) && e.TrustLevel == "attested" &&
+		!e.ObservedFrom.IsZero() && !e.ObservedTo.Before(e.ObservedFrom) &&
+		!e.ObservedAt.IsZero() && !e.ObservedAt.Before(e.ObservedFrom) && !e.ObservedAt.After(e.ObservedTo) &&
+		!e.CollectedAt.IsZero() &&
+		!e.CollectedAt.Before(e.ObservedTo) && e.ExpiresAt.After(e.CollectedAt) &&
+		e.RevocationState == "active"
 }
 
 func (c CapabilityRef) Validate(catalogVersion string) error {
@@ -217,8 +251,8 @@ func (c CapabilityRef) Validate(catalogVersion string) error {
 func (r Request) Validate() error {
 	if r.SchemaVersion != SchemaVersion || !nameRe.MatchString(r.Identity.AgentID) ||
 		!nameRe.MatchString(r.Identity.SessionID) || !nameRe.MatchString(r.Identity.RunID) ||
-		!nameRe.MatchString(r.IdempotencyKey) {
-		return fmt.Errorf("%w: schema, identity or idempotency key", ErrInvalidRequest)
+		!nameRe.MatchString(r.InvocationID) {
+		return fmt.Errorf("%w: schema, identity or invocation_id", ErrInvalidRequest)
 	}
 	if r.Input.Objective != "sre_incident_triage" || !nameRe.MatchString(r.Input.Service) ||
 		(r.Input.Signal != "latency" && r.Input.Signal != "errors" && r.Input.Signal != "saturation") {
@@ -227,8 +261,7 @@ func (r Request) Validate() error {
 	if r.Constraints.DeadlineMS < 100 || r.Constraints.DeadlineMS > 120000 ||
 		r.Constraints.MaxTokens < 1 || r.Constraints.MaxTokens > 8192 ||
 		r.Constraints.MaxCostMicros < 0 || r.Constraints.MaxCostMicros > 10000000 ||
-		r.Constraints.MaxCandidates < 1 || r.Constraints.MaxCandidates > 3 ||
-		math.IsNaN(float64(r.Constraints.MaxCostMicros)) {
+		r.Constraints.MaxCandidates < 1 || r.Constraints.MaxCandidates > 3 {
 		return fmt.Errorf("%w: invalid resource constraints", ErrInvalidRequest)
 	}
 	if r.Versions.CapabilityCatalogVersion == "" || r.Versions.StrategyVersion != PolicyVersion ||
@@ -238,6 +271,9 @@ func (r Request) Validate() error {
 	}
 	if !validSnapshot(r.ContextSnapshot) || !validSnapshot(r.CapabilitySnapshot) {
 		return fmt.Errorf("%w: invalid snapshot reference or attestation metadata", ErrInvalidRequest)
+	}
+	if r.Capabilities == nil || r.Evidence == nil {
+		return fmt.Errorf("%w: capabilities and evidence_refs must be explicit arrays", ErrInvalidRequest)
 	}
 	if len(r.Capabilities) > 32 || len(r.Evidence) > 32 {
 		return fmt.Errorf("%w: too many capability or evidence references", ErrInvalidRequest)
@@ -252,10 +288,18 @@ func (r Request) Validate() error {
 		}
 		seen[capability.ID] = struct{}{}
 	}
+	seenEvidence := make(map[string]struct{}, len(r.Evidence))
 	for _, evidence := range r.Evidence {
-		if !validEvidence(evidence) {
+		if !validEvidence(evidence, r) {
 			return fmt.Errorf("%w: invalid evidence reference", ErrInvalidRequest)
 		}
+		// A source reference identifies one immutable observation. Repeating it
+		// must not inflate evidence coverage or create ambiguous provenance.
+		evidenceKey := evidence.SourceID + "\x00" + evidence.Ref
+		if _, exists := seenEvidence[evidenceKey]; exists {
+			return fmt.Errorf("%w: duplicate evidence reference", ErrInvalidRequest)
+		}
+		seenEvidence[evidenceKey] = struct{}{}
 	}
 	if r.Replan != nil {
 		p := r.Replan
@@ -276,7 +320,10 @@ type AuthorityVerifier interface {
 }
 
 type Store interface {
+	GetByInvocation(context.Context, string, string) (Record, error)
 	SaveOrGet(context.Context, Record) (Record, bool, error)
+	GetByDecisionID(context.Context, string, string, string, string) (Record, error)
+	ListByRun(context.Context, string, string, string, string, *DecisionCursor, int) ([]Record, error)
 }
 
 type MemoryStore struct {
@@ -286,11 +333,29 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore { return &MemoryStore{byKey: make(map[string]Record)} }
 
+func memoryInvocationKey(tenantID, invocationID string) string {
+	return digest(struct{ TenantID, InvocationID string }{tenantID, invocationID})
+}
+
+func (s *MemoryStore) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	key := memoryInvocationKey(tenantID, invocationID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.byKey[key]
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+	return clone(record), nil
+}
+
 func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
-	key := digest(struct{ TenantID, Key string }{r.TenantID, r.IdempotencyKey})
+	key := memoryInvocationKey(r.TenantID, r.InvocationID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.byKey[key]; ok {
@@ -306,22 +371,72 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 type Service struct {
 	store Store
 	authority AuthorityVerifier
+	strategy Strategy
 	now func() time.Time
 }
 
 func NewService(store Store, authority AuthorityVerifier) *Service {
-	return &Service{store: store, authority: authority, now: func() time.Time { return time.Now().UTC() }}
+	return NewServiceWithStrategy(store, authority, SREReadOnlyStrategy{})
+}
+
+// NewServiceWithStrategy injects a replaceable decision policy while keeping
+// persistence, identity, authority verification, and idempotency in the core.
+func NewServiceWithStrategy(store Store, authority AuthorityVerifier, strategy Strategy) *Service {
+	if strategy == nil {
+		strategy = SREReadOnlyStrategy{}
+	}
+	return &Service{store: store, authority: authority, strategy: strategy, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Service) Decide(ctx context.Context, principal Principal, req Request) (Record, bool, error) {
 	if err := principal.Validate(); err != nil {
 		return Record{}, false, err
 	}
-	if err := req.Validate(); err != nil {
-		return Record{}, false, err
+	// Validate the minimum trusted lookup scope before consulting the ledger.
+	// Full request validation follows only when this is a new invocation, so
+	// any changed payload under an existing invocation deterministically conflicts.
+	if !nameRe.MatchString(req.InvocationID) ||
+		!nameRe.MatchString(req.Identity.AgentID) ||
+		!nameRe.MatchString(req.Identity.SessionID) {
+		return Record{}, false, fmt.Errorf("%w: invocation_id or identity", ErrInvalidRequest)
 	}
 	if req.Identity.AgentID != principal.AgentID || req.Identity.SessionID != principal.SessionID {
 		return Record{}, false, ErrUnauthorized
+	}
+	if s.store == nil {
+		return Record{}, false, ErrStoreUnavailable
+	}
+
+	fingerprint := digest(struct {
+		Principal Principal
+		Request Request
+	}{principal, req})
+
+	// An exact retry of a completed invocation returns its immutable historical
+	// result before current evidence freshness/attestation is re-evaluated.
+	// Current Principal and Agent/Session bindings are checked above; this
+	// read-only replay is never authorization and cannot bypass EngageGuard.
+	existing, lookupErr := s.store.GetByInvocation(ctx, principal.TenantID, req.InvocationID)
+	if lookupErr == nil {
+		if existing.RequestSHA256 != fingerprint {
+			return Record{}, false, ErrConflict
+		}
+		return clone(existing), false, nil
+	}
+	if !errors.Is(lookupErr, ErrNotFound) {
+		return Record{}, false, lookupErr
+	}
+
+	if err := req.Validate(); err != nil {
+		return Record{}, false, err
+	}
+	for _, evidence := range req.Evidence {
+		if evidence.TenantID != principal.TenantID {
+			return Record{}, false, ErrUnauthorized
+		}
+	}
+	if s.strategy == nil || req.Versions.StrategyVersion != s.strategy.Version() {
+		return Record{}, false, fmt.Errorf("%w: strategy version unavailable", ErrInvalidRequest)
 	}
 	if s.authority == nil {
 		return Record{}, false, ErrAuthorityUnavailable
@@ -332,23 +447,16 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		}
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
-	if s.store == nil {
-		return Record{}, false, errors.New("decision store unavailable")
-	}
 
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
-	decisionID := "dec_" + digest(struct{ TenantID, Key string }{principal.TenantID, req.IdempotencyKey})
+	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
 		AgentID: principal.AgentID, SessionID: principal.SessionID, RunID: req.Identity.RunID,
-		IdempotencyKey: req.IdempotencyKey, RequestSHA256: fingerprint,
+		InvocationID: req.InvocationID, RequestSHA256: fingerprint,
 		StrategyVersion: req.Versions.StrategyVersion, PromptVersion: req.Versions.PromptVersion,
 		ModelProfile: req.Versions.ModelProfile, CapabilityCatalogVersion: req.Versions.CapabilityCatalogVersion,
 		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
-		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef(nil), req.Evidence...),
+		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef{}, req.Evidence...),
 		Plan: PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 		CreatedAt: s.now(),
 	}
@@ -357,31 +465,17 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		record.ReplanSequence = req.Replan.Sequence
 		record.MaxReplans = req.Replan.MaxReplans
 	}
-	if len(req.Evidence) == 0 {
-		record.Status = StatusAbstained
-		record.ReasonCodes = append(record.ReasonCodes, "INSUFFICIENT_EVIDENCE")
-	} else {
-		required := []struct{ id, kind string }{
-			{"sre.metrics.read", "OBSERVE_METRICS"},
-			{"sre.logs.read", "INSPECT_LOGS"},
-			{"sre.changes.read", "CORRELATE_CHANGE"},
-		}
-		for _, item := range required {
-			capability, ok := findCapability(req.Capabilities, item.id)
-			if !ok {
-				record.Status = StatusAbstained
-				record.ReasonCodes = []string{"MISSING_REQUIRED_CAPABILITY"}
-				record.Plan.Steps = []PlanStep{}
-				break
-			}
-			record.Plan.Steps = append(record.Plan.Steps, PlanStep{
-				StepID: "step_" + digest(struct{ DecisionID, CapabilityID string }{decisionID, item.id})[:24],
-				Kind: item.kind, Capability: capability, TargetRef: req.Input.Service,
-				InputSchemaRef: capability.InputSchemaRef, OutputSchemaRef: capability.OutputSchemaRef,
-				ReadOnly: true,
-			})
-		}
+	// Strategies receive detached request slices so an implementation cannot
+	// mutate already-verified evidence or capabilities before output validation.
+	result := s.strategy.Plan(cloneRequest(req), decisionID)
+	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
+	result.Steps = append([]PlanStep{}, result.Steps...)
+	if err := validateStrategyResult(req, result); err != nil {
+		return Record{}, false, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
+	record.Status = result.Status
+	record.ReasonCodes = append([]string{}, result.ReasonCodes...)
+	record.Plan.Steps = append([]PlanStep{}, result.Steps...)
 	record.Plan.PlanHash = planHash(record.Plan)
 	return s.store.SaveOrGet(ctx, record)
 }
@@ -406,9 +500,22 @@ func digest(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func cloneRequest(req Request) Request {
+	req.Capabilities = append([]CapabilityRef{}, req.Capabilities...)
+	req.Evidence = append([]EvidenceRef{}, req.Evidence...)
+	if req.Replan != nil {
+		replan := *req.Replan
+		req.Replan = &replan
+	}
+	return req
+}
+
 func clone(record Record) Record {
-	record.ReasonCodes = append([]string(nil), record.ReasonCodes...)
-	record.Evidence = append([]EvidenceRef(nil), record.Evidence...)
-	record.Plan.Steps = append([]PlanStep(nil), record.Plan.Steps...)
+	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
+	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
+	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
+	for i := range record.Plan.Steps {
+		record.Plan.Steps[i].EvidenceRefs = append([]EvidenceBinding{}, record.Plan.Steps[i].EvidenceRefs...)
+	}
 	return record
 }

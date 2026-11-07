@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unsafe-payment-api
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unsafe-payment-api
+  template:
+    metadata:
+      labels:
+        app: unsafe-payment-api
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: payment-api
+          image: registry.example.com/payments/api:latest
+          securityContext:
+            privileged: true
