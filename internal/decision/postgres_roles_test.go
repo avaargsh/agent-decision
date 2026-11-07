@@ -39,8 +39,8 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
 	password := "ephemeral_role_gate_" + seed
-	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD \'"+password+"\'")
-	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD \'"+password+"\'")
+	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
+	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
 	defer func() {
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+appRole)
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+dispatcherRole)
