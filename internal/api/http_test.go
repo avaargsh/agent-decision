@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func apiRequest() decision.Request {
 	return decision.Request{
 		SchemaVersion:decision.SchemaVersion,
 		Identity:decision.Identity{AgentID:"agent-1",SessionID:"session-1",RunID:"run-17"},
-		IdempotencyKey:"alert-17",
+		InvocationID:"alert-17",
 		Input:decision.Input{Objective:"sre_incident_triage",Service:"payment-api",Signal:"latency"},
 		Constraints:decision.Constraints{DeadlineMS:30000,MaxTokens:2048,MaxCostMicros:50000,MaxCandidates:3},
 		Versions:decision.VersionSet{CapabilityCatalogVersion:"catalog-12",StrategyVersion:decision.PolicyVersion,PromptVersion:"none",ModelProfile:"rule-only"},
@@ -37,7 +38,15 @@ func apiRequest() decision.Request {
 			{ID:"sre.logs.read",Version:"1.2.0",ContractSHA256:strings.Repeat("2",64),InputSchemaRef:"schema://logs/input",OutputSchemaRef:"schema://logs/output",EffectClass:"read_only",Idempotency:"safe",TenantScoped:true},
 			{ID:"sre.changes.read",Version:"2.0.0",ContractSHA256:strings.Repeat("3",64),InputSchemaRef:"schema://changes/input",OutputSchemaRef:"schema://changes/output",EffectClass:"read_only",Idempotency:"safe",TenantScoped:true},
 		},
-		Evidence:[]decision.EvidenceRef{{Ref:"slo-sample-17",Source:"slo-adapter",SourceVersion:"v2",SHA256:strings.Repeat("b",64),AttestationRef:"att-slo-17",TrustLevel:"attested",ObservedAt:issued,ExpiresAt:expires}},
+		Evidence:[]decision.EvidenceRef{{
+			Ref:"slo-sample-17", EvidenceType:"slo", SchemaVersion:"1.0.0",
+			TenantID:"tenant-a", AgentID:"agent-1", RunID:"run-17", Service:"payment-api",
+			ResourceRef:"resource://payment-api/slo", SourceID:"slo-adapter-prod",
+			Source:"slo-adapter", SourceVersion:"v2", SHA256:strings.Repeat("b",64),
+			AttestationRef:"att-slo-17", TrustLevel:"attested",
+			ObservedFrom:issued.Add(-5*time.Minute), ObservedTo:issued, ObservedAt:issued,
+			CollectedAt:issued.Add(time.Minute), ExpiresAt:expires, RevocationState:"active",
+		}},
 	}
 }
 
@@ -74,11 +83,13 @@ func TestHTTPRejectsTenantFromBodyAndStrictJSON(t *testing.T) {
 	h:=testHandler(resolverFor(apiPrincipal()),apiAuthority{})
 	body:=validBody()
 	attackerTenant:=append([]byte(`{"tenant_id":"tenant-evil",`),body[1:]...)
-	duplicate:=bytes.Replace(body,[]byte(`"idempotency_key":"alert-17"`),[]byte(`"idempotency_key":"alert-17","idempotency_key":"other"`),1)
+	duplicate:=bytes.Replace(body,[]byte(`"invocation_id":"alert-17"`),[]byte(`"invocation_id":"alert-17","invocation_id":"other"`),1)
 	unknown:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"unexpected"`),1)
+	caseAlias:=bytes.Replace(body,[]byte(`"agent_id":"agent-1"`),[]byte(`"agent_id":"agent-1","AGENT_ID":"agent-2"`),1)
+	capitalized:=bytes.Replace(body,[]byte(`"schema_version"`),[]byte(`"Schema_Version"`),1)
 	trailing:=append(append([]byte{},body...),[]byte("{}")...)
 	nestedDuplicate:=bytes.Replace(body,[]byte(`"agent_id":"agent-1"`),[]byte(`"agent_id":"agent-1","agent_id":"agent-2"`),1)
-	for i,candidate:=range [][]byte{attackerTenant,duplicate,unknown,trailing,nestedDuplicate} {
+	for i,candidate:=range [][]byte{attackerTenant,duplicate,unknown,trailing,nestedDuplicate,caseAlias,capitalized} {
 		w:=send(h,candidate,"application/json")
 		if w.Code!=http.StatusBadRequest { t.Errorf("case %d: expected 400 got %d",i,w.Code) }
 	}
@@ -112,4 +123,177 @@ func TestHealthDoesNotRequireAuthentication(t *testing.T) {
 	w:=httptest.NewRecorder()
 	h.ServeHTTP(w,httptest.NewRequest(http.MethodGet,"/healthz",nil))
 	if w.Code!=http.StatusNoContent { t.Fatalf("health: %d",w.Code) }
+}
+
+
+func TestHTTPRequiresExplicitEvidenceCollections(t *testing.T) {
+	h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(validBody(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	delete(payload, "evidence_refs")
+	missing, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := send(h, missing, "application/json"); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing evidence_refs: got %d body=%s", w.Code, w.Body.String())
+	}
+	payload["evidence_refs"] = json.RawMessage("null")
+	nullArray, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := send(h, nullArray, "application/json"); w.Code != http.StatusBadRequest {
+		t.Fatalf("null evidence_refs: got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+
+func TestHTTPDecisionLedgerRoutes(t *testing.T) {
+	store := decision.NewMemoryStore()
+	service := decision.NewService(store, apiAuthority{})
+	h := NewHandler(service, resolverFor(apiPrincipal()))
+
+	created := send(h, validBody(), "application/json")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create decision: %d %s", created.Code, created.Body.String())
+	}
+	var expected decision.Record
+	if err := json.Unmarshal(created.Body.Bytes(), &expected); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string, handler http.Handler) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	recordResponse := get("/v1/decisions/"+expected.DecisionID, h)
+	if recordResponse.Code != http.StatusOK {
+		t.Fatalf("get decision: %d %s", recordResponse.Code, recordResponse.Body.String())
+	}
+	var actual decision.Record
+	if err := json.Unmarshal(recordResponse.Body.Bytes(), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual.DecisionID != expected.DecisionID {
+		t.Fatalf("got decision %s, want %s", actual.DecisionID, expected.DecisionID)
+	}
+
+	pageResponse := get("/v1/runs/run-17/decisions?limit=10", h)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("list decisions: %d %s", pageResponse.Code, pageResponse.Body.String())
+	}
+	var page decision.DecisionPage
+	if err := json.Unmarshal(pageResponse.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].DecisionID != expected.DecisionID {
+		t.Fatalf("unexpected decision page: %+v", page)
+	}
+
+	missing := get("/v1/decisions/dec_"+strings.Repeat("f", 64), h)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing decision: got %d want 404", missing.Code)
+	}
+	invalidCursor := get("/v1/runs/run-17/decisions?cursor=not-a-cursor", h)
+	if invalidCursor.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor: got %d want 400", invalidCursor.Code)
+	}
+	unauthenticated := get("/v1/decisions/"+expected.DecisionID, testHandler(nil, apiAuthority{}))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read: got %d want 401", unauthenticated.Code)
+	}
+}
+
+func TestHTTPRejectsOutOfRangeLedgerPageSize(t *testing.T) {
+	h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+	for _, path := range []string{
+		"/v1/runs/run-17/decisions?limit=0",
+		"/v1/runs/run-17/decisions?limit=101",
+		"/v1/runs/run-17/decisions?limit=not-a-number",
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d want 400", path, w.Code)
+		}
+	}
+}
+
+
+func TestHTTPRejectsUnicodeCaseFoldFieldAliases(t *testing.T) {
+	base := validBody()
+	cases := []struct {
+		name string
+		exact []byte
+		aliased []byte
+	}{
+		{
+			name: "top-level schema_version shadowing",
+			exact: []byte(`"schema_version":"decision.v1"`),
+			aliased: []byte(`"schema_version":"invalid","ſchema_version":"decision.v1"`),
+		},
+		{
+			name: "nested source_id shadowing",
+			exact: []byte(`"source_id":"slo-adapter-prod"`),
+			aliased: []byte(`"source_id":"wrong-source","ſource_id":"slo-adapter-prod"`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.Replace(base, tc.exact, tc.aliased, 1)
+			if bytes.Equal(body, base) {
+				t.Fatal("test fixture did not contain expected original field")
+			}
+			h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+			w := send(h, body, "application/json")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("Unicode case-fold alias must fail closed: got %d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+
+func TestCatalogGuardedHandlerFailClosedUntilVerified(t *testing.T) {
+	service := decision.NewService(decision.NewMemoryStore(), apiAuthority{})
+	resolver := resolverFor(apiPrincipal())
+	ready := func(h http.Handler) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return w.Code
+	}
+	if h := NewCatalogGuardedHandler(service, resolver, nil); ready(h) != http.StatusServiceUnavailable {
+		t.Fatalf("nil attestation gate must be unready")
+	} else if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil gate allowed a Decision write: %d", w.Code)
+	}
+	denied := true
+	calls := 0
+	h := NewCatalogGuardedHandler(service, resolver, func(context.Context) error {
+		calls++
+		if denied { return errors.New("untrusted catalog") }
+		return nil
+	})
+	if got := ready(h); got != http.StatusServiceUnavailable { t.Fatalf("failed attestation ready=%d", got) }
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed attestation POST=%d", w.Code)
+	}
+	denied = false
+	if got := ready(h); got != http.StatusNoContent { t.Fatalf("recovered attestation ready=%d", got) }
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusCreated {
+		t.Fatalf("recovered attestation POST=%d body=%s", w.Code, w.Body.String())
+	}
+	denied = true
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("new catalog drift must close the write gate, got %d", w.Code)
+	}
+	if calls < 5 { t.Fatalf("attestation was not checked per readyz/write request: %d calls", calls) }
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusNoContent { t.Fatalf("liveness must be independent of readiness: %d", w.Code) }
 }

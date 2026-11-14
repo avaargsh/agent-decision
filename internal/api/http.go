@@ -4,12 +4,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
@@ -24,6 +26,44 @@ type PrincipalResolverFunc func(*http.Request) (decision.Principal, error)
 
 func (f PrincipalResolverFunc) Resolve(r *http.Request) (decision.Principal, error) {
 	return f(r)
+}
+
+// CatalogAttestor is a read-only, fail-closed verification callback bound to
+// the SAME PostgreSQL schema used by the Decision store. Deployments should
+// wire decision.VerifyInstalledCatalogInSchema using a restricted role.
+// Its error details are intentionally not disclosed through HTTP.
+type CatalogAttestor func(context.Context) error
+
+// NewCatalogGuardedHandler adds a separate readiness endpoint and an explicit
+// pre-write attestation gate without giving the API migration permissions.
+// The existing NewHandler remains development-only and has no catalog gate.
+// Each POST is rechecked, so catalog drift after readiness is not silently
+// accepted; this is not WORM protection against privileged concurrent DDL.
+func NewCatalogGuardedHandler(svc *decision.Service, resolver PrincipalResolver, attest CatalogAttestor) http.Handler {
+	inner := NewHandler(svc, resolver)
+	verify := func(w http.ResponseWriter, r *http.Request) bool {
+		if attest == nil || attest(r.Context()) != nil {
+			problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "Decision catalog attestation unavailable")
+			return false
+		}
+		return true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/readyz" {
+			if verify(w, r) {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/decisions" && !verify(w, r) {
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler {
@@ -71,7 +111,7 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 		record, created, err := svc.Decide(r.Context(), principal, req)
 		switch {
 		case errors.Is(err, decision.ErrConflict):
-			problem(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "idempotency key belongs to a different request")
+			problem(w, http.StatusConflict, "INVOCATION_ID_REUSED", "invocation_id belongs to a different request")
 			return
 		case errors.Is(err, decision.ErrUnauthenticated):
 			problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
@@ -84,6 +124,9 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 			return
 		case errors.Is(err, decision.ErrAuthorityRejected):
 			problem(w, http.StatusForbidden, "AUTHORITY_REJECTED", "authoritative snapshot verification rejected the request")
+			return
+		case errors.Is(err, decision.ErrStoreUnavailable):
+			problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "decision persistence is unavailable")
 			return
 		case errors.Is(err, decision.ErrInvalidRequest):
 			problem(w, http.StatusBadRequest, "INVALID_REQUEST", "decision request failed contract validation")
@@ -98,7 +141,60 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 		}
 		_ = json.NewEncoder(w).Encode(record)
 	})
+	mux.HandleFunc("GET /v1/decisions/{decision_id}", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := resolvePrincipal(w, r, resolver)
+		if !ok {
+			return
+		}
+		record, err := svc.GetDecision(r.Context(), principal, r.PathValue("decision_id"))
+		if err != nil {
+			writeDecisionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+	})
+	mux.HandleFunc("GET /v1/runs/{run_id}/decisions", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := resolvePrincipal(w, r, resolver)
+		if !ok {
+			return
+		}
+		limit := 0
+		if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+			parsed, err := strconv.Atoi(rawLimit)
+			if err != nil {
+				problem(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be an integer")
+				return
+			}
+			if parsed < 1 || parsed > 100 {
+				problem(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be between 1 and 100")
+				return
+			}
+			limit = parsed
+		}
+		page, err := svc.ListRunDecisions(r.Context(), principal, r.PathValue("run_id"), r.URL.Query().Get("cursor"), limit)
+		if err != nil {
+			writeDecisionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+	})
 	return mux
+}
+
+// validJSONFieldName requires canonical ASCII snake_case keys. Go's
+// encoding/json matches struct field names with Unicode case folding, so
+// Unicode lowercase alone cannot rule out semantic field aliases.
+func validJSONFieldName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		b := key[i]
+		if (b < 'a' || b > 'z') && (b < '0' || b > '9') && b != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // validateJSONObjects rejects duplicate keys at every depth.
@@ -125,6 +221,9 @@ func validateJSONObjects(body []byte) error {
 				key, ok := keyToken.(string)
 				if !ok {
 					return errors.New("invalid JSON object key")
+				}
+				if !validJSONFieldName(key) {
+					return fmt.Errorf("non-canonical JSON key %q", key)
 				}
 				if _, exists := seen[key]; exists {
 					return fmt.Errorf("duplicate JSON key %q", key)
@@ -163,4 +262,46 @@ func problem(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{"code": code, "message": message},
 	})
+}
+
+func resolvePrincipal(w http.ResponseWriter, r *http.Request, resolver PrincipalResolver) (decision.Principal, bool) {
+	if resolver == nil {
+		problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "trusted principal resolver is required")
+		return decision.Principal{}, false
+	}
+	principal, err := resolver.Resolve(r)
+	if err != nil {
+		problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
+		return decision.Principal{}, false
+	}
+	if err := principal.Validate(); err != nil {
+		problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
+		return decision.Principal{}, false
+	}
+	return principal, true
+}
+
+func writeDecisionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, decision.ErrUnauthenticated):
+		problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
+	case errors.Is(err, decision.ErrUnauthorized):
+		problem(w, http.StatusForbidden, "IDENTITY_MISMATCH", "request identity does not match authenticated principal")
+	case errors.Is(err, decision.ErrNotFound):
+		problem(w, http.StatusNotFound, "NOT_FOUND", "decision record was not found")
+	case errors.Is(err, decision.ErrInvalidCursor):
+		problem(w, http.StatusBadRequest, "INVALID_CURSOR", "decision page cursor is invalid")
+	case errors.Is(err, decision.ErrInvalidRequest):
+		problem(w, http.StatusBadRequest, "INVALID_REQUEST", "decision query failed contract validation")
+	case errors.Is(err, decision.ErrStoreUnavailable):
+		problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "decision persistence is unavailable")
+	default:
+		problem(w, http.StatusInternalServerError, "INTERNAL_ERROR", "decision query could not be processed")
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }

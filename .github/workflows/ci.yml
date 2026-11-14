@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agent_decision
+          POSTGRES_PASSWORD: agent_decision
+          POSTGRES_DB: agent_decision_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_decision -d agent_decision_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://agent_decision:agent_decision@localhost:5432/agent_decision_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Resolve and verify Go module graph
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Validate OpenAPI YAML
+        run: |
+          ruby -e 'require "yaml"; document = YAML.load_file("api/openapi.yaml"); abort "invalid OpenAPI structure" unless document["openapi"] == "3.1.0" && document.fetch("paths").key?("/v1/decisions")'
+      - name: Validate Kubernetes SRE policies with Conftest
+        run: |
+          docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/hardened-deployment.yaml
+          if docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/unsafe-deployment.yaml; then
+            echo "unsafe Kubernetes fixture unexpectedly passed policy validation"
+            exit 1
+          fi
+          if docker run --rm -v "$PWD:/project:ro" -w /project openpolicyagent/conftest:v0.71.1 test --policy ./policy/kubernetes testdata/kubernetes/unsafe-initcontainer.yaml; then
+            echo "unsafe init-container fixture unexpectedly passed policy validation"
+            exit 1
+          fi
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...

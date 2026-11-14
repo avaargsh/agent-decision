@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:avaargsh:agent-decision:decision-page:v1",
+  "title": "DecisionPage",
+  "description": "A tenant-, agent-, session-, and run-scoped page ordered by created_at and decision_id descending.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "./decision-record.schema.json"
+      }
+    },
+    "next_cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Opaque base64url continuation token. Omitted when there are no further records."
+    }
+  }
+}

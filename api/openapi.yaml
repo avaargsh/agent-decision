@@ -1,0 +1,211 @@
+openapi: 3.1.0
+info:
+  title: Agent Decision API
+  version: 0.1.0
+  summary: Deterministic, read-only decision planning API
+  description: |
+    Agent Decision accepts an authenticated, version-pinned request and returns
+    an immutable decision proposal or abstention. It never authorizes or executes
+    capabilities and does not own Agent, Session, or Run lifecycle.
+
+    Authentication is deployment-specific. The HTTP handler requires a trusted
+    PrincipalResolver populated by an authenticated gateway. Tenant, subject,
+    caller, agent, and session identity are never trusted from the request body.
+servers:
+  - url: /
+    description: Relative to the deployment base URL
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness endpoint
+      description: Unauthenticated process liveness check. Returns no response body.
+      responses:
+        '204':
+          description: Process is alive
+  /v1/decisions:
+    post:
+      operationId: createDecision
+      summary: Create or replay a decision
+      description: |
+        Produces a deterministic read-only investigation plan or an explicit
+        abstention. A first successful persistence returns 201. An exact
+        idempotent replay returns the stored record with 200. Reusing the same
+        tenant-scoped invocation_id with a different authenticated request
+        fingerprint returns 409.
+
+        The caller principal is resolved out-of-band. The deployment MUST
+        configure a trusted PrincipalResolver and authoritative snapshot verifier.
+        Unknown JSON properties and duplicate object keys are rejected.
+      x-max-request-body-bytes: 1048576
+      x-principal-source: trusted-deployment-resolver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '200':
+          description: Existing DecisionRecord returned for an exact idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '201':
+          description: DecisionRecord persisted for the first time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid JSON, unknown or duplicate property, or request contract validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal is missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Authenticated principal does not match request identity or authoritative verification rejected the references
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Tenant-scoped INVOCATION_ID_REUSED
+          x-error-code: INVOCATION_ID_REUSED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Content-Type must be application/json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          description: Unexpected internal processing failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Authoritative verifier or decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/decisions/{decision_id}:
+    get:
+      operationId: getDecision
+      summary: Read one decision record
+      description: Returns a record only when tenant, agent, and session identities match the authenticated principal.
+      x-principal-source: trusted-deployment-resolver
+      parameters:
+        - in: path
+          name: decision_id
+          required: true
+          schema:
+            type: string
+            pattern: '^dec_[a-f0-9]{64}$'
+      responses:
+        '200':
+          description: DecisionRecord found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRecord'
+        '400':
+          description: Invalid decision identifier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Decision record not found in the caller's tenant, agent, and session scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/runs/{run_id}/decisions:
+    get:
+      operationId: listRunDecisions
+      summary: List decisions for a run
+      description: Returns a descending, cursor-paginated list scoped to the authenticated tenant, agent, and session.
+      x-principal-source: trusted-deployment-resolver
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$'
+        - in: query
+          name: cursor
+          required: false
+          description: Opaque continuation cursor returned by the previous page.
+          schema:
+            type: string
+            maxLength: 2048
+        - in: query
+          name: limit
+          required: false
+          description: Maximum number of records in the page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Decision page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionPage'
+        '400':
+          description: Invalid run identifier, cursor, or page size
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Trusted principal missing or unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Decision persistence is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  schemas:
+    DecisionRequest:
+      $ref: './schemas/decision-request.schema.json'
+    DecisionRecord:
+      $ref: './schemas/decision-record.schema.json'
+    DecisionPage:
+      $ref: './schemas/decision-page.schema.json'
+    Problem:
+      $ref: './schemas/problem.schema.json'
