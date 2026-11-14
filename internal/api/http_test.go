@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -221,4 +222,78 @@ func TestHTTPRejectsOutOfRangeLedgerPageSize(t *testing.T) {
 			t.Errorf("%s: got %d want 400", path, w.Code)
 		}
 	}
+}
+
+
+func TestHTTPRejectsUnicodeCaseFoldFieldAliases(t *testing.T) {
+	base := validBody()
+	cases := []struct {
+		name string
+		exact []byte
+		aliased []byte
+	}{
+		{
+			name: "top-level schema_version shadowing",
+			exact: []byte(`"schema_version":"decision.v1"`),
+			aliased: []byte(`"schema_version":"invalid","ſchema_version":"decision.v1"`),
+		},
+		{
+			name: "nested source_id shadowing",
+			exact: []byte(`"source_id":"slo-adapter-prod"`),
+			aliased: []byte(`"source_id":"wrong-source","ſource_id":"slo-adapter-prod"`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.Replace(base, tc.exact, tc.aliased, 1)
+			if bytes.Equal(body, base) {
+				t.Fatal("test fixture did not contain expected original field")
+			}
+			h := testHandler(resolverFor(apiPrincipal()), apiAuthority{})
+			w := send(h, body, "application/json")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("Unicode case-fold alias must fail closed: got %d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+
+func TestCatalogGuardedHandlerFailClosedUntilVerified(t *testing.T) {
+	service := decision.NewService(decision.NewMemoryStore(), apiAuthority{})
+	resolver := resolverFor(apiPrincipal())
+	ready := func(h http.Handler) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return w.Code
+	}
+	if h := NewCatalogGuardedHandler(service, resolver, nil); ready(h) != http.StatusServiceUnavailable {
+		t.Fatalf("nil attestation gate must be unready")
+	} else if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil gate allowed a Decision write: %d", w.Code)
+	}
+	denied := true
+	calls := 0
+	h := NewCatalogGuardedHandler(service, resolver, func(context.Context) error {
+		calls++
+		if denied { return errors.New("untrusted catalog") }
+		return nil
+	})
+	if got := ready(h); got != http.StatusServiceUnavailable { t.Fatalf("failed attestation ready=%d", got) }
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed attestation POST=%d", w.Code)
+	}
+	denied = false
+	if got := ready(h); got != http.StatusNoContent { t.Fatalf("recovered attestation ready=%d", got) }
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusCreated {
+		t.Fatalf("recovered attestation POST=%d body=%s", w.Code, w.Body.String())
+	}
+	denied = true
+	if w := send(h, validBody(), "application/json"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("new catalog drift must close the write gate, got %d", w.Code)
+	}
+	if calls < 5 { t.Fatalf("attestation was not checked per readyz/write request: %d calls", calls) }
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusNoContent { t.Fatalf("liveness must be independent of readiness: %d", w.Code) }
 }

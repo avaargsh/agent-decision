@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
+	"github.com/jackc/pgx/v5/pgconn"
 	schemamigrations "github.com/avaargsh/agent-decision/migrations"
 )
 
@@ -21,12 +22,41 @@ var ErrCatalogDrift = errors.New("Decision PostgreSQL catalog integrity drift")
 const migrationLockClass int32 = 71002
 const migrationLockObject int32 = 1
 
-// Migrate applies the immutable Decision ledger and transactional Outbox
-// schema under one transaction and advisory lock. Run with a migration-capable
-// database role.
+// validDecisionSchema is intentionally narrower than PostgreSQL identifiers:
+// only deployment-reviewed lowercase ASCII schemas are eligible, avoiding
+// truncation, quoting ambiguities and reserved internal namespaces.
+func validDecisionSchema(schema string) bool {
+	if schema == "" || len(schema) > 63 || strings.HasPrefix(schema, "pg_") ||
+		schema == "information_schema" {
+		return false
+	}
+	for i := 0; i < len(schema); i++ {
+		ch := schema[i]
+		if (ch < 'a' || ch > 'z') && ch != '_' && (i == 0 || ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// Migrate applies the immutable Decision ledger to the explicit default
+// schema "public", never to a schema supplied by the connection search_path.
+// Deployments using another trusted schema must call MigrateInSchema.
 func Migrate(ctx context.Context, db *sql.DB) error {
+	return MigrateInSchema(ctx, db, "public")
+}
+
+// MigrateInSchema applies the ledger within a trusted, caller-configured
+// PostgreSQL schema. The schema must come from deployment configuration, never
+// from an HTTP request or untrusted data. All unqualified legacy v1-v3 DDL
+// resolves inside a transaction-local schema-first search_path, with pg_temp
+// explicitly LAST so temporary tables cannot shadow protected relations.
+func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
 	if db == nil {
 		return ErrStoreUnavailable
+	}
+	if !validDecisionSchema(schema) {
+		return fmt.Errorf("%w: invalid or untrusted migration schema", ErrCatalogDrift)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -34,6 +64,22 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
+	// Bind the schema before any DDL, catalog lookup or advisory lock.
+	// Qualified pg_catalog functions prevent ambient function shadowing;
+	// format(%I) safely quotes the configured SQL identifier.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_catalog.set_config('search_path',
+		    pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`,
+		schema); err != nil {
+		return storeUnavailable("pin trusted migration schema", err)
+	}
+	var resolvedSchema string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_schema()").Scan(&resolvedSchema); err != nil {
+		return storeUnavailable("resolve trusted migration schema", err)
+	}
+	if resolvedSchema != schema {
+		return fmt.Errorf("%w: trusted migration schema %q is not accessible", ErrCatalogDrift, schema)
+	}
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1, $2)", migrationLockClass, migrationLockObject); err != nil {
 		return storeUnavailable("lock migrations", err)
 	}
@@ -118,6 +164,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return storeUnavailable("record checksummed schema migration", err)
 		}
 	}
+	// The migration ledger attests approved SQL bytes, not live catalog state.
+	// A disabled or replaced trigger would compromise append-only guarantees
+	// even if the schema_migrations metadata has not changed.
 	if err := verifyDecisionCatalog(ctx, tx); err != nil {
 		return err
 	}
@@ -127,10 +176,59 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// verifyDecisionCatalog checks the *installed* schema in the caller's
-// migration-locked transaction. A correct historical SQL digest does not
-// prove an operator has not dropped a table, FK, or append-only trigger.
+
+// verifyLedgerProtectionTriggers fails closed if a named trigger is disabled,
+// conditional, limited to UPDATE OF a subset of columns, or rebound. Handler
+// source and execution attributes are checked by verifyDecisionCatalog.
+func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
+	required := []struct {
+		table, name, function string
+		triggerType int
+	}{
+		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19},
+		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11},
+		{"outbox_events", "outbox_event_identity_immutable", "reject_decision_outbox_identity_mutation()", 19},
+		{"outbox_events", "outbox_events_no_delete", "reject_decision_outbox_delete()", 11},
+		{"decision_records", "decision_records_no_truncate", "reject_decision_record_mutation()", 34},
+		{"outbox_events", "outbox_events_no_truncate", "reject_decision_outbox_delete()", 34},
+	}
+	const query = `SELECT t.tgenabled::text, t.tgtype::integer,
+		t.tgfoid = to_regprocedure($3), t.tgqual IS NULL, t.tgattr::text
+		FROM pg_trigger AS t
+		WHERE t.tgrelid = to_regclass($1)
+		  AND t.tgname = $2 AND NOT t.tgisinternal`
+	for _, item := range required {
+		var enabled, restrictedColumns string
+		var eventType int
+		var expectedFunction sql.NullBool
+		var unconditional bool
+		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
+			Scan(&enabled, &eventType, &expectedFunction, &unconditional, &restrictedColumns)
+		if err != nil {
+			return fmt.Errorf("%w: missing or unreadable trigger %s.%s", ErrCatalogDrift, item.table, item.name)
+		}
+		if enabled != "O" || eventType != item.triggerType ||
+			!expectedFunction.Valid || !expectedFunction.Bool || !unconditional ||
+			restrictedColumns != "" {
+			return fmt.Errorf("%w: altered or restricted trigger %s.%s", ErrCatalogDrift, item.table, item.name)
+		}
+	}
+	return nil
+}
+
+// verifyDecisionCatalog performs the read-only catalog attestation followed
+// by the migration-only, rollback-safe INSERT behavior probes. Never call the
+// behavioral probes from a restricted application-role readiness check.
 func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
+	if err := verifyDecisionCatalogReadOnly(ctx, tx); err != nil {
+		return err
+	}
+	return probeDecisionIdentityConstraint(ctx, tx)
+}
+
+// verifyDecisionCatalogReadOnly examines only installed PostgreSQL catalog
+// metadata; it may run inside a READ ONLY transaction with a restricted role.
+func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 	var relationsOK bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT to_regclass('decision_records') IS NOT NULL
@@ -171,33 +269,10 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: tenant-bound Decision Outbox FK missing or rebound", ErrCatalogDrift)
 	}
 
-	// pg_trigger.tgtype exact bitmasks: BEFORE=2, ROW=1, UPDATE=16,
-	// DELETE=8, TRUNCATE=32 (statement=34). Checking enabled state, event
-	// and function catches same-name
-	// replacements as well as completely missing immutability triggers.
-	var validTriggers int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT count(*) FROM (
-			VALUES
-				('decision_records','decision_records_no_update',19,'reject_decision_record_mutation()'),
-				('decision_records','decision_records_no_delete',11,'reject_decision_record_mutation()'),
-				('outbox_events','outbox_event_identity_immutable',19,'reject_decision_outbox_identity_mutation()'),
-				('outbox_events','outbox_events_no_delete',11,'reject_decision_outbox_delete()'),
-				('decision_records','decision_records_no_truncate',34,'reject_decision_record_mutation()'),
-				('outbox_events','outbox_events_no_truncate',34,'reject_decision_outbox_delete()')
-		) AS expected(table_name,trigger_name,event_bits,proc_name)
-		JOIN pg_trigger t
-			ON t.tgrelid=to_regclass(expected.table_name)
-			AND t.tgname=expected.trigger_name
-			AND t.tgtype=expected.event_bits
-			AND t.tgfoid=to_regprocedure(expected.proc_name)
-			AND NOT t.tgisinternal
-			AND t.tgenabled='O'
-	`).Scan(&validTriggers); err != nil {
-		return fmt.Errorf("%w: inspect Decision immutability triggers: %v", ErrCatalogDrift, err)
-	}
-	if validTriggers != 6 {
-		return fmt.Errorf("%w: Decision immutable trigger missing, disabled, or rebound", ErrCatalogDrift)
+	// Trigger events, conditions, enabled state and handler identity are checked
+	// separately from table/FK/CHECK and installed function-body attestations.
+	if err := verifyLedgerProtectionTriggers(ctx, tx); err != nil {
+		return err
 	}
 
 	var identityConstraintOK bool
@@ -319,6 +394,56 @@ END;`,
 		`, expected.name).Scan(&actualSource)
 		if err != nil || strings.TrimSpace(actualSource) != expected.body {
 			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
+		}
+	}
+	return nil
+}
+
+// probeDecisionIdentityConstraint verifies the identity CHECK's *behavior*.
+// Same-name CHECK(true) catalog drift still has contype='c' and convalidated.
+// Every synthetic write is undone via a savepoint, including successful
+// inserts that would otherwise demonstrate weakened protection.
+func probeDecisionIdentityConstraint(ctx context.Context, tx *sql.Tx) error {
+	const insert = `INSERT INTO decision_records (
+		tenant_id, invocation_id, decision_id, request_sha256, record, created_at
+	) VALUES ($1, $2, $3, $4,
+		jsonb_build_object(
+			'tenant_id', $5::text, 'invocation_id', $6::text,
+			'decision_id', $7::text, 'request_sha256', $8::text
+		), now())`
+	const savepoint = "decision_identity_constraint_probe"
+	for i, field := range []string{"tenant_id", "invocation_id", "decision_id", "request_sha256"} {
+		tenant := fmt.Sprintf("__decision_catalog_probe_%d_%d", time.Now().UnixNano(), i)
+		invocation := fmt.Sprintf("catalog-probe-invocation-%d", i)
+		decisionID := fmt.Sprintf("catalog-probe-decision-%d", i)
+		digest := strings.Repeat("a", 64)
+		jsonTenant, jsonInvocation, jsonDecision, jsonDigest := tenant, invocation, decisionID, digest
+		switch field {
+		case "tenant_id":
+			jsonTenant += "-mismatch"
+		case "invocation_id":
+			jsonInvocation += "-mismatch"
+		case "decision_id":
+			jsonDecision += "-mismatch"
+		case "request_sha256":
+			jsonDigest = strings.Repeat("b", 64)
+		}
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+			return storeUnavailable("start Decision identity CHECK probe", err)
+		}
+		_, insertErr := tx.ExecContext(ctx, insert, tenant, invocation, decisionID, digest,
+			jsonTenant, jsonInvocation, jsonDecision, jsonDigest)
+		if _, err := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); err != nil {
+			return storeUnavailable("undo Decision identity CHECK probe", err)
+		}
+		if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+			return storeUnavailable("release Decision identity CHECK probe", err)
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(insertErr, &pgErr) || pgErr.Code != "23514" ||
+			pgErr.ConstraintName != "decision_records_json_identity_ck" {
+			return fmt.Errorf("%w: Decision JSON identity CHECK did not reject mismatched %s",
+				ErrCatalogDrift, field)
 		}
 	}
 	return nil
