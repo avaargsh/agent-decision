@@ -448,6 +448,21 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
 
+	record, err := recordFromVerifiedRequest(principal, req, s.strategy, s.now())
+	if err != nil {
+		return Record{}, false, err
+	}
+	return s.store.SaveOrGet(ctx, record)
+}
+
+// recordFromVerifiedRequest is the deterministic materialization shared by
+// initial persistence and read-only revalidation. Callers must verify all
+// authority and validate the request first.
+func recordFromVerifiedRequest(principal Principal, req Request, strategy Strategy, createdAt time.Time) (Record, error) {
+	fingerprint := digest(struct {
+		Principal Principal
+		Request Request
+	}{principal, req})
 	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
@@ -458,7 +473,7 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
 		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef{}, req.Evidence...),
 		Plan: PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
-		CreatedAt: s.now(),
+		CreatedAt: createdAt,
 	}
 	if req.Replan != nil {
 		record.ParentDecisionID = req.Replan.ParentDecisionID
@@ -467,17 +482,17 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	}
 	// Strategies receive detached request slices so an implementation cannot
 	// mutate already-verified evidence or capabilities before output validation.
-	result := s.strategy.Plan(cloneRequest(req), decisionID)
+	result := strategy.Plan(cloneRequest(req), decisionID)
 	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
 	result.Steps = append([]PlanStep{}, result.Steps...)
 	if err := validateStrategyResult(req, result); err != nil {
-		return Record{}, false, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
+		return Record{}, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
 	record.Status = result.Status
 	record.ReasonCodes = append([]string{}, result.ReasonCodes...)
 	record.Plan.Steps = append([]PlanStep{}, result.Steps...)
 	record.Plan.PlanHash = planHash(record.Plan)
-	return s.store.SaveOrGet(ctx, record)
+	return record, nil
 }
 
 func findCapability(capabilities []CapabilityRef, id string) (CapabilityRef, bool) {

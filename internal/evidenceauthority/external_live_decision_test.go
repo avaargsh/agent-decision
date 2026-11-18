@@ -226,6 +226,10 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	inspectPath:=api.InspectTurnPrefix+runID+"/"+invocation
 	var inspection api.TurnInspection
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Status!="ABSENT_UNCERTAIN"||inspection.Record!=nil{t.Fatal("absence was overstated")}
+	// Revalidation is read-only and must never create a DecisionRecord.
+	verifyPath := inspectPath + "/verify"
+	call(runtime, "GET", verifyPath, nil, 404)
+	call(makeClient("spiffe://example.org/agent"), "GET", verifyPath, nil, 401)
 	call(makeClient("spiffe://example.org/agent"),"POST",api.PlanTurnPath,request,401)
 	bad:=request;bad.Evidence=append([]decision.EvidenceRef{},refs...);bad.Evidence[0].SHA256=strings.Repeat("a",64)
 	call(runtime,"POST",api.PlanTurnPath,bad,403)
@@ -258,9 +262,34 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err:=admin.QueryRowContext(ctx,"SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows,&events);err!=nil||rows!=1||events!=1{
 		t.Fatalf("DecisionRecord/outbox atomic count %d/%d %v",rows,events,err)
 	}
+	// A fresh continuation receipt is not historical inspection or a Permit.
+	type continuationReceipt struct {
+		SchemaVersion string `json:"schema_version"`
+		Authority decision.RuntimeDecisionAuthority `json:"authority"`
+		DecisionID string `json:"decision_id"`
+		RecordSHA256 string `json:"record_sha256"`
+		PlanHash string `json:"plan_hash"`
+	}
+	var verified continuationReceipt
+	if err := json.Unmarshal(call(runtime, "GET", verifyPath, nil, 200), &verified); err != nil ||
+		verified.SchemaVersion != "decision.continuation.v1" || verified.Authority.RunID != runID ||
+		verified.Authority.InvocationID != invocation || verified.Authority.AttemptID == "" ||
+		verified.Authority.BreakerEpoch < 1 || verified.Authority.BreakerVersion < 1 ||
+		verified.DecisionID != record.DecisionID || verified.PlanHash != record.Plan.PlanHash ||
+		len(verified.RecordSHA256) != 64 {
+		t.Fatalf("invalid fresh continuation receipt: %+v %v", verified, err)
+	}
+	var again continuationReceipt
+	if err := json.Unmarshal(call(runtime, "GET", verifyPath, nil, 200), &again); err != nil || again != verified {
+		t.Fatal("unchanged committed decision did not revalidate identically")
+	}
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
+		t.Fatal("verification created mutable decision or outbox state")
+	}
 	// Current source revocation blocks plan replay through this trusted API.
 	// Historical read remains an observation and must never authorize effect.
 	revoke()
+	call(runtime, "GET", verifyPath, nil, 403)
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
