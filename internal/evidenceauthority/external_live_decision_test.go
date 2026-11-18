@@ -286,10 +286,72 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("verification created mutable decision or outbox state")
 	}
+	// Independently authenticated Guard (not Runtime) verifies the precise
+	// committed read-only Plan/Step against the same live evidence sources.
+	// This is a real TLS 1.3 client certificate, HTTP server and PostgreSQL
+	// DecisionRecord, not a mock authority or a Permit/side effect.
+	const guardCaller = "spiffe://example.org/guard"
+	guardHandler, err := api.NewTrustedGuardPlanHandler(store, authority, guardCaller, func(ctx context.Context) error {
+		return decision.VerifyInstalledCatalogInSchema(ctx, att, schema)
+	})
+	if err != nil { t.Fatal(err) }
+	guardServer := listen(guardHandler, "spiffe://example.org/decision-guard-api", inboundRoots)
+	guardClient := makeClient(guardCaller)
+	guardRequest := decision.GuardPlanStepRequest{
+		SchemaVersion: decision.GuardPlanStepSchema, RunID: runID,
+		AgentID: record.AgentID, AgentReleaseID: verified.Authority.AgentReleaseID,
+		SessionID: record.SessionID, DecisionID: record.DecisionID,
+		PlanID: record.Plan.PlanID, PlanHash: record.Plan.PlanHash,
+		StepID: record.Plan.Steps[0].StepID,
+		CapabilityID: record.Plan.Steps[0].Capability.ID,
+		CapabilityVersion: record.Plan.Steps[0].Capability.Version,
+		ResourceRef: record.Plan.Steps[0].TargetRef, Arguments: json.RawMessage(`{}`),
+		BreakerEpoch: verified.Authority.BreakerEpoch,
+		BreakerVersion: verified.Authority.BreakerVersion,
+	}
+	guardCall := func(client *http.Client, input decision.GuardPlanStepRequest, want int) []byte {
+		t.Helper()
+		body, err := json.Marshal(input)
+		if err != nil { t.Fatal(err) }
+		r, err := http.NewRequestWithContext(ctx, http.MethodPost, guardServer.URL+api.GuardPlanStepPath, bytes.NewReader(body))
+		if err != nil { t.Fatal(err) }
+		r.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(r)
+		if err != nil { t.Fatal(err) }
+		defer response.Body.Close()
+		raw, err := io.ReadAll(response.Body)
+		if err != nil || response.StatusCode != want || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("real Guard Plan/Step mTLS status=%d want=%d: %s %v", response.StatusCode, want, raw, err)
+		}
+		return raw
+	}
+	guardCall(runtime, guardRequest, http.StatusUnauthorized)
+	var guardVerified decision.GuardPlanStepReceipt
+	if err := json.Unmarshal(guardCall(guardClient, guardRequest, http.StatusOK), &guardVerified); err != nil ||
+		guardVerified.Status != "VERIFIED" || guardVerified.RecordSHA256 != verified.RecordSHA256 ||
+		guardVerified.DecisionID != record.DecisionID || guardVerified.StepID != guardRequest.StepID {
+		t.Fatalf("real Guard did not verify exact committed step: %+v %v", guardVerified, err)
+	}
+	mutated := guardRequest
+	mutated.PlanHash = strings.Repeat("f", 64)
+	guardCall(guardClient, mutated, http.StatusForbidden)
+	mutated = guardRequest
+	mutated.ResourceRef = "wrong-target"
+	guardCall(guardClient, mutated, http.StatusForbidden)
+	mutated = guardRequest
+	mutated.BreakerVersion++
+	guardCall(guardClient, mutated, http.StatusForbidden)
+	mutated = guardRequest
+	mutated.CapabilityID = "workspace.write"
+	guardCall(guardClient, mutated, http.StatusForbidden)
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
+		t.Fatal("Guard read-only verification created extra Decision/outbox records")
+	}
 	// Current source revocation blocks plan replay through this trusted API.
 	// Historical read remains an observation and must never authorize effect.
 	revoke()
 	call(runtime, "GET", verifyPath, nil, 403)
+	guardCall(guardClient, guardRequest, http.StatusForbidden)
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
