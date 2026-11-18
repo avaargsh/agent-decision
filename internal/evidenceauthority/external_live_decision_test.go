@@ -377,6 +377,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	// inside this isolated Decision fixture and is never supplied to ACP
 	// or Runtime. Only the separate TLS Guard client subprocess gets it.
 	var runExternalGuard func(expect string)
+	var runComposedGuard func(expect string)
 	if executable := os.Getenv("DECISION_LIVE_GUARD_BIN"); executable != "" {
 		dir := t.TempDir()
 		clientCredential := issue(guardCaller, false)
@@ -433,6 +434,54 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 			}
 			t.Logf("independent real Guard client evidence: %s",output)
 		}
+		if os.Getenv("DECISION_LIVE_GUARD_COMPOSED_RUNTIME_ORIGIN") != "" {
+			// The actual Guard driver has no DB handle or test-side effect
+			// grant. Its three independently authenticated callers must
+			// read the SAME original Runtime/ACP/Decision Run over mTLS.
+			runComposedGuard = func(expect string) {
+				t.Helper()
+				cmd := exec.CommandContext(ctx, executable, "-test.v", "-test.run=^TestExternalLiveComposedRunVerifier$", "-test.timeout=35s")
+				cmd.Env = []string{"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+					"GUARD_EXTERNAL_LIVE_COMPOSED=1", "GUARD_COMPOSED_EXPECT="+expect,
+					"GUARD_COMPOSED_TENANT="+tenant, "GUARD_COMPOSED_RUN="+runID,
+					"GUARD_COMPOSED_DECISION_ORIGIN="+guardServer.URL,
+					"GUARD_COMPOSED_DECISION_PEER=spiffe://example.org/decision-guard-api",
+					"GUARD_COMPOSED_DECISION_ROOTS="+trustPath,
+					"GUARD_COMPOSED_DECISION_CERT="+clientCertPath,
+					"GUARD_COMPOSED_DECISION_KEY="+clientKeyPath,
+					"GUARD_COMPOSED_AGENT="+record.AgentID,
+					"GUARD_COMPOSED_RELEASE="+verified.Authority.AgentReleaseID,
+					"GUARD_COMPOSED_SESSION="+record.SessionID,
+					"GUARD_COMPOSED_DECISION_ID="+record.DecisionID,
+					"GUARD_COMPOSED_PLAN_ID="+record.Plan.PlanID,
+					"GUARD_COMPOSED_PLAN_HASH="+record.Plan.PlanHash,
+					"GUARD_COMPOSED_STEP_ID="+guardStep.StepID,
+					"GUARD_COMPOSED_CAP_ID="+guardStep.Capability.ID,
+					"GUARD_COMPOSED_CAP_VERSION="+guardStep.Capability.Version,
+					"GUARD_COMPOSED_RESOURCE="+guardStep.TargetRef,
+					"GUARD_COMPOSED_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
+					"GUARD_COMPOSED_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+				}
+				for _, name := range []string{
+					"RUNTIME_ORIGIN", "RUNTIME_PEER", "RUNTIME_ROOTS",
+					"RUNTIME_CERT", "RUNTIME_KEY", "ACP_ORIGIN", "ACP_PEER",
+					"ACP_ROOTS", "ACP_CERT", "ACP_KEY", "SYNC_DIR",
+				} {
+					value := os.Getenv("DECISION_LIVE_GUARD_COMPOSED_"+name)
+					if value == "" { t.Fatalf("missing externally authenticated composed source %s",name) }
+					cmd.Env = append(cmd.Env, "GUARD_COMPOSED_"+name+"="+value)
+				}
+				output, err := cmd.CombinedOutput()
+				marker := "real ComposedRunVerifier verified three authorities on same-Run "+runID
+				if expect == "postflight" { marker = "real ComposedRunVerifier denied live postflight breaker drift same-Run "+runID }
+				if expect == "revoked" { marker = "real ComposedRunVerifier denied revoked source same-Run "+runID }
+				if err != nil || !bytes.Contains(output, []byte("--- PASS: TestExternalLiveComposedRunVerifier ")) ||
+					!bytes.Contains(output, []byte(marker)) {
+					t.Fatalf("real independent three-source Guard composition failed %s: %v %s",expect,err,output)
+				}
+				t.Logf("actual triple-authority Guard evidence: %s", output)
+			}
+		}
 	}
 	guardCall := func(client *http.Client, request decision.GuardPlanStepRequest, want int) []byte {
 		t.Helper()
@@ -479,6 +528,10 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records ENABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
 	guardCall(guardClient, guardReq, http.StatusOK)
 	if runExternalGuard != nil { runExternalGuard("verified") }
+	if runComposedGuard != nil {
+		runComposedGuard("verified")
+		runComposedGuard("postflight")
+	}
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("Guard read-only Step verification created extra Decision or outbox records")
 	}
@@ -488,6 +541,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	call(runtime, "GET", verifyPath, nil, 403)
 	guardCall(guardClient, guardReq, http.StatusForbidden)
 	if runExternalGuard != nil { runExternalGuard("revoked") }
+	if runComposedGuard != nil { runComposedGuard("revoked") }
 	if continuationDir != "" {
 		writeFixture("source-revoked", []byte("revoked"))
 		waitMarker("runtime-denied")
