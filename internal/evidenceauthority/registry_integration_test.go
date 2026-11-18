@@ -5,11 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -87,17 +89,85 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := New(db, schema, scope, pub)
-	if err != nil {
+	// Real, distinct LOGINs. The network reader gets neither the signing
+	// key nor INSERT permissions. Publication and revocation are separate.
+	var roles []string
+	var roleDBs []*sql.DB
+	defer func() {
+		for _, conn := range roleDBs {
+			_ = conn.Close()
+		}
+		for _, role := range roles {
+			if _, err := db.ExecContext(context.Background(), "DROP OWNED BY "+role); err != nil {
+				t.Error("source role grant cleanup failed")
+			}
+			if _, err := db.ExecContext(context.Background(), "DROP ROLE "+role); err != nil {
+				t.Error("source LOGIN cleanup failed")
+			}
+		}
+	}()
+	login := func(kind string) *Registry {
+		t.Helper()
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			t.Fatal(err)
+		}
+		password := hex.EncodeToString(random[:])
+		role := "source_" + kind + "_" + password[:16]
+		if _, err := db.ExecContext(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"'"); err != nil {
+			t.Fatal("source role provisioning failed")
+		}
+		roles = append(roles, role)
+		for _, grant := range []string{
+			"GRANT USAGE ON SCHEMA "+schema+" TO "+role,
+			"GRANT SELECT ON "+schema+".evidence_publications,"+schema+".evidence_revocations TO "+role,
+		} {
+			if _, err := db.ExecContext(ctx, grant); err != nil {
+				t.Fatal("source role grant failed")
+			}
+		}
+		if kind != "reader" {
+			relation := "evidence_publications"
+			if kind == "revoker" {
+				relation = "evidence_revocations"
+			}
+			if _, err := db.ExecContext(ctx, "GRANT INSERT ON "+schema+"."+relation+" TO "+role); err != nil {
+				t.Fatal("source role write grant failed")
+			}
+		}
+		u, err := url.Parse(dsn)
+		if err != nil || u.Host == "" {
+			t.Fatal("test requires disposable PostgreSQL URL")
+		}
+		u.User = url.UserPassword(role, password)
+		other, err := sql.Open("pgx", u.String())
+		if err != nil {
+			t.Fatal("source LOGIN connection failed")
+		}
+		roleDBs = append(roleDBs, other)
+		if err := other.PingContext(ctx); err != nil {
+			t.Fatal("source LOGIN did not authenticate")
+		}
+		reg, err := New(other, schema, scope, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reg
+	}
+	publisher, reader, revoker := login("publisher"), login("reader"), login("revoker")
+	if err := reader.Publish(ctx, ref, wire, now); err == nil {
+		t.Fatal("read-only source identity published")
+	}
+	if err := revoker.Publish(ctx, ref, wire, now); err == nil {
+		t.Fatal("revoker identity published")
+	}
+	if err := publisher.Publish(ctx, ref, wire, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Publish(ctx, ref, wire, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Publish(ctx, ref, wire, now); err != nil {
+	if err := publisher.Publish(ctx, ref, wire, now); err != nil {
 		t.Fatal("exact replay changed publication")
 	}
-	got, err := registry.ReadCurrent(ctx, ref, now)
+	got, err := reader.ReadCurrent(ctx, ref, now)
 	if err != nil || decision.VerifyEvidencePublication(got, pub, scope, ref, now) != nil {
 		t.Fatal("actual observation was not independently verifiable")
 	}
@@ -105,16 +175,21 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Publish(ctx, changed, forged, now); !errors.Is(err, ErrConflict) {
+	if err := publisher.Publish(ctx, changed, forged, now); !errors.Is(err, ErrConflict) {
 		t.Fatalf("changed immutable evidence replay: %v", err)
 	}
-	if err := registry.Revoke(ctx, ref, "SOURCE_REVOKED"); err != nil {
+	for _, denied := range []*Registry{publisher, reader} {
+		if err := denied.Revoke(ctx, ref, "SOURCE_REVOKED"); err == nil {
+			t.Fatal("non-revoker identity wrote a tombstone")
+		}
+	}
+	if err := revoker.Revoke(ctx, ref, "SOURCE_REVOKED"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := registry.ReadCurrent(ctx, ref, now); !errors.Is(err, decision.ErrAuthorityRejected) {
+	if _, err := reader.ReadCurrent(ctx, ref, now); !errors.Is(err, decision.ErrAuthorityRejected) {
 		t.Fatalf("revoked evidence read accepted: %v", err)
 	}
-	if err := registry.Publish(ctx, ref, wire, now); !errors.Is(err, decision.ErrAuthorityRejected) {
+	if err := publisher.Publish(ctx, ref, wire, now); !errors.Is(err, decision.ErrAuthorityRejected) {
 		t.Fatalf("replay reactivated revoked evidence: %v", err)
 	}
 	for _, stmt := range []string{
