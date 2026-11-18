@@ -21,10 +21,10 @@ const GuardPlanPath = "/internal/v1/guard-plan-steps:verify"
 // one operator-pinned tenant. It revalidates immutable Decision records and
 // all live Runtime/ACP/Evidence sources; it cannot issue an execution Permit.
 func NewTrustedGuardPlanHandler(
-	store decision.Store, authority *decision.LiveAuthority, expectedGuardPeer, tenant string,
+	store decision.Store, authority *decision.LiveAuthority, expectedGuardPeer, tenant string, attest CatalogAttestor,
 ) (http.Handler, error) {
 	peer, err := url.Parse(expectedGuardPeer)
-	if store == nil || authority == nil || err != nil ||
+	if store == nil || authority == nil || attest == nil || err != nil ||
 		peer.Scheme != "spiffe" || peer.Host == "" || peer.Port() != "" ||
 		peer.Path == "" || peer.Path == "/" || peer.User != nil ||
 		peer.Opaque != "" || peer.RawPath != "" || peer.RawQuery != "" ||
@@ -67,6 +67,13 @@ func NewTrustedGuardPlanHandler(
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
+		// The Guard read path must not trust a stale or weakened Decision
+		// PostgreSQL catalog. In particular a missing append-only trigger
+		// must fail closed even when live source reads would succeed.
+		if err := attest(ctx); err != nil {
+			problem(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "immutable Decision catalog unavailable")
+			return
+		}
 		receipt, err := authority.VerifyGuardPlanStep(ctx, store, tenant, request)
 		switch {
 		case errors.Is(err, decision.ErrAuthorityRejected), errors.Is(err, decision.ErrNotFound):
