@@ -3,6 +3,7 @@ package evidenceauthority
 import (
 	"bytes"
 	"crypto/ed25519"
+	"database/sql"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -132,4 +133,23 @@ func liveEvidenceNetworkReader(t *testing.T, registry *Registry, ref decision.Ev
 	malformed := append([]byte(`{"ref":"substituted",`), body[1:]...)
 	call(trusted, malformed, http.StatusBadRequest)
 	return func(want int) { t.Helper(); call(trusted, body, want) }
+}
+
+func TestReadHandlerRejectsNoncanonicalSPIFFEPeerConfig(t *testing.T) {
+	// Constructor must reject workload identities that are invalid under the
+	// same strict SPIFFE pin contract used by the independent Decision client.
+	registry := &Registry{db: &sql.DB{}}
+	for _, peer := range []string{
+		"spiffe://test.example:443/decision",
+		"spiffe://test.example/",
+	} {
+		t.Run(peer, func(t *testing.T) {
+			if _, err := NewReadHandler(registry, peer); !errors.Is(err, decision.ErrAuthorityUnavailable) {
+				t.Fatalf("noncanonical SPIFFE peer accepted: %q, err=%v", peer, err)
+			}
+		})
+	}
+	if _, err := NewReadHandler(registry, "spiffe://test.example/decision"); err != nil {
+		t.Fatalf("canonical SPIFFE peer rejected: %v", err)
+	}
 }
