@@ -354,6 +354,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	guardCall(guardClient, guardRequest, http.StatusForbidden)
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
+	t.Logf("real Guard Plan Step mTLS verified same-Run %s and source revocation denied", runID)
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
 }
 
