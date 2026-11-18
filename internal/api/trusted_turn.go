@@ -123,11 +123,26 @@ func NewTrustedTurnHandler(store decision.Store, authority *decision.LiveAuthori
 		}
 		if r.Method==http.MethodGet && strings.HasPrefix(r.URL.Path,InspectTurnPrefix) {
 			parts:=strings.Split(strings.TrimPrefix(r.URL.Path,InspectTurnPrefix),"/")
-			if len(parts)!=2 || r.ContentLength!=0 || len(r.TransferEncoding)!=0 {
+			verify := len(parts)==3 && parts[2]=="verify"
+			if (!verify && len(parts)!=2) || r.ContentLength!=0 || len(r.TransferEncoding)!=0 {
 				problem(w,http.StatusBadRequest,"INVALID_REQUEST","invalid inspection reference")
 				return
 			}
 			if err:=attest(ctx);err!=nil{fail(w,decision.ErrStoreUnavailable);return}
+			if verify {
+				receipt, err := authority.VerifyCommittedTurn(ctx, store, parts[0], parts[1])
+				if errors.Is(err, decision.ErrNotFound) {
+					// No verifiable committed record now, not a final-absence barrier.
+					problem(w, http.StatusNotFound, "NO_COMMITTED_DECISION", "no committed decision available for revalidation")
+					return
+				}
+				if err != nil {
+					fail(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, receipt)
+				return
+			}
 			// Historical lookup is read-only, but still reauthenticates current
 			// Runtime and ACP scope. Evidence may have expired since commit.
 			principal,req,err:=authority.ResolveTurn(ctx,parts[0],parts[1],[]decision.EvidenceRef{})
