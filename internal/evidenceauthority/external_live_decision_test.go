@@ -10,7 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
+	certpem "encoding/pem"
 	"path/filepath"
 	"fmt"
 	"io"
@@ -219,7 +219,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
             if err := os.WriteFile(filepath.Join(continuationDir, name), content, 0600); err != nil { t.Fatal(err) }
         }
         write("worker-cert.pem",workerCert)
-        write("decision-ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der}))
+        write("decision-ca.pem",certpem.EncodeToMemory(&certpem.Block{Type:"CERTIFICATE",Bytes:der}))
         // Publish origin last: Runtime may connect only after cert and CA exist.
         write("origin",[]byte(server.URL))
     }
