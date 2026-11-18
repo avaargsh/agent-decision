@@ -55,7 +55,7 @@ func exactPeer(r *http.Request, expected string) bool {
 func NewReadHandler(registry *Registry, expectedPeer string) (http.Handler, error) {
 	u, err := url.Parse(expectedPeer)
 	if registry == nil || registry.db == nil || err != nil || u.Scheme != "spiffe" || u.Host == "" ||
-		u.Path == "" || u.User != nil || u.Opaque != "" || u.RawPath != "" ||
+		u.Port() != "" || u.Path == "" || u.Path == "/" || u.User != nil || u.Opaque != "" || u.RawPath != "" ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.String() != expectedPeer {
 		return nil, decision.ErrAuthorityUnavailable
 	}
