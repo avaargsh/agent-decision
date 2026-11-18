@@ -231,9 +231,20 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	call(runtime,"POST",api.PlanTurnPath,bad,403)
 	bad=request;bad.InvocationID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	call(runtime,"POST",api.PlanTurnPath,bad,403)
-	// Simulate loss of the committed HTTP response by discarding it. The
-	// next operation is authenticated Inspect, not another Plan submission.
-	_ = call(runtime,"POST",api.PlanTurnPath,request,201)
+	// The real network transport receives the committed 201 and drops
+	// it before the Runtime caller can observe any response. The next
+	// operation is authenticated Inspect, not another Plan submission.
+	lost := &lostDecisionResponse{upstream: runtime.Transport}
+	lostClient := &http.Client{Transport: lost, Timeout: 40 * time.Second}
+	rawRequest, err := json.Marshal(request)
+	if err != nil { t.Fatal(err) }
+	plan, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+api.PlanTurnPath, bytes.NewReader(rawRequest))
+	if err != nil { t.Fatal(err) }
+	plan.Header.Set("Content-Type", "application/json")
+	plan.GetBody = nil
+	if res, err := lostClient.Do(plan); err == nil || res != nil || !lost.dropped || lost.calls != 1 {
+		t.Fatalf("real committed response loss was not observed: %v calls=%d", err, lost.calls)
+	}
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Status!="FOUND"||inspection.Record==nil{
 		t.Fatal("committed DecisionRecord not independently recoverable")
 	}
@@ -253,4 +264,24 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
+}
+
+type lostDecisionResponse struct {
+	upstream http.RoundTripper
+	calls int
+	dropped bool
+}
+
+func (l *lostDecisionResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	l.calls++
+	res, err := l.upstream.RoundTrip(r)
+	if err != nil { return nil, err }
+	if res.StatusCode != http.StatusCreated {
+		return res, nil
+	}
+	_, err = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+	if err != nil { return nil, err }
+	l.dropped = true
+	return nil, io.ErrUnexpectedEOF
 }
