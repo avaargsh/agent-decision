@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"path/filepath"
 	"fmt"
 	"io"
 	"math/big"
@@ -204,6 +206,23 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	})
 	if err!=nil{t.Fatal(err)}
 	server:=listen(handler,"spiffe://example.org/decision-api",inboundRoots)
+    continuationDir := os.Getenv("DECISION_LIVE_RUNTIME_CONTINUATION_DIR")
+    if continuationDir != "" {
+        // The Runtime owns the key and creates this CSR before invoking Decision.
+        // Only public certificate material crosses this isolated process boundary.
+        csrDER, err := os.ReadFile(filepath.Join(continuationDir, "worker.csr"))
+        if err != nil { t.Fatal(err) }
+        workerCert, err := issueRuntimeWorkerCertificate(csrDER, ca, caKey, time.Now().UTC())
+        if err != nil { t.Fatalf("untrusted Runtime CSR: %v", err) }
+        write := func(name string, content []byte) {
+            t.Helper()
+            if err := os.WriteFile(filepath.Join(continuationDir, name), content, 0600); err != nil { t.Fatal(err) }
+        }
+        write("worker-cert.pem",workerCert)
+        write("decision-ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der}))
+        // Publish origin last: Runtime may connect only after cert and CA exist.
+        write("origin",[]byte(server.URL))
+    }
 	makeClient:=func(id string)*http.Client{
 		h:=&http.Client{Timeout:40*time.Second,Transport:&http.Transport{TLSClientConfig:&tls.Config{MinVersion:tls.VersionTLS13,RootCAs:inboundRoots,
 			Certificates:[]tls.Certificate{issue(id,false)}}}}
@@ -286,12 +305,25 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("verification created mutable decision or outbox state")
 	}
+	if continuationDir != "" {
+        if err := fixtureMarker(ctx, filepath.Join(continuationDir, "runtime-accepted")); err != nil {
+            t.Fatalf("Runtime did not commit authentic Decision receipt before revocation: %v", err)
+        }
+    }
 	// Current source revocation blocks plan replay through this trusted API.
 	// Historical read remains an observation and must never authorize effect.
 	revoke()
+    if continuationDir != "" {
+        if err := os.WriteFile(filepath.Join(continuationDir, "source-revoked"), []byte("revoked"), 0600); err != nil { t.Fatal(err) }
+    }
 	call(runtime, "GET", verifyPath, nil, 403)
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
+    if continuationDir != "" {
+        if err := fixtureMarker(ctx, filepath.Join(continuationDir, "runtime-denied")); err != nil {
+            t.Fatalf("Runtime did not independently reject revoked source: %v", err)
+        }
+    }
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
 }
 
