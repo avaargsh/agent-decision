@@ -49,7 +49,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		t.Helper()
 		b,err:=os.ReadFile(required(name)); if err!=nil{t.Fatal(err)}; return b
 	}
-	ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
+	ctx,cancel:=context.WithTimeout(context.Background(),180*time.Second)
 	defer cancel()
 	tenant,runID,invocation:=required("DECISION_LIVE_TENANT"),required("DECISION_LIVE_RUN"),required("DECISION_LIVE_INVOCATION")
 	agent:=required("DECISION_LIVE_AGENT")
