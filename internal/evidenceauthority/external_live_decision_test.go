@@ -19,7 +19,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -365,6 +367,68 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		ResourceRef: guardStep.TargetRef, Arguments: json.RawMessage(`{}`),
 		BreakerEpoch: verified.Authority.BreakerEpoch, BreakerVersion: verified.Authority.BreakerVersion,
 	}
+	// Independently compiled EngageGuard module binary uses the exact
+	// DecisionPlanClient from its own repository. The key is generated
+	// inside this isolated Decision fixture and is never supplied to ACP
+	// or Runtime. Only the separate TLS Guard client subprocess gets it.
+	var runExternalGuard func(expect string)
+	if executable := os.Getenv("DECISION_LIVE_GUARD_BIN"); executable != "" {
+		dir := t.TempDir()
+		clientCredential := issue(guardCaller, false)
+		var chain []byte
+		for _, certificateDER := range clientCredential.Certificate {
+			chain = append(chain, certpem.EncodeToMemory(&certpem.Block{
+				Type: "CERTIFICATE", Bytes: certificateDER,
+			})...)
+		}
+		secret, err := x509.MarshalPKCS8PrivateKey(clientCredential.PrivateKey)
+		if err != nil { t.Fatal(err) }
+		write := func(name string, raw []byte) string {
+			t.Helper()
+			path := filepath.Join(dir,name)
+			if err := os.WriteFile(path,raw,0600); err != nil { t.Fatal(err) }
+			return path
+		}
+		clientCertPath := write("guard-client.pem", chain)
+		clientKeyPath := write("guard-key.pem",certpem.EncodeToMemory(&certpem.Block{Type:"PRIVATE KEY",Bytes:secret}))
+		trustPath := write("guard-roots.pem",certpem.EncodeToMemory(&certpem.Block{Type:"CERTIFICATE",Bytes:der}))
+		runExternalGuard = func(expect string) {
+			t.Helper()
+			cmd := exec.CommandContext(ctx,executable,"-test.v","-test.run=^TestExternalLiveDecisionPlanClient$","-test.timeout=25s")
+			cmd.Env = []string{
+				"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+				"GUARD_EXTERNAL_LIVE_PLAN=1",
+				"GUARD_LIVE_EXPECT="+expect,
+				"GUARD_LIVE_ORIGIN="+guardServer.URL,
+				"GUARD_LIVE_PEER=spiffe://example.org/decision-guard-api",
+				"GUARD_LIVE_ROOTS="+trustPath,
+				"GUARD_LIVE_CLIENT_CERT="+clientCertPath,
+				"GUARD_LIVE_CLIENT_KEY="+clientKeyPath,
+				"GUARD_LIVE_TENANT="+tenant,
+				"GUARD_LIVE_RUN="+runID,
+				"GUARD_LIVE_AGENT="+record.AgentID,
+				"GUARD_LIVE_RELEASE="+verified.Authority.AgentReleaseID,
+				"GUARD_LIVE_SESSION="+record.SessionID,
+				"GUARD_LIVE_DECISION="+record.DecisionID,
+				"GUARD_LIVE_PLAN="+record.Plan.PlanID,
+				"GUARD_LIVE_PLAN_HASH="+record.Plan.PlanHash,
+				"GUARD_LIVE_STEP="+guardStep.StepID,
+				"GUARD_LIVE_CAPABILITY="+guardStep.Capability.ID,
+				"GUARD_LIVE_CAPABILITY_VERSION="+guardStep.Capability.Version,
+				"GUARD_LIVE_RESOURCE="+guardStep.TargetRef,
+				"GUARD_LIVE_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
+				"GUARD_LIVE_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+			}
+			output, err := cmd.CombinedOutput()
+			expected := "real EngageGuard DecisionPlanClient verified same-Run "+runID
+			if expect=="revoked" { expected="real EngageGuard DecisionPlanClient denied revoked same-Run "+runID }
+			if err != nil || !bytes.Contains(output,[]byte("--- PASS: TestExternalLiveDecisionPlanClient ")) ||
+				!bytes.Contains(output,[]byte(expected)) {
+				t.Fatalf("actual independently compiled Guard client failed %s: %v %s",expect,err,output)
+			}
+			t.Logf("independent real Guard client evidence: %s",output)
+		}
+	}
 	guardCall := func(client *http.Client, request decision.GuardPlanStepRequest, want int) []byte {
 		t.Helper()
 		body, err := json.Marshal(request)
@@ -409,6 +473,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	guardCall(guardClient, guardReq, http.StatusServiceUnavailable)
 	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records ENABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
 	guardCall(guardClient, guardReq, http.StatusOK)
+	if runExternalGuard != nil { runExternalGuard("verified") }
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("Guard read-only Step verification created extra Decision or outbox records")
 	}
@@ -417,6 +482,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	revoke()
 	call(runtime, "GET", verifyPath, nil, 403)
 	guardCall(guardClient, guardReq, http.StatusForbidden)
+	if runExternalGuard != nil { runExternalGuard("revoked") }
 	if continuationDir != "" {
 		writeFixture("source-revoked", []byte("revoked"))
 		waitMarker("runtime-denied")
