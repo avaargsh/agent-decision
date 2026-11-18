@@ -305,14 +305,14 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("verification created mutable decision or outbox state")
 	}
-    // Publish the independently observed commit barrier before the Runtime
-    // Worker sends a wake hint. An origin being reachable does not mean the
-    // immutable DecisionRecord exists yet; waking before commit is a test race.
-    if continuationDir != "" {
-        if err := os.WriteFile(filepath.Join(continuationDir, "decision-committed"), []byte(record.DecisionID), 0600); err != nil {
-            t.Fatal(err)
-        }
-    }
+	// Publish the independently observed commit barrier before the Runtime
+	// Worker sends a wake hint. An origin being reachable does not mean the
+	// immutable DecisionRecord exists yet; waking before commit is a test race.
+	if continuationDir != "" {
+		if err := os.WriteFile(filepath.Join(continuationDir, "decision-committed"), []byte(record.DecisionID), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if continuationDir != "" {
         if err := fixtureMarker(ctx, filepath.Join(continuationDir, "runtime-accepted")); err != nil {
             t.Fatalf("Runtime did not commit authentic Decision receipt before revocation: %v", err)
