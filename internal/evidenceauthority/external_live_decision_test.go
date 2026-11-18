@@ -344,6 +344,11 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		writeFixture("worker-cert.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: signed}))
 		writeFixture("decision-ca.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: der}))
 		writeFixture("origin", []byte(server.URL))
+		// The original DecisionRecord and Outbox are both committed, the
+		// source-backed fresh verifier has checked exact Plan/Step/Breaker,
+		// and the separate Guard client has returned. Only now may the
+		// same-Run Temporal workflow receive its untrusted wake hint.
+		writeFixture("decision-committed", []byte(record.DecisionID))
 		waitMarker("runtime-accepted")
 	}
 	// A distinct Guard mTLS workload, not the Runtime caller, verifies the
