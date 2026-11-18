@@ -10,7 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
+	certpem "encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
@@ -339,8 +339,8 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeFixture("worker-cert.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: signed}))
-		writeFixture("decision-ca.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+		writeFixture("worker-cert.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: signed}))
+		writeFixture("decision-ca.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: der}))
 		writeFixture("origin", []byte(server.URL))
 		waitMarker("runtime-accepted")
 	}
