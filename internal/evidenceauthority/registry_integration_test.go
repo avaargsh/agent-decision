@@ -171,6 +171,8 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 	if err != nil || decision.VerifyEvidencePublication(got, pub, scope, ref, now) != nil {
 		t.Fatal("actual observation was not independently verifiable")
 	}
+	readNetwork := liveEvidenceNetworkReader(t, reader, ref, got)
+	readNetwork(http.StatusOK)
 	changed, forged, err := decision.PublishEvidence(scope, obs, append(raw, ' '), key, now)
 	if err != nil {
 		t.Fatal(err)
@@ -189,6 +191,7 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 	if _, err := reader.ReadCurrent(ctx, ref, now); !errors.Is(err, decision.ErrAuthorityRejected) {
 		t.Fatalf("revoked evidence read accepted: %v", err)
 	}
+	readNetwork(http.StatusForbidden)
 	if err := publisher.Publish(ctx, ref, wire, now); !errors.Is(err, decision.ErrAuthorityRejected) {
 		t.Fatalf("replay reactivated revoked evidence: %v", err)
 	}
