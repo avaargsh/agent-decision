@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
@@ -18,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +49,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		t.Helper()
 		b,err:=os.ReadFile(required(name)); if err!=nil{t.Fatal(err)}; return b
 	}
-	ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
+	ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute)
 	defer cancel()
 	tenant,runID,invocation:=required("DECISION_LIVE_TENANT"),required("DECISION_LIVE_RUN"),required("DECISION_LIVE_INVOCATION")
 	agent:=required("DECISION_LIVE_AGENT")
@@ -286,10 +288,70 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("verification created mutable decision or outbox state")
 	}
+	// Optional same-Run external worker gate. The Runtime owns its private
+	// key; only a signed CSR and public certificates cross this test fixture
+	// rendezvous. No Runtime database DSN, Temporal credential or receipt
+	// is supplied to this Decision process. The worker must fetch live mTLS.
+	continuationDir := os.Getenv("DECISION_LIVE_RUNTIME_CONTINUATION_DIR")
+	waitMarker := func(name string) {
+		t.Helper()
+		for {
+			if _, err := os.Stat(filepath.Join(continuationDir, name)); err == nil {
+				return
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("Runtime continuation marker %s unavailable", name)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	writeFixture := func(name string, data []byte) {
+		t.Helper()
+		target := filepath.Join(continuationDir, name)
+		if err := os.WriteFile(target+".tmp", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(target+".tmp", target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if continuationDir != "" {
+		waitMarker("worker.csr")
+		raw, err := os.ReadFile(filepath.Join(continuationDir, "worker.csr"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		csr, err := x509.ParseCertificateRequest(raw)
+		if err != nil || csr.CheckSignature() != nil || len(csr.URIs) != 1 || csr.URIs[0] == nil ||
+			csr.URIs[0].String() != runtimeCaller || len(csr.DNSNames) != 0 || len(csr.IPAddresses) != 0 || len(csr.EmailAddresses) != 0 {
+			t.Fatal("invalid isolated Runtime worker CSR")
+		}
+		if _, ok := csr.PublicKey.(ed25519.PublicKey); !ok {
+			t.Fatal("unexpected Runtime worker key type")
+		}
+		leaf := &x509.Certificate{SerialNumber: big.NewInt(serial), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, URIs: csr.URIs}
+		serial++
+		signed, err := x509.CreateCertificate(rand.Reader, leaf, ca, csr.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFixture("worker-cert.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: signed}))
+		writeFixture("decision-ca.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+		writeFixture("origin", []byte(server.URL))
+		waitMarker("runtime-accepted")
+	}
 	// Current source revocation blocks plan replay through this trusted API.
 	// Historical read remains an observation and must never authorize effect.
 	revoke()
 	call(runtime, "GET", verifyPath, nil, 403)
+	if continuationDir != "" {
+		writeFixture("source-revoked", []byte("revoked"))
+		waitMarker("runtime-denied")
+	}
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
