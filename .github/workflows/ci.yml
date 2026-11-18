@@ -52,6 +52,14 @@ jobs:
             echo "unsafe init-container fixture unexpectedly passed policy validation"
             exit 1
           fi
+      - name: Verify actual independent source publication and revocation
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
+          go test -race -count=1 -v -run '^TestIndependentEvidencePublicationBindsActualBytesAndSource$' ./internal/decision | tee "$RUNNER_TEMP/evidence-signature.log"
+          grep -Fq -- '--- PASS: TestIndependentEvidencePublicationBindsActualBytesAndSource ' "$RUNNER_TEMP/evidence-signature.log"
+          go test -race -count=1 -v -run '^TestIndependentSourceRegistryLiveObservationAndRevocation$' ./internal/evidenceauthority | tee "$RUNNER_TEMP/evidence-source.log"
+          grep -Fq -- '--- PASS: TestIndependentSourceRegistryLiveObservationAndRevocation ' "$RUNNER_TEMP/evidence-source.log"
       - name: Test
         run: go test -race ./...
       - name: Vet
