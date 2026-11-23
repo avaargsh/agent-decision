@@ -155,8 +155,48 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			return fmt.Errorf("%w: unexpected effective table/column grants on %s", ErrCatalogDrift, item.table)
 		}
 	}
+	// An allowlisted table ACL alone is insufficient: a second table, view,
+	// foreign table, materialized view or sequence in the same schema could
+	// expose additional tenant data through an unintended grant. Check effective
+	// table, column and sequence rights, including grants via PUBLIC or inherited
+	// roles. Extra objects with no effective privileges need no special grant.
+	var unreviewedAccess bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_catalog.pg_class AS rel
+			JOIN pg_catalog.pg_namespace AS ns ON ns.oid = rel.relnamespace
+			WHERE ns.nspname = $1
+			  AND rel.relname NOT IN ('schema_migrations', 'decision_records', 'outbox_events')
+			  AND CASE
+			    WHEN rel.relkind = 'S' THEN
+			      pg_catalog.has_sequence_privilege(current_user, rel.oid, 'USAGE')
+			      OR pg_catalog.has_sequence_privilege(current_user, rel.oid, 'SELECT')
+			      OR pg_catalog.has_sequence_privilege(current_user, rel.oid, 'UPDATE')
+			    WHEN rel.relkind IN ('r', 'p', 'v', 'm', 'f') THEN
+			      pg_catalog.has_table_privilege(current_user, rel.oid, 'SELECT')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'INSERT')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'UPDATE')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'DELETE')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'TRUNCATE')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'REFERENCES')
+			      OR pg_catalog.has_table_privilege(current_user, rel.oid, 'TRIGGER')
+			      OR EXISTS (
+			        SELECT 1 FROM pg_catalog.pg_attribute AS attr
+			        WHERE attr.attrelid = rel.oid
+			          AND attr.attnum > 0 AND NOT attr.attisdropped
+			          AND (pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'SELECT')
+			            OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'INSERT')
+			            OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'UPDATE')
+			            OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'REFERENCES'))
+			      )
+			    ELSE false
+			  END
+		)
+	`, schema).Scan(&unreviewedAccess); err != nil || unreviewedAccess {
+		return fmt.Errorf("%w: unexpected effective access to unreviewed schema relation", ErrCatalogDrift)
+	}
+
 	// Explicitly reject schema owners via owner-membership check above.
-	// Additional tables in the same schema require a separate review.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)
 	}
