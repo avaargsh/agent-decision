@@ -325,4 +325,44 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("REVOKE EXECUTE ON FUNCTION "+schema+".reject_decision_record_mutation(integer) FROM PUBLIC")
 	check(app, RuntimeRoleApplication)
+
+	// A pinned search_path protects unqualified application SQL, but PostgreSQL
+	// also permits schema-qualified calls. A second accessible schema can carry
+	// a SECURITY DEFINER function callable by a restricted dispatcher identity.
+	foreign := "decision_foreign_" + seed
+	exec("CREATE SCHEMA "+foreign)
+	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+foreign+" CASCADE")
+	exec("CREATE FUNCTION "+foreign+".read_decision_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM "+schema+".decision_records'")
+	exec("CREATE TABLE "+foreign+".extra_rows (secret text)")
+	exec("CREATE SEQUENCE "+foreign+".extra_counter")
+	exec("GRANT USAGE ON SCHEMA "+foreign+" TO "+dispatcherRole)
+	var count int64
+	if err := dispatcher.QueryRowContext(ctx, "SELECT "+foreign+".read_decision_count()").Scan(&count); err != nil || count < 1 {
+		t.Fatalf("test must demonstrate qualified cross-schema SECURITY DEFINER read: count=%d err=%v", count, err)
+	}
+	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("role audit accepted a cross-schema owner-privileged EXECUTE: %v", err)
+	}
+	exec("REVOKE USAGE ON SCHEMA "+foreign+" FROM "+dispatcherRole)
+	check(dispatcher, RuntimeRoleDispatcher)
+	// Isolate subsequent relation/sequence cases from the default PUBLIC
+	// EXECUTE grant on the function created for the first negative case.
+	exec("REVOKE EXECUTE ON FUNCTION "+foreign+".read_decision_count() FROM PUBLIC")
+
+	// Direct SELECT on a foreign table is equally outside the reviewed ACL.
+	exec("GRANT USAGE ON SCHEMA "+foreign+" TO "+appRole)
+	exec("GRANT SELECT (secret) ON "+foreign+".extra_rows TO "+appRole)
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("role audit accepted column-only SELECT in foreign schema: %v", err)
+	}
+	exec("REVOKE SELECT (secret) ON "+foreign+".extra_rows FROM "+appRole)
+	check(app, RuntimeRoleApplication)
+	exec("GRANT USAGE ON SEQUENCE "+foreign+".extra_counter TO "+appRole)
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("role audit accepted foreign sequence USAGE: %v", err)
+	}
+	exec("REVOKE USAGE ON SEQUENCE "+foreign+".extra_counter FROM "+appRole)
+	check(app, RuntimeRoleApplication)
+	exec("REVOKE USAGE ON SCHEMA "+foreign+" FROM "+appRole)
+	check(app, RuntimeRoleApplication)
 }

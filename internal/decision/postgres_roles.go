@@ -226,6 +226,58 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: unexpected effective EXECUTE on unreviewed schema routine", ErrCatalogDrift)
 	}
 
+	// search_path pinning protects unqualified runtime SQL, but a role may
+	// invoke schema-qualified functions, views, tables or sequences elsewhere.
+	// Audit effective privileges only in reachable, non-system namespaces:
+	// the default public namespace is fine if it offers no usable objects.
+	// This includes implicit PUBLIC grants and inherited role memberships.
+	var externalAccess bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_catalog.pg_namespace AS ns
+			WHERE ns.nspname <> $1
+			  AND ns.nspname <> 'information_schema'
+			  AND pg_catalog.left(ns.nspname, 3) <> 'pg_'
+			  AND pg_catalog.has_schema_privilege(current_user, ns.oid, 'USAGE')
+			  AND (
+			    EXISTS (
+			      SELECT 1 FROM pg_catalog.pg_proc AS fn
+			      WHERE fn.pronamespace = ns.oid
+			        AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
+			    ) OR EXISTS (
+			      SELECT 1 FROM pg_catalog.pg_class AS rel
+			      WHERE rel.relnamespace = ns.oid
+			        AND CASE
+			          WHEN rel.relkind = 'S' THEN
+			            pg_catalog.has_sequence_privilege(current_user, rel.oid, 'USAGE')
+			            OR pg_catalog.has_sequence_privilege(current_user, rel.oid, 'SELECT')
+			            OR pg_catalog.has_sequence_privilege(current_user, rel.oid, 'UPDATE')
+			          WHEN rel.relkind IN ('r', 'p', 'v', 'm', 'f') THEN
+			            pg_catalog.has_table_privilege(current_user, rel.oid, 'SELECT')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'INSERT')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'UPDATE')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'DELETE')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'TRUNCATE')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'REFERENCES')
+			            OR pg_catalog.has_table_privilege(current_user, rel.oid, 'TRIGGER')
+			            OR EXISTS (
+			              SELECT 1 FROM pg_catalog.pg_attribute AS attr
+			              WHERE attr.attrelid = rel.oid
+			                AND attr.attnum > 0 AND NOT attr.attisdropped
+			                AND (pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'SELECT')
+			                  OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'INSERT')
+			                  OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'UPDATE')
+			                  OR pg_catalog.has_column_privilege(current_user, rel.oid, attr.attnum, 'REFERENCES'))
+			            )
+			          ELSE false
+			        END
+			    )
+			  )
+		)
+	`, schema).Scan(&externalAccess); err != nil || externalAccess {
+		return fmt.Errorf("%w: effective access to an unreviewed external schema object", ErrCatalogDrift)
+	}
+
 	// Explicitly reject schema owners via owner-membership check above.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)

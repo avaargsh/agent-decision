@@ -57,7 +57,14 @@ GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
 -- and their definitions must pass independent catalog attestation.
 -- After creating any additional routine, REVOKE EXECUTE ... FROM PUBLIC
 -- and review all effective runtime/inherited grants before enabling traffic.
--- A successful check does not establish tenant RLS or cross-schema isolation.
+-- Beyond the approved schema, deny effective rights on objects in any
+-- accessible non-system schema: qualified SECURITY DEFINER functions can
+-- bypass direct table ACLs even with search_path pinned. The role audit
+-- checks effective EXECUTE and relation/column/sequence privileges.
+-- The default public schema may remain USAGE-accessible only if it exposes
+-- no effective object rights to the application/dispatcher identities.
+-- A successful check is point-in-time; it is NOT tenant RLS or proof of
+-- application credential compromise resistance.
 -- These GRANTs assume new roles in a dedicated DB: check and revoke any
 -- preexisting PUBLIC/role memberships before production.
 -- No API/dispatcher role may own tables, use DDL/TRUNCATE/DELETE, bypass RLS,
