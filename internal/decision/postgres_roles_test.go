@@ -149,6 +149,60 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		}
 	}
 
+	// Unknown objects must not grant runtime identities more data access
+	// than the exact three reviewed Decision tables, even when the normal
+	// table/column grant matrix still passes. Objects with no grants are OK.
+	exec("CREATE TABLE "+schema+".unreviewed_tenant_data (secret text)")
+	exec("CREATE VIEW "+schema+".unreviewed_tenant_view AS SELECT secret FROM "+schema+".unreviewed_tenant_data")
+	exec("CREATE SEQUENCE "+schema+".unreviewed_tenant_seq")
+	check(app, RuntimeRoleApplication)
+	check(dispatcher, RuntimeRoleDispatcher)
+	for _, tc := range []struct {
+		name, grant, revoke string
+		db *sql.DB
+		role RuntimeDatabaseRole
+	}{
+		{
+			"app reads extra table",
+			"GRANT SELECT ON "+schema+".unreviewed_tenant_data TO "+appRole,
+			"REVOKE SELECT ON "+schema+".unreviewed_tenant_data FROM "+appRole,
+			app, RuntimeRoleApplication,
+		},
+		{
+			"dispatcher inserts extra table",
+			"GRANT INSERT ON "+schema+".unreviewed_tenant_data TO "+dispatcherRole,
+			"REVOKE INSERT ON "+schema+".unreviewed_tenant_data FROM "+dispatcherRole,
+			dispatcher, RuntimeRoleDispatcher,
+		},
+		{
+			"app reads only extra table column",
+			"GRANT SELECT (secret) ON "+schema+".unreviewed_tenant_data TO "+appRole,
+			"REVOKE SELECT (secret) ON "+schema+".unreviewed_tenant_data FROM "+appRole,
+			app, RuntimeRoleApplication,
+		},
+		{
+			"dispatcher reads extra view",
+			"GRANT SELECT ON "+schema+".unreviewed_tenant_view TO "+dispatcherRole,
+			"REVOKE SELECT ON "+schema+".unreviewed_tenant_view FROM "+dispatcherRole,
+			dispatcher, RuntimeRoleDispatcher,
+		},
+		{
+			"app accesses extra sequence",
+			"GRANT USAGE ON SEQUENCE "+schema+".unreviewed_tenant_seq TO "+appRole,
+			"REVOKE USAGE ON SEQUENCE "+schema+".unreviewed_tenant_seq FROM "+appRole,
+			app, RuntimeRoleApplication,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec(tc.grant)
+			if err := VerifyRuntimeDatabaseRole(ctx, tc.db, schema, tc.role); !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("effective privilege on unreviewed relation passed %s audit: %v", tc.role, err)
+			}
+			exec(tc.revoke)
+			check(tc.db, tc.role)
+		})
+	}
+
 	// Exercise actual runtime SQL under the effective role rather than
 	// assuming the GRANT matrix is sufficient for SaveOrGet/Claim/Ack.
 	record := Record{
