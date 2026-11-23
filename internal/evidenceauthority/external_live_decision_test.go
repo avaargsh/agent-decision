@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	certpem "encoding/pem"
-	"path/filepath"
 	"fmt"
 	"io"
 	"math/big"
@@ -20,6 +19,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -49,7 +51,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		t.Helper()
 		b,err:=os.ReadFile(required(name)); if err!=nil{t.Fatal(err)}; return b
 	}
-	ctx,cancel:=context.WithTimeout(context.Background(),180*time.Second)
+	ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute)
 	defer cancel()
 	tenant,runID,invocation:=required("DECISION_LIVE_TENANT"),required("DECISION_LIVE_RUN"),required("DECISION_LIVE_INVOCATION")
 	agent:=required("DECISION_LIVE_AGENT")
@@ -206,23 +208,6 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	})
 	if err!=nil{t.Fatal(err)}
 	server:=listen(handler,"spiffe://example.org/decision-api",inboundRoots)
-    continuationDir := os.Getenv("DECISION_LIVE_RUNTIME_CONTINUATION_DIR")
-    if continuationDir != "" {
-        // The Runtime owns the key and creates this CSR before invoking Decision.
-        // Only public certificate material crosses this isolated process boundary.
-        csrDER, err := os.ReadFile(filepath.Join(continuationDir, "worker.csr"))
-        if err != nil { t.Fatal(err) }
-        workerCert, err := issueRuntimeWorkerCertificate(csrDER, ca, caKey, time.Now().UTC())
-        if err != nil { t.Fatalf("untrusted Runtime CSR: %v", err) }
-        write := func(name string, content []byte) {
-            t.Helper()
-            if err := os.WriteFile(filepath.Join(continuationDir, name), content, 0600); err != nil { t.Fatal(err) }
-        }
-        write("worker-cert.pem",workerCert)
-        write("decision-ca.pem",certpem.EncodeToMemory(&certpem.Block{Type:"CERTIFICATE",Bytes:der}))
-        // Publish origin last: Runtime may connect only after cert and CA exist.
-        write("origin",[]byte(server.URL))
-    }
 	makeClient:=func(id string)*http.Client{
 		h:=&http.Client{Timeout:40*time.Second,Transport:&http.Transport{TLSClientConfig:&tls.Config{MinVersion:tls.VersionTLS13,RootCAs:inboundRoots,
 			Certificates:[]tls.Certificate{issue(id,false)}}}}
@@ -305,33 +290,256 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
 		t.Fatal("verification created mutable decision or outbox state")
 	}
-	// Publish the independently observed commit barrier before the Runtime
-	// Worker sends a wake hint. An origin being reachable does not mean the
-	// immutable DecisionRecord exists yet; waking before commit is a test race.
-	if continuationDir != "" {
-		if err := os.WriteFile(filepath.Join(continuationDir, "decision-committed"), []byte(record.DecisionID), 0600); err != nil {
+	// Optional same-Run external worker gate. The Runtime owns its private
+	// key; only a signed CSR and public certificates cross this test fixture
+	// rendezvous. No Runtime database DSN, Temporal credential or receipt
+	// is supplied to this Decision process. The worker must fetch live mTLS.
+	continuationDir := os.Getenv("DECISION_LIVE_RUNTIME_CONTINUATION_DIR")
+	waitMarker := func(name string) {
+		t.Helper()
+		for {
+			if _, err := os.Stat(filepath.Join(continuationDir, name)); err == nil {
+				return
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("Runtime continuation marker %s unavailable", name)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	writeFixture := func(name string, data []byte) {
+		t.Helper()
+		target := filepath.Join(continuationDir, name)
+		if err := os.WriteFile(target+".tmp", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(target+".tmp", target); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if continuationDir != "" {
-        if err := fixtureMarker(ctx, filepath.Join(continuationDir, "runtime-accepted")); err != nil {
-            t.Fatalf("Runtime did not commit authentic Decision receipt before revocation: %v", err)
-        }
-    }
+		waitMarker("worker.csr")
+		raw, err := os.ReadFile(filepath.Join(continuationDir, "worker.csr"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The isolated test CA accepts only a verified CSR with the exact
+		// Runtime workload identity and client-only EKU; the Runtime keeps the key.
+		workerCert, err := issueRuntimeWorkerCertificate(raw, ca, caKey, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("invalid isolated Runtime worker CSR: %v", err)
+		}
+		writeFixture("worker-cert.pem", workerCert)
+		writeFixture("decision-ca.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: der}))
+		writeFixture("origin", []byte(server.URL))
+		// The original DecisionRecord and Outbox are both committed, the
+		// source-backed fresh verifier has checked exact Plan/Step/Breaker,
+		// and the separate Guard client has returned. Only now may the
+		// same-Run Temporal workflow receive its untrusted wake hint.
+		writeFixture("decision-committed", []byte(record.DecisionID))
+		waitMarker("runtime-accepted")
+	}
+	// A distinct Guard mTLS workload, not the Runtime caller, verifies the
+	// exact immutable Decision Plan/Step against the SAME recovered Run. The
+	// request never supplies a tenant, identity grant or executable Permit.
+	const guardCaller = "spiffe://example.org/ns/guard/sa/engageguard"
+	guardHandler, err := api.NewTrustedGuardPlanHandler(store, authority, guardCaller, tenant, func(ctx context.Context) error {
+		return decision.VerifyInstalledCatalogInSchema(ctx, att, schema)
+	})
+	if err != nil { t.Fatal(err) }
+	guardServer := listen(guardHandler, "spiffe://example.org/decision-guard-api", inboundRoots)
+	guardClient := makeClient(guardCaller)
+	guardStep := record.Plan.Steps[0]
+	guardReq := decision.GuardPlanStepRequest{
+		SchemaVersion: decision.GuardPlanStepSchema, RunID: runID,
+		AgentID: record.AgentID, AgentReleaseID: verified.Authority.AgentReleaseID,
+		SessionID: record.SessionID, DecisionID: record.DecisionID,
+		PlanID: record.Plan.PlanID, PlanHash: record.Plan.PlanHash,
+		StepID: guardStep.StepID, CapabilityID: guardStep.Capability.ID,
+		CapabilityVersion: guardStep.Capability.Version,
+		ResourceRef: guardStep.TargetRef, Arguments: json.RawMessage(`{}`),
+		BreakerEpoch: verified.Authority.BreakerEpoch, BreakerVersion: verified.Authority.BreakerVersion,
+	}
+	// Independently compiled EngageGuard module binary uses the exact
+	// DecisionPlanClient from its own repository. The key is generated
+	// inside this isolated Decision fixture and is never supplied to ACP
+	// or Runtime. Only the separate TLS Guard client subprocess gets it.
+	var runExternalGuard func(expect string)
+	var runComposedGuard func(expect string)
+	if executable := os.Getenv("DECISION_LIVE_GUARD_BIN"); executable != "" {
+		dir := t.TempDir()
+		clientCredential := issue(guardCaller, false)
+		var chain []byte
+		for _, certificateDER := range clientCredential.Certificate {
+			chain = append(chain, certpem.EncodeToMemory(&certpem.Block{
+				Type: "CERTIFICATE", Bytes: certificateDER,
+			})...)
+		}
+		secret, err := x509.MarshalPKCS8PrivateKey(clientCredential.PrivateKey)
+		if err != nil { t.Fatal(err) }
+		write := func(name string, raw []byte) string {
+			t.Helper()
+			path := filepath.Join(dir,name)
+			if err := os.WriteFile(path,raw,0600); err != nil { t.Fatal(err) }
+			return path
+		}
+		clientCertPath := write("guard-client.pem", chain)
+		clientKeyPath := write("guard-key.pem",certpem.EncodeToMemory(&certpem.Block{Type:"PRIVATE KEY",Bytes:secret}))
+		trustPath := write("guard-roots.pem",certpem.EncodeToMemory(&certpem.Block{Type:"CERTIFICATE",Bytes:der}))
+		runExternalGuard = func(expect string) {
+			t.Helper()
+			cmd := exec.CommandContext(ctx,executable,"-test.v","-test.run=^TestExternalLiveDecisionPlanClient$","-test.timeout=25s")
+			cmd.Env = []string{
+				"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+				"GUARD_EXTERNAL_LIVE_PLAN=1",
+				"GUARD_LIVE_EXPECT="+expect,
+				"GUARD_LIVE_ORIGIN="+guardServer.URL,
+				"GUARD_LIVE_PEER=spiffe://example.org/decision-guard-api",
+				"GUARD_LIVE_ROOTS="+trustPath,
+				"GUARD_LIVE_CLIENT_CERT="+clientCertPath,
+				"GUARD_LIVE_CLIENT_KEY="+clientKeyPath,
+				"GUARD_LIVE_TENANT="+tenant,
+				"GUARD_LIVE_RUN="+runID,
+				"GUARD_LIVE_AGENT="+record.AgentID,
+				"GUARD_LIVE_RELEASE="+verified.Authority.AgentReleaseID,
+				"GUARD_LIVE_SESSION="+record.SessionID,
+				"GUARD_LIVE_DECISION="+record.DecisionID,
+				"GUARD_LIVE_PLAN="+record.Plan.PlanID,
+				"GUARD_LIVE_PLAN_HASH="+record.Plan.PlanHash,
+				"GUARD_LIVE_STEP="+guardStep.StepID,
+				"GUARD_LIVE_CAPABILITY="+guardStep.Capability.ID,
+				"GUARD_LIVE_CAPABILITY_VERSION="+guardStep.Capability.Version,
+				"GUARD_LIVE_RESOURCE="+guardStep.TargetRef,
+				"GUARD_LIVE_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
+				"GUARD_LIVE_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+			}
+			output, err := cmd.CombinedOutput()
+			expected := "real EngageGuard DecisionPlanClient verified same-Run "+runID
+			if expect=="revoked" { expected="real EngageGuard DecisionPlanClient denied revoked same-Run "+runID }
+			if err != nil || !bytes.Contains(output,[]byte("--- PASS: TestExternalLiveDecisionPlanClient ")) ||
+				!bytes.Contains(output,[]byte(expected)) {
+				t.Fatalf("actual independently compiled Guard client failed %s: %v %s",expect,err,output)
+			}
+			t.Logf("independent real Guard client evidence: %s",output)
+		}
+		if os.Getenv("DECISION_LIVE_GUARD_COMPOSED_RUNTIME_ORIGIN") != "" {
+			// The actual Guard driver has no DB handle or test-side effect
+			// grant. Its three independently authenticated callers must
+			// read the SAME original Runtime/ACP/Decision Run over mTLS.
+			runComposedGuard = func(expect string) {
+				t.Helper()
+				cmd := exec.CommandContext(ctx, executable, "-test.v", "-test.run=^TestExternalLiveComposedRunVerifier$", "-test.timeout=35s")
+				cmd.Env = []string{"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+					"GUARD_EXTERNAL_LIVE_COMPOSED=1", "GUARD_COMPOSED_EXPECT="+expect,
+					"GUARD_COMPOSED_TENANT="+tenant, "GUARD_COMPOSED_RUN="+runID,
+					"GUARD_COMPOSED_DECISION_ORIGIN="+guardServer.URL,
+					"GUARD_COMPOSED_DECISION_PEER=spiffe://example.org/decision-guard-api",
+					"GUARD_COMPOSED_DECISION_ROOTS="+trustPath,
+					"GUARD_COMPOSED_DECISION_CERT="+clientCertPath,
+					"GUARD_COMPOSED_DECISION_KEY="+clientKeyPath,
+					"GUARD_COMPOSED_AGENT="+record.AgentID,
+					"GUARD_COMPOSED_RELEASE="+verified.Authority.AgentReleaseID,
+					"GUARD_COMPOSED_SESSION="+record.SessionID,
+					"GUARD_COMPOSED_DECISION_ID="+record.DecisionID,
+					"GUARD_COMPOSED_PLAN_ID="+record.Plan.PlanID,
+					"GUARD_COMPOSED_PLAN_HASH="+record.Plan.PlanHash,
+					"GUARD_COMPOSED_STEP_ID="+guardStep.StepID,
+					"GUARD_COMPOSED_CAP_ID="+guardStep.Capability.ID,
+					"GUARD_COMPOSED_CAP_VERSION="+guardStep.Capability.Version,
+					"GUARD_COMPOSED_RESOURCE="+guardStep.TargetRef,
+					"GUARD_COMPOSED_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
+					"GUARD_COMPOSED_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+				}
+				for _, name := range []string{
+					"RUNTIME_ORIGIN", "RUNTIME_PEER", "RUNTIME_ROOTS",
+					"RUNTIME_CERT", "RUNTIME_KEY", "ACP_ORIGIN", "ACP_PEER",
+					"ACP_ROOTS", "ACP_CERT", "ACP_KEY", "SYNC_DIR",
+				} {
+					value := os.Getenv("DECISION_LIVE_GUARD_COMPOSED_"+name)
+					if value == "" { t.Fatalf("missing externally authenticated composed source %s",name) }
+					cmd.Env = append(cmd.Env, "GUARD_COMPOSED_"+name+"="+value)
+				}
+				output, err := cmd.CombinedOutput()
+				marker := "real ComposedRunVerifier verified three authorities on same-Run "+runID
+				if expect == "postflight" { marker = "real ComposedRunVerifier denied live postflight breaker drift same-Run "+runID }
+				if expect == "revoked" { marker = "real ComposedRunVerifier denied revoked source same-Run "+runID }
+				if err != nil || !bytes.Contains(output, []byte("--- PASS: TestExternalLiveComposedRunVerifier ")) ||
+					!bytes.Contains(output, []byte(marker)) {
+					t.Fatalf("real independent three-source Guard composition failed %s: %v %s",expect,err,output)
+				}
+				t.Logf("actual triple-authority Guard evidence: %s", output)
+			}
+		}
+	}
+	guardCall := func(client *http.Client, request decision.GuardPlanStepRequest, want int) []byte {
+		t.Helper()
+		body, err := json.Marshal(request)
+		if err != nil { t.Fatal(err) }
+		r, err := http.NewRequestWithContext(ctx, http.MethodPost, guardServer.URL+api.GuardPlanPath, bytes.NewReader(body))
+		if err != nil { t.Fatal(err) }
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("X-Forwarded-Client-Cert", guardCaller)
+		res, err := client.Do(r)
+		if err != nil { t.Fatal(err) }
+		defer res.Body.Close()
+		got, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != want || res.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("real Guard mTLS Step gate: status=%d want=%d body=%s error=%v", res.StatusCode, want, got, err)
+		}
+		return got
+	}
+	// Forged forwarded peer headers never bypass certificate authentication.
+	guardCall(runtime, guardReq, http.StatusUnauthorized)
+	var guardVerified decision.GuardPlanStepReceipt
+	if err := json.Unmarshal(guardCall(guardClient, guardReq, http.StatusOK), &guardVerified); err != nil ||
+		guardVerified.Status != "VERIFIED" || guardVerified.RecordSHA256 != verified.RecordSHA256 ||
+		guardVerified.DecisionID != record.DecisionID || guardVerified.StepID != guardReq.StepID ||
+		guardVerified.BreakerVersion != verified.Authority.BreakerVersion {
+		t.Fatalf("mTLS Guard did not verify the committed Plan/Step: %+v %v", guardVerified, err)
+	}
+	badGuard := guardReq
+	badGuard.PlanHash = strings.Repeat("f",64)
+	guardCall(guardClient, badGuard, http.StatusForbidden)
+	badGuard = guardReq
+	badGuard.ResourceRef = "wrong-target"
+	guardCall(guardClient, badGuard, http.StatusForbidden)
+	badGuard = guardReq
+	badGuard.BreakerEpoch++
+	guardCall(guardClient, badGuard, http.StatusForbidden)
+	badGuard = guardReq
+	badGuard.CapabilityID = "workspace.write"
+	guardCall(guardClient, badGuard, http.StatusForbidden)
+	// Even with fresh authority, weakened PostgreSQL catalog integrity
+	// cannot become an implicit Permit or a successful Step verification.
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records DISABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
+	guardCall(guardClient, guardReq, http.StatusServiceUnavailable)
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records ENABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
+	guardCall(guardClient, guardReq, http.StatusOK)
+	if runExternalGuard != nil { runExternalGuard("verified") }
+	if runComposedGuard != nil {
+		runComposedGuard("verified")
+		runComposedGuard("postflight")
+	}
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
+		t.Fatal("Guard read-only Step verification created extra Decision or outbox records")
+	}
 	// Current source revocation blocks plan replay through this trusted API.
 	// Historical read remains an observation and must never authorize effect.
 	revoke()
-    if continuationDir != "" {
-        if err := os.WriteFile(filepath.Join(continuationDir, "source-revoked"), []byte("revoked"), 0600); err != nil { t.Fatal(err) }
-    }
 	call(runtime, "GET", verifyPath, nil, 403)
+	guardCall(guardClient, guardReq, http.StatusForbidden)
+	if runExternalGuard != nil { runExternalGuard("revoked") }
+	if runComposedGuard != nil { runComposedGuard("revoked") }
+	if continuationDir != "" {
+		writeFixture("source-revoked", []byte("revoked"))
+		waitMarker("runtime-denied")
+	}
 	call(runtime,"POST",api.PlanTurnPath,request,403)
 	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
-    if continuationDir != "" {
-        if err := fixtureMarker(ctx, filepath.Join(continuationDir, "runtime-denied")); err != nil {
-            t.Fatalf("Runtime did not independently reject revoked source: %v", err)
-        }
-    }
+	t.Logf("real Guard Plan Step mTLS verified same-Run %s and source revocation denied", runID)
 	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
 }
 
