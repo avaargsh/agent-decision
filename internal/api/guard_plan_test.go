@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,13 +10,13 @@ import (
 )
 
 func TestGuardPlanListenerRequiresIndependentExactWorkloadAndStore(t *testing.T) {
-	if _, err := NewTrustedGuardPlanHandler(nil, nil, "spiffe://example.org/guard", "tenant-a"); err == nil {
+	if _, err := NewTrustedGuardPlanHandler(nil, nil, "spiffe://example.org/guard", "tenant-a", nil); err == nil {
 		t.Fatal("unconfigured Guard authority started")
 	}
 	// The actual live sources must be supplied before positive verification;
 	// without mTLS an HTTP request must never reach Decision persistence.
 	h, err := NewTrustedGuardPlanHandler(decision.NewMemoryStore(), &decision.LiveAuthority{},
-		"spiffe://example.org/ns/guard/sa/engageguard", "tenant-a")
+		"spiffe://example.org/ns/guard/sa/engageguard", "tenant-a", func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,5 +32,13 @@ func TestGuardPlanListenerRequiresIndependentExactWorkloadAndStore(t *testing.T)
 		if w.Code != http.StatusUnauthorized || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("unverified Guard workload reached a plan: %d", w.Code)
 		}
+	}
+}
+
+func TestGuardPlanListenerFailsClosedWithoutIndependentCatalogAttestor(t *testing.T) {
+	_, err := NewTrustedGuardPlanHandler(decision.NewMemoryStore(), &decision.LiveAuthority{},
+		"spiffe://example.org/ns/guard/sa/engageguard", "tenant-a", nil)
+	if err == nil {
+		t.Fatal("missing immutable Decision catalog attestor enabled Guard verification")
 	}
 }
