@@ -82,7 +82,14 @@ func NewHandler(svc *decision.Service, resolver PrincipalResolver) http.Handler 
 			problem(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authenticated caller required")
 			return
 		}
-		media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		// Header.Get ignores later values. A DecisionRequest representation
+		// must be unambiguous before body decoding or ledger persistence.
+		contentTypes := r.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			problem(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+			return
+		}
+		media, _, err := mime.ParseMediaType(contentTypes[0])
 		if err != nil || media != "application/json" {
 			problem(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
 			return
