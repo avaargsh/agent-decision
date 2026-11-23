@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // A valid JSON identity CHECK does not constrain created_at. If the indexed
@@ -23,14 +24,26 @@ func TestPostgresStoreRejectsIndexedCreatedAtDrift(t *testing.T) {
 		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
 	}
 	ctx := context.Background()
-	db, err := sql.Open("pgx", dsn)
+	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if err := Migrate(ctx, db); err != nil {
+	defer admin.Close()
+	schema := fmt.Sprintf("ledger_drift_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
 	}
+	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	if err := MigrateInSchema(ctx, admin, schema); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["search_path"] = schema + ", pg_catalog, pg_temp"
+	db := stdlib.OpenDB(*cfg)
+	defer db.Close()
 
 	record := Record{
 		TenantID: fmt.Sprintf("index-drift-%d", time.Now().UnixNano()),
