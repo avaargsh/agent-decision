@@ -17,6 +17,7 @@ import (
 )
 
 const maxBodyBytes = 1 << 20
+const maxJSONNestingDepth = 64
 
 type PrincipalResolver interface {
 	Resolve(*http.Request) (decision.Principal, error)
@@ -200,8 +201,8 @@ func validJSONFieldName(key string) bool {
 // validateJSONObjects rejects duplicate keys at every depth.
 func validateJSONObjects(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	var walk func() error
-	walk = func() error {
+	var walk func(depth int) error
+	walk = func(depth int) error {
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -209,6 +210,9 @@ func validateJSONObjects(body []byte) error {
 		delim, ok := token.(json.Delim)
 		if !ok {
 			return nil
+		}
+		if depth >= maxJSONNestingDepth {
+			return errors.New("JSON nesting depth exceeded")
 		}
 		switch delim {
 		case '{':
@@ -229,7 +233,7 @@ func validateJSONObjects(body []byte) error {
 					return fmt.Errorf("duplicate JSON key %q", key)
 				}
 				seen[key] = struct{}{}
-				if err := walk(); err != nil {
+				if err := walk(depth+1); err != nil {
 					return err
 				}
 			}
@@ -237,7 +241,7 @@ func validateJSONObjects(body []byte) error {
 			return err
 		case '[':
 			for decoder.More() {
-				if err := walk(); err != nil {
+				if err := walk(depth+1); err != nil {
 					return err
 				}
 			}
@@ -247,7 +251,7 @@ func validateJSONObjects(body []byte) error {
 			return errors.New("unexpected JSON delimiter")
 		}
 	}
-	if err := walk(); err != nil {
+	if err := walk(0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
