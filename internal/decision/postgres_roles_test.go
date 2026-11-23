@@ -294,4 +294,35 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("REVOKE REFERENCES (event_id) ON "+schema+".outbox_events FROM "+appRole)
 	check(app, RuntimeRoleApplication)
+
+	// A SQL SECURITY DEFINER function owned by the migrator can expose rows
+	// even to the dispatcher, which has NO direct DecisionRecord SELECT grant.
+	// PostgreSQL grants EXECUTE to PUBLIC on new functions by default.
+	exec("CREATE FUNCTION "+schema+".unreviewed_tenant_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM "+schema+".decision_records'")
+	var leaked int64
+	if err := dispatcher.QueryRowContext(ctx, "SELECT "+schema+".unreviewed_tenant_count()").Scan(&leaked); err != nil || leaked < 1 {
+		t.Fatalf("test must demonstrate callable definer function leaking DecisionRecord row count: count=%d err=%v", leaked, err)
+	}
+	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("dispatcher passed role audit while able to EXECUTE unreviewed SECURITY DEFINER function: %v", err)
+	}
+	exec("REVOKE EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() FROM PUBLIC")
+	check(dispatcher, RuntimeRoleDispatcher)
+
+	// Explicit direct EXECUTE grants must also be detected, not merely PUBLIC.
+	exec("GRANT EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() TO "+appRole)
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("app passed role audit with direct EXECUTE on unreviewed definer function: %v", err)
+	}
+	exec("REVOKE EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() FROM "+appRole)
+	check(app, RuntimeRoleApplication)
+
+	// A same-name overload must not inherit the approved trigger-only
+	// function's exclusion from the effective privilege audit.
+	exec("CREATE FUNCTION "+schema+".reject_decision_record_mutation(integer) RETURNS integer LANGUAGE sql AS 'SELECT 1'")
+	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("app passed role audit with executable same-name overload: %v", err)
+	}
+	exec("REVOKE EXECUTE ON FUNCTION "+schema+".reject_decision_record_mutation(integer) FROM PUBLIC")
+	check(app, RuntimeRoleApplication)
 }
