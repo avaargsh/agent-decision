@@ -51,6 +51,12 @@ GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
 -- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
 -- Also deny effective access to unreviewed tables/views/sequences in the
 -- approved schema (including column-only grants and rights via PUBLIC).
+-- Deny EXECUTE (including default PUBLIC grants) on all non-allowlisted
+-- functions/procedures within the approved schema. Only the three exact
+-- zero-argument, non-SECURITY-DEFINER migration trigger handlers are exempt,
+-- and their definitions must pass independent catalog attestation.
+-- After creating any additional routine, REVOKE EXECUTE ... FROM PUBLIC
+-- and review all effective runtime/inherited grants before enabling traffic.
 -- A successful check does not establish tenant RLS or cross-schema isolation.
 -- These GRANTs assume new roles in a dedicated DB: check and revoke any
 -- preexisting PUBLIC/role memberships before production.
