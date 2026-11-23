@@ -49,6 +49,9 @@ GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
 
 -- Validate ALL effective privileges, including inherited/column grants,
 -- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
+-- Also deny effective access to unreviewed tables/views/sequences in the
+-- approved schema (including column-only grants and rights via PUBLIC).
+-- A successful check does not establish tenant RLS or cross-schema isolation.
 -- These GRANTs assume new roles in a dedicated DB: check and revoke any
 -- preexisting PUBLIC/role memberships before production.
 -- No API/dispatcher role may own tables, use DDL/TRUNCATE/DELETE, bypass RLS,
