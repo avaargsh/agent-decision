@@ -21,31 +21,41 @@ func storeUnavailable(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %v", ErrStoreUnavailable, operation, err)
 }
 
+// Read the immutable JSON only after proving that its identity and creation
+// timestamp match the independently indexed PostgreSQL columns. Ledger
+// pagination is ordered by the indexed timestamp, so accepting a conflicting
+// JSON timestamp would create an unsound continuation cursor.
+func decodeIndexedDecisionRecord(payload []byte, tenantID, invocationID, decisionID, requestSHA256 string, createdAt time.Time) (Record, error) {
+	var record Record
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return Record{}, fmt.Errorf("%w: unreadable indexed DecisionRecord JSON: %v", ErrCatalogDrift, err)
+	}
+	if record.TenantID != tenantID || record.InvocationID != invocationID ||
+		record.DecisionID != decisionID || record.RequestSHA256 != requestSHA256 ||
+		record.CreatedAt.IsZero() || !record.CreatedAt.Equal(createdAt) {
+		return Record{}, fmt.Errorf("%w: indexed DecisionRecord identity or creation time mismatch", ErrCatalogDrift)
+	}
+	return clone(record), nil
+}
+
 // GetByInvocation resolves an existing immutable invocation result within one tenant.
 func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
 	if s == nil || s.db == nil {
 		return Record{}, ErrStoreUnavailable
 	}
-	var fingerprint string
+	var decisionID, fingerprint string
+	var createdAt time.Time
 	var payload []byte
 	err := s.db.QueryRowContext(ctx,
-		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
-		tenantID, invocationID).Scan(&fingerprint, &payload)
+		"SELECT decision_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
+		tenantID, invocationID).Scan(&decisionID, &fingerprint, &createdAt, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
 	if err != nil {
 		return Record{}, storeUnavailable("lookup Decision invocation", err)
 	}
-	var record Record
-	if err := json.Unmarshal(payload, &record); err != nil {
-		return Record{}, fmt.Errorf("decode stored DecisionRecord: %w", err)
-	}
-	if record.TenantID != tenantID || record.InvocationID != invocationID ||
-		record.RequestSHA256 != fingerprint {
-		return Record{}, errors.New("stored DecisionRecord identity does not match indexed columns")
-	}
-	return clone(record), nil
+	return decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
 }
 
 func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
@@ -100,11 +110,12 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 		return Record{}, false, fmt.Errorf("unexpected affected row count: %d", rows)
 	}
 
-	var storedFingerprint string
+	var storedDecisionID, storedFingerprint string
+	var storedCreatedAt time.Time
 	var storedPayload []byte
 	err = tx.QueryRowContext(ctx,
-		"SELECT request_sha256, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
-		record.TenantID, record.InvocationID).Scan(&storedFingerprint, &storedPayload)
+		"SELECT decision_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
+		record.TenantID, record.InvocationID).Scan(&storedDecisionID, &storedFingerprint, &storedCreatedAt, &storedPayload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Record{}, false, storeUnavailable("load invocation after uniqueness conflict", err)
@@ -114,35 +125,34 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 	if storedFingerprint != record.RequestSHA256 {
 		return Record{}, false, ErrConflict
 	}
-	var stored Record
-	if err := json.Unmarshal(storedPayload, &stored); err != nil {
-		return Record{}, false, fmt.Errorf("decode stored decision record: %w", err)
+	stored, err := decodeIndexedDecisionRecord(storedPayload, record.TenantID, record.InvocationID,
+		storedDecisionID, storedFingerprint, storedCreatedAt)
+	if err != nil {
+		return Record{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Record{}, false, storeUnavailable("commit idempotent DecisionRecord replay", err)
 	}
-	return clone(stored), false, nil
+	return stored, false, nil
 }
 
 func (s *PostgresStore) GetByDecisionID(ctx context.Context, tenantID, agentID, sessionID, decisionID string) (Record, error) {
 	if s == nil || s.db == nil {
 		return Record{}, ErrStoreUnavailable
 	}
+	var invocationID, fingerprint string
+	var createdAt time.Time
 	var payload []byte
 	err := s.db.QueryRowContext(ctx,
-		"SELECT record FROM decision_records WHERE tenant_id = $1 AND decision_id = $2 AND record->>'agent_id' = $3 AND record->>'session_id' = $4",
-		tenantID, decisionID, agentID, sessionID).Scan(&payload)
+		"SELECT invocation_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND decision_id = $2 AND record->>'agent_id' = $3 AND record->>'session_id' = $4",
+		tenantID, decisionID, agentID, sessionID).Scan(&invocationID, &fingerprint, &createdAt, &payload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Record{}, ErrNotFound
 		}
 		return Record{}, storeUnavailable("load DecisionRecord", err)
 	}
-	var record Record
-	if err := json.Unmarshal(payload, &record); err != nil {
-		return Record{}, fmt.Errorf("decode decision record: %w", err)
-	}
-	return clone(record), nil
+	return decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
 }
 
 func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessionID, runID string, before *DecisionCursor, limit int) ([]Record, error) {
@@ -152,7 +162,7 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 	if limit < 1 {
 		return nil, fmt.Errorf("ledger query limit must be positive")
 	}
-	query := "SELECT record FROM decision_records WHERE tenant_id = $1 AND record->>'agent_id' = $2 AND record->>'session_id' = $3 AND record->>'run_id' = $4"
+	query := "SELECT invocation_id, decision_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND record->>'agent_id' = $2 AND record->>'session_id' = $3 AND record->>'run_id' = $4"
 	args := []any{tenantID, agentID, sessionID, runID}
 	if before != nil {
 		query += " AND (created_at, decision_id) < ($5, $6)"
@@ -168,15 +178,17 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 	defer rows.Close()
 	records := make([]Record, 0, limit)
 	for rows.Next() {
+		var invocationID, decisionID, fingerprint string
+		var createdAt time.Time
 		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
+		if err := rows.Scan(&invocationID, &decisionID, &fingerprint, &createdAt, &payload); err != nil {
 			return nil, storeUnavailable("scan DecisionRecord", err)
 		}
-		var record Record
-		if err := json.Unmarshal(payload, &record); err != nil {
-			return nil, fmt.Errorf("decode decision record: %w", err)
+		record, err := decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
+		if err != nil {
+			return nil, err
 		}
-		records = append(records, clone(record))
+		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, storeUnavailable("iterate DecisionRecords", err)
