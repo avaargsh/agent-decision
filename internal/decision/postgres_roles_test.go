@@ -345,6 +345,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("REVOKE USAGE ON SCHEMA "+foreign+" FROM "+dispatcherRole)
 	check(dispatcher, RuntimeRoleDispatcher)
+	// Isolate subsequent relation/sequence cases from the default PUBLIC
+	// EXECUTE grant on the function created for the first negative case.
+	exec("REVOKE EXECUTE ON FUNCTION "+foreign+".read_decision_count() FROM PUBLIC")
 
 	// Direct SELECT on a foreign table is equally outside the reviewed ACL.
 	exec("GRANT USAGE ON SCHEMA "+foreign+" TO "+appRole)
