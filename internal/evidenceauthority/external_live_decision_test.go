@@ -326,22 +326,13 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		csr, err := x509.ParseCertificateRequest(raw)
-		if err != nil || csr.CheckSignature() != nil || len(csr.URIs) != 1 || csr.URIs[0] == nil ||
-			csr.URIs[0].String() != runtimeCaller || len(csr.DNSNames) != 0 || len(csr.IPAddresses) != 0 || len(csr.EmailAddresses) != 0 {
-			t.Fatal("invalid isolated Runtime worker CSR")
-		}
-		if _, ok := csr.PublicKey.(ed25519.PublicKey); !ok {
-			t.Fatal("unexpected Runtime worker key type")
-		}
-		leaf := &x509.Certificate{SerialNumber: big.NewInt(serial), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
-			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, URIs: csr.URIs}
-		serial++
-		signed, err := x509.CreateCertificate(rand.Reader, leaf, ca, csr.PublicKey, caKey)
+		// The isolated test CA accepts only a verified CSR with the exact
+		// Runtime workload identity and client-only EKU; the Runtime keeps the key.
+		workerCert, err := issueRuntimeWorkerCertificate(raw, ca, caKey, time.Now().UTC())
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("invalid isolated Runtime worker CSR: %v", err)
 		}
-		writeFixture("worker-cert.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: signed}))
+		writeFixture("worker-cert.pem", workerCert)
 		writeFixture("decision-ca.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: der}))
 		writeFixture("origin", []byte(server.URL))
 		// The original DecisionRecord and Outbox are both committed, the
