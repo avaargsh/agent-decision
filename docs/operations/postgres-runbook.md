@@ -62,6 +62,7 @@ The Decision API uses scoped SQL for tenant/idempotency lookup, while a separate
 - Provision passwords or workload identity through the environment's secret manager; never commit credentials or place them in image layers.
 - Require TLS for non-local database connections; validate the server certificate.
 - Set connection pool limits, connection lifetime, statement/query deadlines and startup readiness checks according to deployment capacity.
+- Pin **every** API and dispatcher PostgreSQL connection to exactly `approved_schema, pg_catalog, pg_temp` via connection configuration before use; do not include `public`, `$user`, or alternate schemas. `decision-role-audit` now checks the actual session's pre-audit `search_path` rather than trusting its own temporary schema override. A successful role audit is point-in-time proof for the audited connection only; use the same pinned configuration for the deployed pools and re-audit after reconfiguration or rotation. This is not RLS or cross-tenant isolation evidence.
 - Rotate the application credential through the secret manager and restart/reload the API pool. Migration credentials must not be available to the API workload.
 - Keep audit logs for role changes, schema migrations, backup jobs and restore operations. Do not log connection strings or record payloads.
 

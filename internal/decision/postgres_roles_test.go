@@ -116,6 +116,39 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
 
+	// The role audit must verify the actual connection pool's lookup path.
+	// The store uses unqualified SQL; a temporary transaction-local override
+	// during the audit cannot make a misconfigured runtime pool safe.
+	for _, identity := range []struct {
+		name string
+		role RuntimeDatabaseRole
+	}{
+		{appRole, RuntimeRoleApplication},
+		{dispatcherRole, RuntimeRoleDispatcher},
+	} {
+		for _, unsafePath := range []string{
+			"public, pg_catalog, pg_temp",
+			schema + ", public, pg_catalog, pg_temp",
+		} {
+			t.Run(string(identity.role)+"/"+unsafePath, func(t *testing.T) {
+				cfg, err := pgx.ParseConfig(dsn)
+				if err != nil { t.Fatal(err) }
+				cfg.User, cfg.Password = identity.name, password
+				cfg.RuntimeParams["search_path"] = unsafePath
+				wrongPool := stdlib.OpenDB(*cfg)
+				defer wrongPool.Close()
+				wrongPool.SetMaxOpenConns(1)
+				var got string
+				if err := wrongPool.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&got); err != nil || got != unsafePath {
+					t.Fatalf("test must run against misbound pool: path=%q err=%v", got, err)
+				}
+				if err := VerifyRuntimeDatabaseRole(ctx, wrongPool, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
+					t.Fatalf("accepted runtime %s pool with untrusted search_path %q: %v", identity.role, unsafePath, err)
+				}
+			})
+		}
+	}
+
 	// Exercise actual runtime SQL under the effective role rather than
 	// assuming the GRANT matrix is sufficient for SaveOrGet/Claim/Ack.
 	record := Record{

@@ -37,6 +37,19 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	}
 	defer tx.Rollback()
 
+	// The application/dispatcher use unqualified SQL after this audit. Check
+	// the connection's original lookup path BEFORE pinning our own read-only
+	// inspection transaction; otherwise an unsafe runtime pool can pass.
+	// This is a point-in-time check on this authenticated connection, not
+	// proof that every pooled connection or a later session is unchanged.
+	var configuredPath string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&configuredPath); err != nil {
+		return fmt.Errorf("%w: inspect runtime pool search_path: %v", ErrCatalogDrift, err)
+	}
+	if configuredPath != schema+", pg_catalog, pg_temp" {
+		return fmt.Errorf("%w: runtime pool search_path is not exclusively pinned to approved schema", ErrCatalogDrift)
+	}
+
 	// Never rely on ambient search_path or an untrusted current_schema value.
 	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.set_config('search_path',
 		pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
