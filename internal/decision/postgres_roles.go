@@ -196,6 +196,36 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: unexpected effective access to unreviewed schema relation", ErrCatalogDrift)
 	}
 
+
+	// PostgreSQL grants EXECUTE on new routines to PUBLIC by default. An
+	// unreviewed SECURITY DEFINER routine can read DecisionRecords under its
+	// owner's privileges even when the dispatcher has no table SELECT grant.
+	// Only migration-owned trigger callbacks (which cannot be called directly
+	// with SELECT) are excluded; their source is separately catalog-attested.
+	// Check routine signature and properties, not its name alone.
+	var unreviewedExecutable bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_catalog.pg_proc AS fn
+			JOIN pg_catalog.pg_namespace AS ns ON ns.oid = fn.pronamespace
+			WHERE ns.nspname = $1
+			  AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
+			  AND NOT (
+			    fn.proname IN (
+			      'reject_decision_record_mutation',
+			      'reject_decision_outbox_identity_mutation',
+			      'reject_decision_outbox_delete'
+			    )
+			    AND fn.prokind = 'f'
+			    AND fn.pronargs = 0
+			    AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			    AND NOT fn.prosecdef
+			  )
+		)
+	`, schema).Scan(&unreviewedExecutable); err != nil || unreviewedExecutable {
+		return fmt.Errorf("%w: unexpected effective EXECUTE on unreviewed schema routine", ErrCatalogDrift)
+	}
+
 	// Explicitly reject schema owners via owner-membership check above.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)
