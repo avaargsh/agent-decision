@@ -254,6 +254,26 @@ func TestValidateManifestAcceptsThirdReviewerResolution(t *testing.T) {
 	}
 }
 
+func TestVerifyIndependentReviewArtifactsChecksBothReviewerLabels(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	manifest := validTestManifest(now)
+	first := []byte("reviewer a label")
+	second := []byte("reviewer b label")
+	manifest.Cases[0].Adjudication.IndependentLabelSHA256 = []string{
+		testDigest(string(first)), testDigest(string(second)),
+	}
+	readers := map[string][]io.Reader{
+		"case-dev-001": {bytes.NewReader(first), bytes.NewReader(second)},
+	}
+	if err := VerifyIndependentReviewArtifacts(manifest, readers); err != nil {
+		t.Fatalf("valid independent review artifacts rejected: %v", err)
+	}
+	readers["case-dev-001"] = []io.Reader{bytes.NewReader(first)}
+	if err := VerifyIndependentReviewArtifacts(manifest, readers); !errors.Is(err, ErrArtifactIntegrity) {
+		t.Fatalf("missing reviewer label must fail closed, got %v", err)
+	}
+}
+
 func TestVerifyAuthorizationArtifactsChecksExactBytes(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	manifest := validTestManifest(now)
