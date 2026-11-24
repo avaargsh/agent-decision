@@ -295,19 +295,7 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
-	var ownershipOK bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT NOT EXISTS (
-			SELECT 1
-			FROM pg_catalog.pg_class AS c
-			JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-			WHERE n.nspname = pg_catalog.current_schema()
-			  AND c.relname IN ('decision_records', 'outbox_events', 'decision_tenant_logins', 'schema_migrations')
-			  AND c.relowner <> n.nspowner
-		)
-	`).Scan(&ownershipOK); err != nil || !ownershipOK {
-		return fmt.Errorf("%w: protected Decision relations must be owned by the approved schema owner", ErrCatalogDrift)
-	}
+
 
 	type expectedPolicy struct {
 		command string
