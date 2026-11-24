@@ -179,6 +179,23 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 				t.Fatalf("routed run listing tenant=%s rows=%d err=%v", rec.TenantID, len(got), err)
 			}
 		}
+		// The custom GUC cannot override the authenticated LOGIN mapping.
+		spoofed := routedRecord("tenant-b", "spoofed", "e")
+		if _, created, err := NewPostgresStore(first).SaveOrGet(ctx, spoofed); err == nil || created {
+			t.Fatalf("tenant-a LOGIN spoofed tenant-b through transaction GUC: created=%t err=%v", created, err)
+		}
+		// Mapping drift after startup is rechecked in the same transaction
+		// before tenant context binding and before any ledger/Outbox side effect.
+		if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".decision_tenant_logins SET tenant_id=$1 WHERE login_role=$2", "tenant-wrong", roleA); err != nil {
+			t.Fatal(err)
+		}
+		mappingDrift := routedRecord("tenant-a", "mapping-drift", "f")
+		if _, created, err := routedStore.SaveOrGet(ctx, mappingDrift); created || !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("stale tenant LOGIN mapping accepted: created=%t err=%v", created, err)
+		}
+		if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".decision_tenant_logins SET tenant_id=$1 WHERE login_role=$2", "tenant-a", roleA); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := routedStore.GetByInvocation(ctx, "tenant-a", routeB.InvocationID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("cross-tenant routed read exposed foreign record: %v", err)
 		}
