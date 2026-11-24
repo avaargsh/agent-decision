@@ -136,6 +136,7 @@ func TestValidateManifestRejectsInvalidAuthorizationAndReviewProvenance(t *testi
 			m.Cases[0].Adjudication.AdjudicatorID = m.Cases[0].Adjudication.ReviewerIDs[0]
 		}},
 		{"adjudication_before_observation_end", func(m *Manifest) { m.Cases[0].Adjudication.AdjudicatedAt = m.Cases[0].ObservationTo.Add(-time.Second) }},
+		{"future_observation_window", func(m *Manifest) { m.Cases[0].ObservationTo = now.Add(time.Minute) }},
 		{"unknown_split", func(m *Manifest) { m.Cases[0].Split = "TRAIN_AND_TEST" }},
 		{"invalid_artifact_digest", func(m *Manifest) { m.Cases[0].EvidenceSHA256 = "not-a-digest" }},
 		{"empty_cases", func(m *Manifest) { m.Cases = nil }},
@@ -192,6 +193,8 @@ func TestParseManifestRejectsDuplicateKeysUnknownFieldsAndTrailingJSON(t *testin
 	for _, tc := range []struct{name, raw string}{
 		{"duplicate_key", duplicate},
 		{"nested_duplicate_key", strings.Replace(string(encoded), `"source_owner":"source-owner-01"`, `"source_owner":"first","source_owner":"second"`, 1)},
+		{"case_insensitive_duplicate_key", strings.Replace(string(encoded), `"source_owner":"source-owner-01"`, `"source_owner":"first","SOURCE_OWNER":"second"`, 1)},
+		{"invalid_utf8", string([]byte{0xff})},
 		{"unknown_field", withUnknown},
 		{"trailing_json", string(encoded) + `{}`},
 		{"invalid_json", `{"schema_version":`},
