@@ -36,7 +36,10 @@ GRANT USAGE ON SCHEMA public TO
   agent_decision_app_tenant_a, agent_decision_app_tenant_b,
   agent_decision_dispatcher, agent_decision_attestor;
 
--- Apply migrations 0001-0004 as agent_decision_migrator.
+-- Run migration and mapping provisioning as the sole schema owner.
+-- In production, the migration job connects directly as this LOGIN.
+SET ROLE agent_decision_migrator;
+-- Apply migrations 0001-0004.
 -- API: one authenticated LOGIN per tenant; atomic Decision + Outbox INSERT.
 GRANT SELECT, INSERT ON TABLE public.decision_records
   TO agent_decision_app_tenant_a, agent_decision_app_tenant_b;
@@ -60,6 +63,7 @@ GRANT UPDATE (lease_owner, lease_until, attempts, available_at,
 
 -- Independent read-only deployment/startup attestor.
 GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
+RESET ROLE;
 
 -- Validate ALL effective privileges, including inherited/column grants,
 -- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
