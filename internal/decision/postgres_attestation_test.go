@@ -54,6 +54,45 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		t.Fatalf("missing schema must fail closed: %v", err)
 	}
 
+	// v0001-v0003 never authorize RLS. Even a dormant policy or FORCE flag
+	// is unreviewed catalog state, and can change visibility on later enable.
+	// Neither a read-only attestor nor migration re-entry may accept it.
+	for _, table := range []string{"decision_records", "outbox_events", "schema_migrations"} {
+		t.Run("unapproved_rls_"+table, func(t *testing.T) {
+			target := schema + "." + table
+			for _, tc := range []struct {
+				name, install, restore string
+			}{
+				{"dormant_policy", "CREATE POLICY unreviewed_policy ON "+target+" FOR SELECT USING (true)", "DROP POLICY unreviewed_policy ON "+target},
+				{"enabled", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY"},
+				{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					if _, err := admin.ExecContext(ctx, tc.install); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						if _, err := admin.ExecContext(ctx, tc.restore); err != nil {
+							t.Errorf("restore fixture: %v", err)
+						}
+					}()
+					if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
+						t.Errorf("attestation accepted unapproved %s on %s: %v", tc.name, table, err)
+					}
+					if err := MigrateInSchema(ctx, admin, schema); !errors.Is(err, ErrCatalogDrift) {
+						t.Errorf("migration re-entry accepted unapproved %s on %s: %v", tc.name, table, err)
+					}
+				})
+				if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+					t.Fatalf("restored catalog: %v", err)
+				}
+				if err := MigrateInSchema(ctx, admin, schema); err != nil {
+					t.Fatalf("restored migration re-entry: %v", err)
+				}
+			}
+		})
+	}
+
 	// The same-name installed trigger must be checked without any DDL/repair
 	// by the restricted verifier. The owner deliberately tampers and restores.
 	target := schema+".decision_records"

@@ -240,6 +240,26 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: missing Decision ledger or Outbox relation", ErrCatalogDrift)
 	}
 
+	// v0001-v0003 define no row security flags or policies on these
+	// relations. Reject unreviewed state even when a policy is dormant.
+	// A future approved migration must replace this explicit baseline
+	// with exact role/command/expression and flag attestation.
+	for _, table := range []string{"decision_records", "outbox_events", "schema_migrations"} {
+		var approved bool
+		err := tx.QueryRowContext(ctx, `
+			SELECT NOT c.relrowsecurity AND NOT c.relforcerowsecurity
+				AND NOT EXISTS (
+					SELECT 1 FROM pg_catalog.pg_policy p
+					WHERE p.polrelid = c.oid
+				)
+			FROM pg_catalog.pg_class c
+			WHERE c.oid = pg_catalog.to_regclass($1)
+		`, table).Scan(&approved)
+		if err != nil || !approved {
+			return fmt.Errorf("%w: unapproved legacy RLS state on %s", ErrCatalogDrift, table)
+		}
+	}
+
 	// The Outbox can only describe a Decision owned by the same tenant.
 	// Compare the actual column bindings, not just a same-name constraint.
 	var fkOK bool
