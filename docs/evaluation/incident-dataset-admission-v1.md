@@ -28,7 +28,7 @@ If both reviewers agree, their label digests and the final label digest must mat
 ## Integrity and split isolation
 
 - `VerifyAuthorizationArtifacts` streams the grant and de-identification attestation bytes and checks their exact SHA-256 digests.
-- `VerifyArtifacts` streams one evidence bundle and one final-label artifact per case; missing, extra, duplicate, oversized, nil or mismatched artifacts fail closed.
+- `VerifyIndependentReviewArtifacts` streams both independent reviewer-label artifacts per case. `VerifyArtifacts` streams one evidence bundle and one final adjudicated-label artifact per case. Missing, extra, duplicate, oversized, nil or mismatched artifacts fail closed.
 - Case IDs, incident references and evidence artifact digests must be unique across the entire manifest. A single incident or evidence bundle cannot appear in Development, Gold and Holdout under different case IDs.
 - `ValidateSplitUse` allows training/tuning only from `DEVELOPMENT`; Gold and Holdout are evaluation-only. Every consumer must enforce this helper before exposing split artifacts.
 
