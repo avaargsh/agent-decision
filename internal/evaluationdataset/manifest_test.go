@@ -224,6 +224,23 @@ func TestParseManifestReturnsExactRawManifestDigest(t *testing.T) {
 }
 
 
+func TestSplitUseKeepsGoldAndHoldoutOutOfTraining(t *testing.T) {
+	if err := ValidateSplitUse(SplitDevelopment, PurposeTraining); err != nil {
+		t.Fatalf("development split should be available for training: %v", err)
+	}
+	for _, split := range []Split{SplitGold, SplitHoldout} {
+		if err := ValidateSplitUse(split, PurposeTraining); !errors.Is(err, ErrSplitUseDenied) {
+			t.Fatalf("%s must be denied for training, got %v", split, err)
+		}
+		if err := ValidateSplitUse(split, PurposeEvaluation); err != nil {
+			t.Fatalf("%s should be available for evaluation: %v", split, err)
+		}
+	}
+	if err := ValidateSplitUse(Split("UNKNOWN"), PurposeEvaluation); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("unknown split must fail closed, got %v", err)
+	}
+}
+
 func TestValidateManifestAcceptsThirdReviewerResolution(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	manifest := validTestManifest(now)
