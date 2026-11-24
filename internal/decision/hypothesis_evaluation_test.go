@@ -57,38 +57,49 @@ func evaluationReportCases(t *testing.T) []hypothesisEvaluationCase {
 			ID: "01-supported", Split: hypothesisEvaluationGoldFixture,
 			Principal: fixture.principal, Request: fixture.request, Publications: fixture.publications,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
-			ExpectedStatus: hypothesisSupported, ExpectedBindingsBound: true,
+			ExpectedStatus: hypothesisSupported, ExpectedBindingsBound: true, ExpectedAbstentionReasons: []hypothesisAbstentionReason{},
 		},
 		{
 			ID: "02-missing-change", Split: hypothesisEvaluationGoldFixture,
 			Principal: fixture.principal, Request: fixture.request, Publications: fixture.publications[:1],
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisInsufficient, ExpectedBindingsBound: true,
+			ExpectedAbstentionReasons: []hypothesisAbstentionReason{hypothesisAbstentionMissingDeploymentObservation},
 		},
 		{
 			ID: "03-no-deployment", Split: hypothesisEvaluationGoldFixture,
 			Principal: fixture.principal, Request: noDeploymentRequest,
 			Publications: []signedHypothesisPublication{fixture.publications[0], noDeployment},
 			From: fixture.from, To: fixture.to, Now: fixture.now,
-			ExpectedStatus: hypothesisContradicted, ExpectedBindingsBound: true,
+			ExpectedStatus: hypothesisContradicted, ExpectedBindingsBound: true, ExpectedAbstentionReasons: []hypothesisAbstentionReason{},
 		},
 		{
 			ID: "04-unrelated-only", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: unrelatedRequest, Publications: []signedHypothesisPublication{unrelated},
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: true,
+			ExpectedAbstentionReasons: []hypothesisAbstentionReason{
+				hypothesisAbstentionMissingSymptomObservation,
+				hypothesisAbstentionMissingDeploymentObservation,
+				hypothesisAbstentionNoRelevantEvidence,
+			},
 		},
 		{
 			ID: "05-conflicting", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: conflictingRequest, Publications: conflictingPublications,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisConflicting, ExpectedBindingsBound: true,
+			ExpectedAbstentionReasons: []hypothesisAbstentionReason{hypothesisAbstentionConflictingSymptomObservations},
 		},
 		{
 			ID: "06-no-observations", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: fixture.request,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: false,
+			ExpectedAbstentionReasons: []hypothesisAbstentionReason{
+				hypothesisAbstentionMissingSymptomObservation,
+				hypothesisAbstentionMissingDeploymentObservation,
+			},
 		},
 		{
 			ID: "07-unbound-reference", Split: hypothesisEvaluationHoldoutFixture,
@@ -113,13 +124,17 @@ func TestHypothesisEvaluationReportIsDeterministicAndSeparatesMetrics(t *testing
 	}
 	if report.DatasetKind != hypothesisEvaluationFixtureOnly || report.ScenarioCount != 8 ||
 		report.PassedCount != 8 || report.FailedCount != 0 || report.AcceptedCount != 6 ||
-		report.AbstentionCount != 4 || report.EvidenceBindingCaseCount != 7 ||
+		report.AbstentionCount != 4 || report.AbstentionReasonCaseCount != 6 ||
+		report.AbstentionReasonCaseMatches != 6 || !report.AbstentionReasonAccuracyMeasured ||
+		report.AbstentionReasonAccuracyBasisPoints != 10000 || report.EvidenceBindingCaseCount != 7 ||
 		report.EvidenceBindingCaseMatches != 7 || report.EvidenceBindingAccuracyBasisPoints != 10000 ||
 		report.ScenarioPassRateBasisPoints != 10000 || report.AbstentionRateBasisPoints != 6666 {
 		t.Fatalf("unexpected evaluation report: %+v", report)
 	}
 	if len(report.Cases) != len(cases) || report.Cases[0].ID != "01-supported" ||
-		report.Cases[len(report.Cases)-1].ID != "08-wrong-signer" {
+		report.Cases[len(report.Cases)-1].ID != "08-wrong-signer" ||
+		!reflect.DeepEqual(report.Cases[1].AbstentionReasons, []hypothesisAbstentionReason{hypothesisAbstentionMissingDeploymentObservation}) ||
+		len(report.Cases[0].AbstentionReasons) != 0 {
 		t.Fatalf("report cases are not in stable ID order: %+v", report.Cases)
 	}
 
@@ -138,6 +153,19 @@ func TestHypothesisEvaluationReportIsDeterministicAndSeparatesMetrics(t *testing
 	reorderedJSON, err := json.Marshal(reordered)
 	if err != nil || !bytes.Equal(firstJSON, reorderedJSON) {
 		t.Fatalf("dataset order changed serialized report: first=%s reordered=%s err=%v", firstJSON, reorderedJSON, err)
+	}
+}
+
+func TestHypothesisEvaluationReportDetectsIncorrectAbstentionReasonExpectation(t *testing.T) {
+	cases := evaluationReportCases(t)
+	cases[1].ExpectedAbstentionReasons = []hypothesisAbstentionReason{hypothesisAbstentionMissingSymptomObservation}
+	report, err := buildHypothesisEvaluationReport("sre-deployment-correlation-v1", cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PassedCount != 7 || report.FailedCount != 1 ||
+		report.AbstentionReasonCaseMatches != 5 || report.AbstentionReasonAccuracyBasisPoints != 8333 {
+		t.Fatalf("incorrect abstention reason expectation was not reported: %+v", report)
 	}
 }
 
@@ -186,6 +214,11 @@ func TestHypothesisEvaluationReportRejectsInvalidDataset(t *testing.T) {
 	}{
 		{"empty_dataset_id", "", valid},
 		{"duplicate_case_id", "sre-deployment-correlation-v1", append(append([]hypothesisEvaluationCase{}, valid...), valid[0])},
+		{"unknown_reason", "sre-deployment-correlation-v1", func() []hypothesisEvaluationCase {
+			out := append([]hypothesisEvaluationCase{}, valid...)
+			out[0].ExpectedAbstentionReasons = []hypothesisAbstentionReason{"UNKNOWN"}
+			return out
+		}()},
 		{"unknown_split", "sre-deployment-correlation-v1", func() []hypothesisEvaluationCase {
 			out := append([]hypothesisEvaluationCase{}, valid...)
 			out[0].Split = "UNCONTROLLED"
