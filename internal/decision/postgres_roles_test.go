@@ -128,8 +128,65 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		t.Helper()
 		if err := VerifyRuntimeDatabaseRole(ctx, db, schema, role); err != nil { t.Fatal(err) }
 	}
+	var publicTriggerCallbacks int
+	if err := admin.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM pg_catalog.pg_proc AS fn
+		JOIN pg_catalog.pg_namespace AS ns ON ns.oid = fn.pronamespace
+		WHERE ns.nspname = $1
+		  AND fn.proname IN (
+		    'reject_decision_record_mutation',
+		    'reject_decision_outbox_identity_mutation',
+		    'reject_decision_outbox_delete'
+		  )
+		  AND fn.prokind = 'f'
+		  AND fn.pronargs = 0
+		  AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+		  AND NOT fn.prosecdef
+		  AND pg_catalog.has_function_privilege($2, fn.oid, 'EXECUTE')
+	`, externalSchema, appRole).Scan(&publicTriggerCallbacks); err != nil || publicTriggerCallbacks != 3 {
+		t.Fatalf("fixture must expose exactly three safe trigger callbacks to PUBLIC: count=%d err=%v", publicTriggerCallbacks, err)
+	}
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
+
+	// An ordinary external SECURITY INVOKER function is still an unreviewed
+	// callable object and must be rejected; only the three non-callable,
+	// migration-owned trigger callbacks above are exempt.
+	for _, tc := range []struct {
+		name, ddl, signature string
+	}{
+		{
+			name: "external_invoker_routine",
+			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_invoker() RETURNS integer LANGUAGE sql SECURITY INVOKER AS 'SELECT 1'",
+			signature: externalSchema + ".unreviewed_invoker()",
+		},
+		{
+			name: "external_definer_routine",
+			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
+			signature: externalSchema + ".unreviewed_definer()",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec(tc.ddl)
+			exec("GRANT EXECUTE ON FUNCTION " + tc.signature + " TO PUBLIC")
+			for _, identity := range []struct {
+				name string
+				db *sql.DB
+				role RuntimeDatabaseRole
+			}{
+				{name: "application", db: app, role: RuntimeRoleApplication},
+				{name: "dispatcher", db: dispatcher, role: RuntimeRoleDispatcher},
+			} {
+				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
+					t.Errorf("%s accepted an unreviewed external %s routine: %v", identity.name, tc.name, err)
+				}
+			}
+			exec("DROP FUNCTION " + tc.signature)
+			check(app, RuntimeRoleApplication)
+			check(dispatcher, RuntimeRoleDispatcher)
+		})
+	}
 
 	// The same permission class is not sufficient for a provisioned login
 	// binding. Pin the deployment-reviewed database, role name and role OID.
