@@ -205,6 +205,94 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	a, b := makeRecord("tenant-a", "a"), makeRecord("tenant-b", "b")
+	// The private bound store must reject a mismatched authenticated backend
+	// before business SQL, rather than relying on fixture RLS or a startup
+	// sample. The legacy constructor remains unchanged in this slice.
+	t.Run("bound_transaction_identity", func(t *testing.T) {
+		var pin runtimeLoginBinding
+		pin.RoleName = roleA
+		if err := admin.QueryRowContext(ctx, "SELECT current_database(), oid FROM pg_catalog.pg_roles WHERE rolname=$1", roleA).Scan(&pin.Database, &pin.RoleOID); err != nil {
+			t.Fatal(err)
+		}
+		store, err := newBoundPostgresStore(dbA, schema, a.TenantID, pin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, readOnly := range []bool{false, true} {
+			tx, err := store.beginTenantTx(ctx, a.TenantID, readOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var login, tenant string
+			err = tx.QueryRowContext(ctx, "SELECT session_user, pg_catalog.current_setting('decision.tenant_id', true)").Scan(&login, &tenant)
+			_ = tx.Rollback()
+			if err != nil || login != roleA || tenant != a.TenantID {
+				t.Fatalf("bound transaction mismatch: %q %q %v", login, tenant, err)
+			}
+		}
+		if tx, err := store.beginTenantTx(ctx, b.TenantID, true); tx != nil || !errors.Is(err, ErrAuthorityRejected) {
+			if tx != nil { _ = tx.Rollback() }
+			t.Fatalf("foreign tenant accepted: %v", err)
+		}
+		wrong, err := newBoundPostgresStore(dbB, schema, a.TenantID, pin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, created, err := wrong.SaveOrGet(ctx, a); created || !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("wrong login write not rejected by preflight: %v", err)
+		}
+		if _, err := wrong.GetByInvocation(ctx, a.TenantID, a.InvocationID); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("wrong login invocation: %v", err)
+		}
+		if _, err := wrong.GetByDecisionID(ctx, a.TenantID, a.AgentID, a.SessionID, a.DecisionID); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("wrong login decision: %v", err)
+		}
+		if got, err := wrong.ListByRun(ctx, a.TenantID, a.AgentID, a.SessionID, a.RunID, nil, 10); got != nil || !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("wrong login list: %v", err)
+		}
+		for _, altered := range []runtimeLoginBinding{
+			{Database: pin.Database+"_wrong", RoleName: pin.RoleName, RoleOID: pin.RoleOID},
+			{Database: pin.Database, RoleName: pin.RoleName, RoleOID: pin.RoleOID+1},
+		} {
+			wrong, err := newBoundPostgresStore(dbA, schema, a.TenantID, altered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tx, err := wrong.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
+				if tx != nil { _ = tx.Rollback() }
+				t.Fatalf("wrong pin accepted: %v", err)
+			}
+		}
+		if _, err := dbA.ExecContext(ctx, "SET search_path TO pg_catalog, pg_temp"); err != nil {
+			t.Fatal(err)
+		}
+		if tx, err := store.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
+			if tx != nil { _ = tx.Rollback() }
+			t.Errorf("unsafe schema path accepted: %v", err)
+		}
+		if _, err := dbA.ExecContext(ctx, "SET search_path TO "+schema+", pg_catalog, pg_temp"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dbA.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, false)", a.TenantID); err != nil {
+			t.Fatal(err)
+		}
+		if tx, err := store.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
+			if tx != nil { _ = tx.Rollback() }
+			t.Errorf("dirty context accepted by bound store: %v", err)
+		}
+		if _, err := dbA.ExecContext(ctx, "RESET decision.tenant_id"); err != nil {
+			t.Fatal(err)
+		}
+		if tx, err := store.beginTenantTx(ctx, a.TenantID, true); err != nil {
+			t.Fatalf("clean bound recovery: %v", err)
+		} else {
+			_ = tx.Rollback()
+		}
+		var records, eventCount int
+		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 0 || eventCount != 0 {
+			t.Fatalf("rejected transactions produced side effects: %d %d %v", records, eventCount, err)
+		}
+	})
 	// A direct foreign Outbox INSERT must fail at its own policy, not at
 	// Ledger INSERT or an existing unique key. The referenced foreign ledger
 	// exists and the probe uses a distinct event ID/type. Roll back even if a
