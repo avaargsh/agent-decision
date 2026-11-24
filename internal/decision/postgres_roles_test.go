@@ -116,6 +116,46 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
 
+	// A role must not be able to create persistent objects outside the
+	// approved schema, even when the foreign namespace has no objects or
+	// USAGE grant. This tests effective CREATE rather than existing ACLs.
+	t.Run("external_schema_create_denied", func(t *testing.T) {
+		external := "decision_create_" + seed
+		exec("CREATE SCHEMA "+external)
+		t.Cleanup(func() {
+			_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+external+" CASCADE")
+		})
+		for _, identity := range []struct {
+			name string
+			db *sql.DB
+			role RuntimeDatabaseRole
+		}{
+			{appRole, app, RuntimeRoleApplication},
+			{dispatcherRole, dispatcher, RuntimeRoleDispatcher},
+		} {
+			t.Run(string(identity.role), func(t *testing.T) {
+				check(identity.db, identity.role)
+				exec("GRANT CREATE ON SCHEMA "+external+" TO "+identity.name)
+				var create, usage bool
+				if err := identity.db.QueryRowContext(ctx,
+					"SELECT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE'), pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')",
+					external).Scan(&create, &usage); err != nil || !create || usage {
+					t.Fatalf("fixture requires CREATE without USAGE: create=%t usage=%t err=%v", create, usage, err)
+				}
+				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
+					t.Errorf("external CREATE without USAGE passed role audit: %v", err)
+				}
+				exec("GRANT USAGE ON SCHEMA "+external+" TO "+identity.name)
+				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
+					t.Errorf("external CREATE with USAGE passed role audit: %v", err)
+				}
+				exec("REVOKE CREATE ON SCHEMA "+external+" FROM "+identity.name)
+				check(identity.db, identity.role)
+				exec("REVOKE USAGE ON SCHEMA "+external+" FROM "+identity.name)
+			})
+		}
+	})
+
 	// The role audit must verify the actual connection pool's lookup path.
 	// The store uses unqualified SQL; a temporary transaction-local override
 	// during the audit cannot make a misconfigured runtime pool safe.
