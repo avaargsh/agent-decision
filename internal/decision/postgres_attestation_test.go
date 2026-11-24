@@ -144,6 +144,25 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		}
 	})
 
+	t.Run("mapping_public_grant", func(t *testing.T) {
+		target := schema + ".decision_tenant_logins"
+		if _, err := admin.ExecContext(ctx, "GRANT SELECT ON "+target+" TO PUBLIC"); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("PUBLIC mapping grant passed catalog attestation: %v", err)
+		}
+		if _, err := admin.ExecContext(ctx, "REVOKE ALL ON "+target+" FROM PUBLIC"); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored mapping ACL: %v", err)
+		}
+		if err := MigrateInSchema(ctx, admin, schema); err != nil {
+			t.Fatalf("restored migration re-entry: %v", err)
+		}
+	})
+
 	// The same-name installed trigger must be checked without any DDL/repair
 	// by the restricted verifier. The owner deliberately tampers and restores.
 	target := schema+".decision_records"
