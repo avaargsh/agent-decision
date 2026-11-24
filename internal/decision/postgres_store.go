@@ -33,6 +33,15 @@ func (s *PostgresStore) beginTenantTx(ctx context.Context, tenantID string, read
 	if err != nil {
 		return nil, storeUnavailable("begin tenant transaction", err)
 	}
+	// SET LOCAL restores the prior session value on commit or rollback.
+	// Reject a contaminated pooled connection before any ledger access,
+	// even when its ambient tenant happens to match this request. Do not
+	// silently reset it or treat the custom GUC as authenticated identity.
+	var ambient string
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(pg_catalog.current_setting('decision.tenant_id', true), '')").Scan(&ambient); err != nil || ambient != "" {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("%w: unsafe ambient tenant context", ErrCatalogDrift)
+	}
 	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, true)", tenantID); err != nil {
 		_ = tx.Rollback()
 		return nil, storeUnavailable("bind transaction tenant context", err)
