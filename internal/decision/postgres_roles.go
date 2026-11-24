@@ -50,14 +50,15 @@ func verifyRuntimeLoginKindTx(ctx context.Context, tx *sql.Tx, kind string) erro
 	if tx == nil || (kind != "application" && kind != "dispatcher") {
 		return fmt.Errorf("%w: invalid runtime LOGIN kind", ErrCatalogDrift)
 	}
+	var mappingCount int
 	var tenant sql.NullString
 	var actualKind string
 	err := tx.QueryRowContext(ctx, `
-		SELECT tenant_id, login_kind
+		SELECT count(*), max(tenant_id), max(login_kind)
 		FROM decision_tenant_logins
 		WHERE login_role = SESSION_USER
-	`).Scan(&tenant, &actualKind)
-	if err != nil || actualKind != kind ||
+	`).Scan(&mappingCount, &tenant, &actualKind)
+	if err != nil || mappingCount != 1 || actualKind != kind ||
 		(kind == "application" && (!tenant.Valid || tenant.String == "")) ||
 		(kind == "dispatcher" && tenant.Valid) {
 		return fmt.Errorf("%w: runtime LOGIN is not provisioned as %s", ErrCatalogDrift, kind)
@@ -72,13 +73,14 @@ func verifyTenantLoginMappingTx(ctx context.Context, tx *sql.Tx, tenantID string
 	if tx == nil || tenantID == "" || binding.RoleName == "" || kind != "application" {
 		return fmt.Errorf("%w: incomplete tenant LOGIN mapping check", ErrCatalogDrift)
 	}
+	var mappingCount int
 	var loginRole, mappedTenant, loginKind string
 	err := tx.QueryRowContext(ctx, `
-		SELECT login_role::text, tenant_id, login_kind
+		SELECT count(*), max(login_role::text), max(tenant_id), max(login_kind)
 		FROM decision_tenant_logins
 		WHERE login_role = SESSION_USER
-	`).Scan(&loginRole, &mappedTenant, &loginKind)
-	if err != nil || loginRole != binding.RoleName || mappedTenant != tenantID || loginKind != kind {
+	`).Scan(&mappingCount, &loginRole, &mappedTenant, &loginKind)
+	if err != nil || mappingCount != 1 || loginRole != binding.RoleName || mappedTenant != tenantID || loginKind != kind {
 		return fmt.Errorf("%w: authenticated LOGIN is not mapped to the requested tenant", ErrCatalogDrift)
 	}
 	return nil
