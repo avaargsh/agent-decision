@@ -144,8 +144,12 @@ func (c *authorityClient) read(ctx context.Context, method,path string, body []b
 	if res.StatusCode==http.StatusForbidden || res.StatusCode==http.StatusUnauthorized {
 		return nil,ErrAuthorityRejected
 	}
-	if res.StatusCode!=http.StatusOK || res.Header.Get("Cache-Control")!="no-store" ||
-		res.Header.Get("Content-Type")!="application/json" {
+	// Require the exact singleton response contract; Header.Get ignores
+	// later field values and can hide conflicting cache/media declarations.
+	cacheControl := res.Header.Values("Cache-Control")
+	contentType := res.Header.Values("Content-Type")
+	if res.StatusCode!=http.StatusOK || len(cacheControl)!=1 || cacheControl[0]!="no-store" ||
+		len(contentType)!=1 || contentType[0]!="application/json" {
 		return nil,ErrAuthorityUnavailable
 	}
 	raw,err:=io.ReadAll(io.LimitReader(res.Body,int64(max)+1))
@@ -167,6 +171,8 @@ type LiveAuthority struct {
 	runtime, acp *authorityClient
 	acpKey ed25519.PublicKey
 	sources map[string]pinnedEvidenceSource
+	// Private clock seam for deterministic freshness-boundary tests.
+	now func() time.Time
 }
 
 func NewLiveAuthority(c LiveAuthorityConfig) (*LiveAuthority,error) {
@@ -211,15 +217,31 @@ func (a *LiveAuthority) currentRuntime(ctx context.Context,runID,invocation stri
 	return out,nil
 }
 
+func (a *LiveAuthority) currentTime() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evidence []EvidenceRef)(Principal,Request,error){
+	return a.buildWithRuntime(ctx,runID,invocation,evidence,nil)
+}
+
+// A continuation must bind its entire authority read to the initial
+// Runtime observation, not merely compare its outer before/after reads.
+func (a *LiveAuthority) buildWithRuntime(ctx context.Context, runID, invocation string, evidence []EvidenceRef, expected *RuntimeDecisionAuthority)(Principal,Request,error){
 	fail:=func(err error)(Principal,Request,error){return Principal{},Request{},err}
 	if len(evidence)>32 || evidence==nil{return fail(ErrAuthorityRejected)}
 	r,err:=a.currentRuntime(ctx,runID,invocation)
 	if err!=nil{return fail(err)}
+	if expected != nil && r != *expected {
+		return fail(ErrAuthorityRejected)
+	}
 	query:=url.Values{"run_id":{r.RunID},"request_digest":{r.RequestDigest}}
 	raw,err:=a.acp.read(ctx,http.MethodGet,"/internal/v1/decision-publication/"+r.RunIntentID+"?"+query.Encode(),nil,maxACPPublicationWire)
 	if err!=nil{return fail(err)}
-	now:=time.Now().UTC()
+	now:=a.currentTime()
 	p,err:=VerifyACPPublication(raw,a.acpKey,r.acpBinding(),now)
 	if err!=nil{return fail(ErrAuthorityRejected)}
 	input,err:=json.Marshal(p.Input)
@@ -234,7 +256,7 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 		if err!=nil{return fail(ErrAuthorityRejected)}
 		proof,err:=source.client.read(ctx,http.MethodPost,"/internal/v1/evidence:read",b,maxEvidenceWire)
 		if err!=nil{return fail(err)}
-		if VerifyEvidencePublication(proof,source.key,source.scope,e,time.Now().UTC())!=nil{
+		if VerifyEvidencePublication(proof,source.key,source.scope,e,a.currentTime())!=nil{
 			return fail(ErrAuthorityRejected)
 		}
 	}
@@ -252,7 +274,30 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 		Evidence:append([]EvidenceRef{},evidence...),
 	}
 	if principal.Validate()!=nil || req.Validate()!=nil{return fail(ErrAuthorityRejected)}
+	if !a.inputsFreshAt(req, a.currentTime()) {
+		return fail(ErrAuthorityRejected)
+	}
 	return principal,req,nil
+}
+
+// inputsFreshAt is shared by the final observation of both new turns and
+// continuation receipts. It does not claim atomic distributed revocation.
+func (a *LiveAuthority) inputsFreshAt(req Request, now time.Time) bool {
+	if now.IsZero() {
+		return false
+	}
+	for _, snapshot := range []SnapshotRef{req.ContextSnapshot, req.CapabilitySnapshot} {
+		if now.Before(snapshot.IssuedAt) || !now.Before(snapshot.ExpiresAt) {
+			return false
+		}
+	}
+	for _, e := range req.Evidence {
+		source, ok := a.sources[e.SourceID]
+		if !ok || !evidenceScopeMatches(source.scope, e, now) {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveTurn only accepts reference selectors and Evidence claims. All

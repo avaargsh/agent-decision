@@ -36,7 +36,7 @@ func (a *LiveAuthority) VerifyCommittedTurn(ctx context.Context, store Store, ru
 	if stored.RunID != runID || stored.InvocationID != invocation || stored.TenantID != before.TenantID {
 		return empty, ErrAuthorityRejected
 	}
-	principal, req, err := a.build(ctx, runID, invocation, stored.Evidence)
+	principal, req, err := a.buildWithRuntime(ctx, runID, invocation, stored.Evidence, &before)
 	if err != nil {
 		return empty, err
 	}
@@ -47,7 +47,9 @@ func (a *LiveAuthority) VerifyCommittedTurn(ctx context.Context, store Store, ru
 	if err != nil {
 		return empty, err
 	}
-	if before != after {
+	// build's final observation precedes this additional network read.
+	// Never issue a continuation receipt for inputs stale at this point.
+	if before != after || !a.inputsFreshAt(req, a.currentTime()) {
 		return empty, ErrAuthorityRejected
 	}
 	return ContinuationReceipt{
