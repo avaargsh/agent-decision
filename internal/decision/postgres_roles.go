@@ -21,9 +21,9 @@ const (
 // inspecting named GRANT statements. The caller must use the actual restricted
 // connection pool and a deployment-controlled, trusted schema identifier.
 //
-// This does NOT provide RLS or prove tenant isolation. A successful role check
-// must be combined with catalog attestation, real TLS/identity, and tenant
-// authorization at the service/database boundary.
+// This verifies effective ACLs, not the installed RLS predicates or mapping
+// contents. Pair it with VerifyInstalledCatalogInSchema, per-transaction
+// LOGIN-to-tenant mapping checks, and authenticated service authorization.
 func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole) error {
 	return verifyRuntimeDatabaseRole(ctx, db, schema, role, nil)
 }
@@ -42,6 +42,48 @@ func verifyBoundRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema stri
 		return fmt.Errorf("%w: incomplete runtime login binding", ErrCatalogDrift)
 	}
 	return verifyRuntimeDatabaseRole(ctx, db, schema, role, &binding)
+}
+
+// verifyTenantLoginMappingTx binds the configured tenant to the authenticated
+// PostgreSQL LOGIN on the same transaction that will read or write ledger data.
+// A caller-controlled GUC alone is never accepted as tenant authority.
+func verifyTenantLoginMappingTx(ctx context.Context, tx *sql.Tx, tenantID string, binding runtimeLoginBinding, kind string) error {
+	if tx == nil || tenantID == "" || binding.RoleName == "" || kind != "application" {
+		return fmt.Errorf("%w: incomplete tenant LOGIN mapping check", ErrCatalogDrift)
+	}
+	var loginRole, mappedTenant, loginKind string
+	err := tx.QueryRowContext(ctx, `
+		SELECT login_role::text, tenant_id, login_kind
+		FROM decision_tenant_logins
+		WHERE login_role = SESSION_USER
+	`).Scan(&loginRole, &mappedTenant, &loginKind)
+	if err != nil || loginRole != binding.RoleName || mappedTenant != tenantID || loginKind != kind {
+		return fmt.Errorf("%w: authenticated LOGIN is not mapped to the requested tenant", ErrCatalogDrift)
+	}
+	return nil
+}
+
+// verifyTenantLoginMapping checks the immutable deployment mapping at pool
+// startup. Every actual bound transaction repeats the check before GUC binding.
+func verifyTenantLoginMapping(ctx context.Context, db *sql.DB, schema, tenantID string, binding runtimeLoginBinding) error {
+	if db == nil {
+		return ErrStoreUnavailable
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("%w: begin tenant LOGIN mapping check: %v", ErrCatalogDrift, err)
+	}
+	defer tx.Rollback()
+	if err := verifyRuntimeTransactionIdentity(ctx, tx, schema, &binding); err != nil {
+		return err
+	}
+	if err := verifyTenantLoginMappingTx(ctx, tx, tenantID, binding, "application"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: finish tenant LOGIN mapping check: %v", ErrCatalogDrift, err)
+	}
+	return nil
 }
 
 func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole, binding *runtimeLoginBinding) error {
@@ -71,12 +113,14 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	if role == RuntimeRoleApplication {
 		policies = []policy{
 			{"schema_migrations", "", "", ""},
+			{"decision_tenant_logins", "all", "", ""},
 			{"decision_records", "all", "all", ""},
 			{"outbox_events", "", "all", ""},
 		}
 	} else {
 		policies = []policy{
 			{"schema_migrations", "", "", ""},
+			{"decision_tenant_logins", "all", "", ""},
 			{"decision_records", "", "", ""},
 			{"outbox_events", "all", "", "attempts,available_at,last_error_code,lease_owner,lease_until,published_at"},
 		}
@@ -137,7 +181,7 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			SELECT 1 FROM pg_catalog.pg_class AS rel
 			JOIN pg_catalog.pg_namespace AS ns ON ns.oid = rel.relnamespace
 			WHERE ns.nspname = $1
-			  AND rel.relname NOT IN ('schema_migrations', 'decision_records', 'outbox_events')
+			  AND rel.relname NOT IN ('schema_migrations', 'decision_tenant_logins', 'decision_records', 'outbox_events')
 			  AND CASE
 			    WHEN rel.relkind = 'S' THEN
 			      pg_catalog.has_sequence_privilege(current_user, rel.oid, 'USAGE')
