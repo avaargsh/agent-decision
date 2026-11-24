@@ -441,11 +441,18 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 	if s.authority == nil {
 		return Record{}, false, ErrAuthorityUnavailable
 	}
-	if err := s.authority.VerifyDecisionInputs(ctx, principal, req); err != nil {
+	// A verifier must attest the exact request, not rewrite its shared slices
+	// or replan context before decision materialization.
+	verificationInput := cloneRequest(req)
+	if err := s.authority.VerifyDecisionInputs(ctx, principal, verificationInput); err != nil {
 		if errors.Is(err, ErrAuthorityUnavailable) {
 			return Record{}, false, err
 		}
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
+	}
+
+	if digest(verificationInput) != digest(req) {
+		return Record{}, false, fmt.Errorf("%w: verifier modified decision inputs", ErrAuthorityRejected)
 	}
 
 	record, err := recordFromVerifiedRequest(principal, req, s.strategy, s.now())
