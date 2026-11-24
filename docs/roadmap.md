@@ -23,6 +23,7 @@
 - [x] Internal deterministic deployment-correlation hypothesis evaluator and signed typed-observation offline adapter; signatures establish source attribution, not fact truth or causality.
 - [x] Fixture-only evaluation report with deterministic status, abstention, scenario pass-rate, exact-reference binding, and abstention-reason accuracy metrics; synthetic Gold/Holdout fixture labels are not a human-reviewed incident benchmark.
 - [x] Deterministic abstention reason taxonomy for missing, conflicting, and irrelevant evidence, with per-case offline evaluation and reason-accuracy reporting.
+- [x] Define a metadata-only v1 real-incident dataset manifest admission contract: strict JSON, source grant/de-identification references, dual-review adjudication, exact evidence/reviewer/final-label artifact digests, cross-split leakage rejection, and a Development-only training-use policy; no real incident data or signer-trust integration is included.
 - [ ] Collect and independently adjudicate real SRE incident Gold/Holdout trajectories before making operational accuracy claims.
 - [ ] Implement production AuthorityVerifier integration for tenant ownership, attestation, digest, expiry, and revocation.
 - [ ] Evidence freshness, provenance, quality, and coverage policy (requires per-kind operational thresholds and source semantics).
