@@ -577,7 +577,7 @@ func TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL(t *testing
 			}
 			err := MigrateInSchema(ctx, admin, schema)
 			if !errors.Is(err, ErrCatalogDrift) ||
-				!strings.Contains(err.Error(), "Decision trigger function drift: reject_decision_record_mutation()") {
+				!strings.Contains(err.Error(), "Decision trigger function reject_decision_record_mutation() source mismatch") {
 				catalogGate.Unlock()
 				report(fmt.Errorf("weakened trigger must fail at the handler check, iteration %d: %v", i, err))
 				return
