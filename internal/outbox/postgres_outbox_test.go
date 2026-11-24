@@ -945,3 +945,239 @@ func TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL(t *testing.T) {
 		t.Logf("stress completed: TRUNCATE guard restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
 	}
 }
+
+
+// TestPostgresOutboxHandlerRestoreUnderSameSchemaDDL reproduces the exact
+// rewritten_trigger_function path from TestPostgresOutboxClaimLeaseRetryAndAck
+// while unrelated DDL churns the same schema. In particular, the test uses
+// the Outbox suite's pgx RuntimeParams["search_path"] pool and asserts that
+// restoring the original CREATE OR REPLACE FUNCTION definition is followed
+// by a successful migration re-entry and read-only catalog attestation.
+func TestPostgresOutboxHandlerRestoreUnderSameSchemaDDL(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.SetMaxOpenConns(24)
+	if err := admin.PingContext(ctx); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+
+	schema := fmt.Sprintf("outbox_handler_restore_stress_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	config.RuntimeParams["search_path"] = schema
+	db := stdlib.OpenDB(*config)
+	db.SetMaxOpenConns(24)
+	var originalFunction string
+	defer func() {
+		// Restore the immutable handler even if a stress assertion exits early.
+		if originalFunction != "" {
+			_, _ = db.ExecContext(context.Background(), originalFunction)
+		}
+		_ = db.Close()
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+	}()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+		t.Fatalf("install target schema: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT pg_catalog.pg_get_functiondef(pg_catalog.to_regprocedure('reject_decision_record_mutation()'))",
+	).Scan(&originalFunction); err != nil {
+		t.Fatalf("read original trigger handler definition: %v", err)
+	}
+	if originalFunction == "" {
+		t.Fatal("original trigger handler definition is empty")
+	}
+
+	const ddlWorkers = 4
+	const ddlIterations = 96
+	const attestationWorkers = 2
+	const attestationsPerWorker = 48
+	const restoreIterations = 48
+
+	for worker := 0; worker < ddlWorkers; worker++ {
+		table := fmt.Sprintf("%s.handler_churn_%d", schema, worker)
+		if _, err := admin.ExecContext(ctx, "CREATE TABLE "+table+" (id integer NOT NULL)"); err != nil {
+			t.Fatalf("create same-schema catalog churn table %d: %v", worker, err)
+		}
+	}
+
+	// Warm the same runtime search_path pool and establish a sequential baseline.
+	for i := 0; i < 3; i++ {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("sequential migration baseline %d: %v", i, err)
+		}
+		if err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("sequential read-only baseline %d: %v", i, err)
+		}
+	}
+
+	const rewrittenHandler = "CREATE OR REPLACE FUNCTION reject_decision_record_mutation()\n" +
+		"RETURNS trigger LANGUAGE plpgsql AS $rewritten$\n" +
+		"BEGIN\n\tRETURN NEW;\nEND;\n$rewritten$"
+	const expectedDrift = "Decision trigger function drift: reject_decision_record_mutation() mismatch"
+
+	var catalogGate sync.RWMutex
+	errs := make(chan error, ddlWorkers+attestationWorkers+1)
+	var wg sync.WaitGroup
+	report := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case errs <- err:
+		default:
+		}
+		cancel()
+	}
+
+	// This is the historical failure point: replace the handler without
+	// changing its OID, require fail-closed rejection, restore the exact
+	// pg_get_functiondef output, then immediately re-enter migration.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if originalFunction != "" {
+				_, _ = db.ExecContext(context.Background(), originalFunction)
+			}
+		}()
+		for i := 0; i < restoreIterations; i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			catalogGate.Lock()
+			if _, err := db.ExecContext(ctx, rewrittenHandler); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("rewrite trigger handler iteration %d: %w", i, err))
+				}
+				return
+			}
+			err := decision.MigrateInSchema(ctx, db, schema)
+			if !errors.Is(err, decision.ErrCatalogDrift) || !strings.Contains(err.Error(), expectedDrift) {
+				_, _ = db.ExecContext(context.Background(), originalFunction)
+				catalogGate.Unlock()
+				report(fmt.Errorf("rewritten handler must fail at its source check, iteration %d: %v", i, err))
+				return
+			}
+			if _, err := db.ExecContext(ctx, originalFunction); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restore original trigger handler iteration %d: %w", i, err))
+				}
+				return
+			}
+			if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restored handler migration re-entry iteration %d: %w", i, err))
+				}
+				return
+			}
+			if err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restored handler read-only attestation iteration %d: %w", i, err))
+				}
+				return
+			}
+			catalogGate.Unlock()
+		}
+	}()
+
+	// Mutate only unrelated same-schema relations so catalog churn is real
+	// without taking locks on the protected Decision or tenant mapping tables.
+	for worker := 0; worker < ddlWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			table := fmt.Sprintf("%s.handler_churn_%d", schema, worker)
+			for i := 0; i < ddlIterations; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				constraint := fmt.Sprintf("handler_churn_ck_%d", i)
+				add := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (id >= %d)", table, constraint, i)
+				drop := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", table, constraint)
+				if _, err := admin.ExecContext(ctx, add); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL add worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+				if _, err := admin.ExecContext(ctx, drop); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL drop worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	// Attestors share the exact Outbox pool. They only observe the restored
+	// handler; the RW gate excludes the intentional invalid-handler window.
+	for worker := 0; worker < attestationWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < attestationsPerWorker; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				catalogGate.RLock()
+				err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema)
+				catalogGate.RUnlock()
+				if err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("read-only attestation worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("trigger-handler/catalog-DDL stress test exceeded its 90-second deadline")
+	}
+	if ctx.Err() == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+			t.Errorf("final restored handler migration attestation: %v", err)
+		}
+		if err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+			t.Errorf("final restored handler read-only attestation: %v", err)
+		}
+		t.Logf("stress completed: handler restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
+	}
+}
