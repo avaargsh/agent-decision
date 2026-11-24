@@ -204,3 +204,8 @@ func (r *tenantPoolRegistry) close() error {
 	}
 	return nil
 }
+
+// Close implements the public TenantPoolStore lifecycle contract.
+func (r *tenantPoolRegistry) Close() error {
+	return r.close()
+}
