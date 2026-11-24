@@ -1,42 +1,56 @@
 # PostgreSQL Operations Runbook — Agent Decision
 
-**Status:** operational design baseline; deployment-specific credentials and restore evidence are not yet configured.  
+**Status:** repository-level v0004 RLS implementation; deployment-specific credentials, TLS identity and restore evidence are not yet configured.  
 **Applies to:** PostgreSQL 16 and checksummed Decision migrations v0001–v0004.
 
 ## 1. Role separation
 
-Use a dedicated database and schema for Agent Decision. Keep migration ownership separate from the application login.
+Use a dedicated database and schema for Agent Decision. Keep migration ownership separate from all runtime identities.
 
-- `agent_decision_migrator`: schema owner; used only by the migration job, never mounted in API/dispatcher/attestor pods.
+- `agent_decision_migrator`: schema/table owner; used only by the migration job, never mounted in API/dispatcher/attestor pods.
 - `agent_decision_app_<tenant>`: one distinct LOGIN per provisioned tenant; `SELECT/INSERT` DecisionRecord and `INSERT` Outbox only, **no Outbox lease/ACK UPDATE or SELECT**. Never share one LOGIN across tenants.
 - `agent_decision_dispatcher`: claims and ACKs/retries Outbox events with `SELECT` plus narrowly scoped column `UPDATE`; **no DecisionRecord SELECT/INSERT or Outbox INSERT**.
 - `agent_decision_attestor`: isolated read-only catalog verification; schema `USAGE` and `SELECT` on `schema_migrations`, never DDL or runtime DML.
 - Human/automation backup role: only the backup access required by the selected backup method; secrets must not be mounted into API/dispatcher processes.
 
-Example bootstrap (run as the database administrator; replace database/schema and secret provisioning for the target environment):
+Example bootstrap (run as the database administrator; replace database/schema, tenant IDs and secret provisioning for the target environment):
 
 ```sql
 CREATE ROLE agent_decision_migrator LOGIN;
-CREATE ROLE agent_decision_app_tenant_a LOGIN;\nCREATE ROLE agent_decision_app_tenant_b LOGIN;
+CREATE ROLE agent_decision_app_tenant_a LOGIN;
+CREATE ROLE agent_decision_app_tenant_b LOGIN;
 CREATE ROLE agent_decision_dispatcher LOGIN;
 CREATE ROLE agent_decision_attestor LOGIN;
 
 CREATE DATABASE agent_decision OWNER agent_decision_migrator;
 
-\connect agent_decision
+\\connect agent_decision
 
 REVOKE ALL ON DATABASE agent_decision FROM PUBLIC;
 GRANT CONNECT ON DATABASE agent_decision TO
-  agent_decision_app_tenant_a, agent_decision_app_tenant_b,\n  agent_decision_dispatcher, agent_decision_attestor;
+  agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+  agent_decision_dispatcher, agent_decision_attestor;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO
-  agent_decision_app_tenant_a, agent_decision_app_tenant_b,\n  agent_decision_dispatcher, agent_decision_attestor;
+  agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+  agent_decision_dispatcher, agent_decision_attestor;
 
--- Apply migrations 0001-0003 first as agent_decision_migrator.
--- API: immutable Decision + atomic Outbox INSERT only.
-GRANT SELECT, INSERT ON TABLE public.decision_records TO agent_decision_app;
-GRANT INSERT ON TABLE public.outbox_events TO agent_decision_app;
+-- Apply migrations 0001-0004 as agent_decision_migrator.
+-- API: one authenticated LOGIN per tenant; atomic Decision + Outbox INSERT.
+GRANT SELECT, INSERT ON TABLE public.decision_records
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b;
+GRANT INSERT ON TABLE public.outbox_events
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b;
+
+-- RLS policies read this migrator-owned map. Runtime logins are read-only.
+GRANT SELECT ON TABLE public.decision_tenant_logins
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+     agent_decision_dispatcher;
+INSERT INTO public.decision_tenant_logins (login_role, tenant_id, login_kind) VALUES
+  ('agent_decision_app_tenant_a', 'tenant-a', 'application'),
+  ('agent_decision_app_tenant_b', 'tenant-b', 'application'),
+  ('agent_decision_dispatcher', NULL, 'dispatcher');
 
 -- Dispatcher: bounded SKIP LOCKED Claim, fenced Ack/Retry; cannot forge events.
 GRANT SELECT ON TABLE public.outbox_events TO agent_decision_dispatcher;
@@ -49,29 +63,17 @@ GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
 
 -- Validate ALL effective privileges, including inherited/column grants,
 -- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
--- Also deny effective access to unreviewed tables/views/sequences in the
--- approved schema (including column-only grants and rights via PUBLIC).
--- Deny EXECUTE (including default PUBLIC grants) on all non-allowlisted
--- functions/procedures within the approved schema. Only the three exact
--- zero-argument, non-SECURITY-DEFINER migration trigger handlers are exempt,
--- and their definitions must pass independent catalog attestation.
--- After creating any additional routine, REVOKE EXECUTE ... FROM PUBLIC
--- and review all effective runtime/inherited grants before enabling traffic.
--- Beyond the approved schema, deny effective rights on objects in any
--- accessible non-system schema: qualified SECURITY DEFINER functions can
--- bypass direct table ACLs even with search_path pinned. The role audit
--- checks effective EXECUTE and relation/column/sequence privileges.
--- The default public schema may remain USAGE-accessible only if it exposes
--- no effective object rights to the application/dispatcher identities.
--- A successful check is point-in-time; it is NOT tenant RLS or proof of
--- application credential compromise resistance.
--- These GRANTs assume new roles in a dedicated DB: check and revoke any
--- preexisting PUBLIC/role memberships before production.
+-- Runtime roles need SELECT only on decision_tenant_logins; never grant mapping
+-- INSERT/UPDATE/DELETE. Only the migrator may provision or revoke mappings.
+-- Deny effective access to unreviewed tables/views/sequences and EXECUTE on
+-- unreviewed routines, including default PUBLIC and inherited grants.
 -- No API/dispatcher role may own tables, use DDL/TRUNCATE/DELETE, bypass RLS,
 -- be a member of the migrator or inherit schema/database CREATE privileges.
 ```
 
-The Decision API uses scoped SQL for tenant/idempotency lookup, while a separate dispatcher owns Outbox Claim/Ack/Retry. Migration v0004 enables RLS on `decision_records` and `outbox_events`. Tenant policies require both the transaction-local `decision.tenant_id` and a matching row in the migrator-owned `decision_tenant_logins` for the authenticated PostgreSQL `session_user`; setting the GUC alone cannot impersonate another tenant. The dispatcher mapping grants global Outbox Claim/Ack/Retry visibility but no DecisionRecord access. Runtime roles receive SELECT-only access to the mapping table and no mapping DML. The mapping table itself and `schema_migrations` have no RLS policies. RLS is enabled but not forced: PostgreSQL table owners bypass RLS unless FORCE is set. The migrator remains the owner and is never a runtime identity; `VerifyRuntimeDatabaseRole` rejects owners, owner membership and BYPASSRLS. Do not grant broad read access to other schemas or tables.
+Migration v0004 enables row-level security on `decision_records` and `outbox_events`. Tenant policies require both the transaction-local `decision.tenant_id` and a matching row in the migrator-owned `decision_tenant_logins` for the authenticated PostgreSQL `session_user`; setting the GUC alone cannot impersonate another tenant. The dispatcher mapping grants global Outbox Claim/Ack/Retry visibility but no DecisionRecord access. The mapping table and `schema_migrations` have no RLS policies; runtime roles receive SELECT-only access to the mapping table.
+
+RLS is enabled but not forced: PostgreSQL table owners bypass RLS unless FORCE is set. The migrator remains the owner and is never a runtime identity; `VerifyRuntimeDatabaseRole` rejects runtime owners, owner membership and BYPASSRLS. The mapping table's unique NULLS NOT DISTINCT tenant key permits only one application LOGIN per tenant and one dispatcher LOGIN. Do not grant broad read access to other schemas or tables.
 
 ## 2. Secret and connection handling
 
