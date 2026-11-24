@@ -54,33 +54,44 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		t.Fatalf("missing schema must fail closed: %v", err)
 	}
 
-	// v0001-v0003 never authorize RLS. Even a dormant policy or FORCE flag
-	// is unreviewed catalog state, and can change visibility on later enable.
-	// Neither a read-only attestor nor migration re-entry may accept it.
-	for _, table := range []string{"decision_records", "outbox_events", "schema_migrations"} {
-		t.Run("unapproved_rls_"+table, func(t *testing.T) {
+	// v0004 approves only the exact tenant policies on the two data tables.
+	// Dormant/extra policies, disabled RLS, forced-owner RLS, or any RLS on the
+	// mapping/history tables must fail both startup attestation and migration
+	// re-entry. The verifier is read-only and never repairs catalog drift.
+	for _, table := range []string{"decision_records", "outbox_events", "decision_tenant_logins", "schema_migrations"} {
+		t.Run("rls_drift_"+table, func(t *testing.T) {
 			target := schema + "." + table
-			for _, tc := range []struct {
+			changes := []struct {
 				name, install, restore string
 			}{
-				{"dormant_policy", "CREATE POLICY unreviewed_policy ON "+target+" FOR SELECT USING (true)", "DROP POLICY unreviewed_policy ON "+target},
-				{"enabled", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY"},
-				{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
-			} {
+				{"extra_policy", "CREATE POLICY unreviewed_policy ON "+target+" FOR SELECT USING (true)", "DROP POLICY unreviewed_policy ON "+target},
+			}
+			if table == "decision_records" || table == "outbox_events" {
+				changes = append(changes,
+					struct{ name, install, restore string }{"disabled", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
+				)
+			} else {
+				changes = append(changes,
+					struct{ name, install, restore string }{"enabled", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
+				)
+			}
+			for _, tc := range changes {
 				t.Run(tc.name, func(t *testing.T) {
 					if _, err := admin.ExecContext(ctx, tc.install); err != nil {
 						t.Fatal(err)
 					}
 					defer func() {
-						if _, err := admin.ExecContext(ctx, tc.restore); err != nil {
+						if _, err := admin.ExecContext(context.Background(), tc.restore); err != nil {
 							t.Errorf("restore fixture: %v", err)
 						}
 					}()
 					if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
-						t.Errorf("attestation accepted unapproved %s on %s: %v", tc.name, table, err)
+						t.Errorf("attestation accepted RLS drift %s on %s: %v", tc.name, table, err)
 					}
 					if err := MigrateInSchema(ctx, admin, schema); !errors.Is(err, ErrCatalogDrift) {
-						t.Errorf("migration re-entry accepted unapproved %s on %s: %v", tc.name, table, err)
+						t.Errorf("migration re-entry accepted RLS drift %s on %s: %v", tc.name, table, err)
 					}
 				})
 				if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
