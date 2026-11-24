@@ -109,6 +109,7 @@ func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
 		{version: 1, name: "0001_create_decision_records.sql"},
 		{version: 2, name: "0002_decision_outbox.sql"},
 		{version: 3, name: "0003_append_only_truncate_guards.sql"},
+		{version: 4, name: "0004_tenant_row_level_security.sql"},
 	}
 	for i := range migrations {
 		source, err := schemamigrations.FS.ReadFile(migrations[i].name)
@@ -226,6 +227,192 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	return probeDecisionIdentityConstraint(ctx, tx)
 }
 
+// verifyTenantRLSPolicies pins the exact v0004 RLS surface. Runtime tenant
+// authority comes from the authenticated PostgreSQL session_user mapping;
+// decision.tenant_id is only a transaction-local equality guard.
+func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
+	for _, expected := range []struct {
+		table string
+		enabled bool
+		forced bool
+	}{
+		{"decision_records", true, false},
+		{"outbox_events", true, false},
+		{"decision_tenant_logins", false, false},
+		{"schema_migrations", false, false},
+	} {
+		var enabled, forced bool
+		err := tx.QueryRowContext(ctx, `
+			SELECT c.relrowsecurity, c.relforcerowsecurity
+			FROM pg_catalog.pg_class AS c
+			WHERE c.oid = pg_catalog.to_regclass($1)
+		`, expected.table).Scan(&enabled, &forced)
+		if err != nil || enabled != expected.enabled || forced != expected.forced {
+			return fmt.Errorf("%w: unexpected RLS flags on %s", ErrCatalogDrift, expected.table)
+		}
+	}
+
+	// The mapping table is deliberately outside RLS so policy subqueries can
+	// read it. Its only runtime grant is SELECT; the migrator owns its contents.
+	var mappingShapeOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT count(*) = 3 FROM pg_catalog.pg_attribute AS a
+			 WHERE a.attrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND a.attnum > 0 AND NOT a.attisdropped)
+			AND (SELECT count(*) = 1 FROM pg_catalog.pg_attribute AS a
+			 WHERE a.attrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND a.attname = 'login_role' AND a.atttypid = 'pg_catalog.name'::pg_catalog.regtype AND a.attnotnull)
+			AND (SELECT count(*) = 1 FROM pg_catalog.pg_attribute AS a
+			 WHERE a.attrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND a.attname = 'tenant_id' AND a.atttypid = 'pg_catalog.text'::pg_catalog.regtype AND NOT a.attnotnull)
+			AND (SELECT count(*) = 1 FROM pg_catalog.pg_attribute AS a
+			 WHERE a.attrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND a.attname = 'login_kind' AND a.atttypid = 'pg_catalog.text'::pg_catalog.regtype AND a.attnotnull)
+	`).Scan(&mappingShapeOK); err != nil || !mappingShapeOK {
+		return fmt.Errorf("%w: tenant LOGIN mapping table shape drift", ErrCatalogDrift)
+	}
+	var mappingConstraintsOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
+			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND c.conname = 'decision_tenant_logins_identity_ck'
+			   AND c.contype = 'c' AND c.convalidated)
+			AND
+			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
+			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND c.conname = 'decision_tenant_logins_tenant_uq'
+			   AND c.contype = 'u' AND c.convalidated AND c.connullsnotdistinct)
+	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
+		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
+	}
+
+	type expectedPolicy struct {
+		command string
+		qualTokens []string
+		checkTokens []string
+	}
+	expected := map[string]expectedPolicy{
+		"decision_records_tenant_select": {
+			command: "r",
+			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "decision_records.tenant_id", "current_setting", "decision.tenant_id"},
+		},
+		"decision_records_tenant_insert": {
+			command: "a",
+			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "decision_records.tenant_id", "current_setting", "decision.tenant_id"},
+		},
+		"outbox_events_tenant_insert": {
+			command: "a",
+			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "outbox_events.tenant_id", "current_setting", "decision.tenant_id"},
+		},
+		"outbox_events_dispatcher_select": {
+			command: "r",
+			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
+		},
+		"outbox_events_dispatcher_update": {
+			command: "w",
+			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
+			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
+		},
+	}
+	for _, table := range []string{"decision_records", "outbox_events"} {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT p.polname, p.polcmd::text, p.polpermissive, p.polroles::text,
+			       COALESCE(pg_catalog.pg_get_expr(p.polqual, p.polrelid), ''),
+			       COALESCE(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), '')
+			FROM pg_catalog.pg_policy AS p
+			WHERE p.polrelid = pg_catalog.to_regclass($1)
+			ORDER BY p.polname
+		`, table)
+		if err != nil {
+			return fmt.Errorf("%w: inspect RLS policies on %s: %v", ErrCatalogDrift, table, err)
+		}
+		seen := 0
+		for rows.Next() {
+			var name, command, roles, qual, check string
+			var permissive bool
+			if err := rows.Scan(&name, &command, &permissive, &roles, &qual, &check); err != nil {
+				rows.Close()
+				return fmt.Errorf("%w: scan RLS policy on %s: %v", ErrCatalogDrift, table, err)
+			}
+			policy, ok := expected[name]
+			if !ok || policy.command != command || !permissive || roles != "{0}" {
+				rows.Close()
+				return fmt.Errorf("%w: unreviewed RLS policy %s on %s", ErrCatalogDrift, name, table)
+			}
+			normalize := func(value string) string {
+				return strings.Join(strings.Fields(strings.ToLower(value)), " ")
+			}
+			containsAll := func(value string, tokens []string) bool {
+				normalized := normalize(value)
+				if normalized == "" || strings.Contains(normalized, " or ") {
+					return false
+				}
+				for _, token := range tokens {
+					if !strings.Contains(normalized, normalize(token)) {
+						return false
+					}
+				}
+				return true
+			}
+			if len(policy.qualTokens) == 0 {
+				if qual != "" {
+					rows.Close()
+					return fmt.Errorf("%w: unexpected USING expression on RLS policy %s", ErrCatalogDrift, name)
+				}
+			} else if !containsAll(qual, policy.qualTokens) {
+				rows.Close()
+				return fmt.Errorf("%w: weakened USING expression on RLS policy %s", ErrCatalogDrift, name)
+			}
+			if len(policy.checkTokens) == 0 {
+				if check != "" {
+					rows.Close()
+					return fmt.Errorf("%w: unexpected WITH CHECK expression on RLS policy %s", ErrCatalogDrift, name)
+				}
+			} else if !containsAll(check, policy.checkTokens) {
+				rows.Close()
+				return fmt.Errorf("%w: weakened WITH CHECK expression on RLS policy %s", ErrCatalogDrift, name)
+			}
+			if command == "w" && normalize(qual) != normalize(check) {
+				rows.Close()
+				return fmt.Errorf("%w: dispatcher UPDATE USING/WITH CHECK mismatch", ErrCatalogDrift)
+			}
+			seen++
+			delete(expected, name)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("%w: iterate RLS policies on %s: %v", ErrCatalogDrift, table, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("%w: close RLS policies on %s: %v", ErrCatalogDrift, table, err)
+		}
+		want := 2
+		if table == "outbox_events" {
+			want = 3
+		}
+		if seen != want {
+			return fmt.Errorf("%w: incomplete RLS policy set on %s", ErrCatalogDrift, table)
+		}
+	}
+	if len(expected) != 0 {
+		return fmt.Errorf("%w: missing approved RLS policy", ErrCatalogDrift)
+	}
+	for _, table := range []string{"decision_tenant_logins", "schema_migrations"} {
+		var noPolicies bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT NOT EXISTS (
+				SELECT 1 FROM pg_catalog.pg_policy
+				WHERE polrelid = pg_catalog.to_regclass($1)
+			)
+		`, table).Scan(&noPolicies); err != nil || !noPolicies {
+			return fmt.Errorf("%w: unexpected RLS policy on %s", ErrCatalogDrift, table)
+		}
+	}
+	return nil
+}
+
 // verifyDecisionCatalogReadOnly examines only installed PostgreSQL catalog
 // metadata; it may run inside a READ ONLY transaction with a restricted role.
 func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
@@ -233,6 +420,7 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 	if err := tx.QueryRowContext(ctx, `
 		SELECT to_regclass('decision_records') IS NOT NULL
 			AND to_regclass('outbox_events') IS NOT NULL
+			AND to_regclass('decision_tenant_logins') IS NOT NULL
 	`).Scan(&relationsOK); err != nil {
 		return fmt.Errorf("%w: inspect Decision relations: %v", ErrCatalogDrift, err)
 	}
@@ -240,24 +428,8 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: missing Decision ledger or Outbox relation", ErrCatalogDrift)
 	}
 
-	// v0001-v0003 define no row security flags or policies on these
-	// relations. Reject unreviewed state even when a policy is dormant.
-	// A future approved migration must replace this explicit baseline
-	// with exact role/command/expression and flag attestation.
-	for _, table := range []string{"decision_records", "outbox_events", "schema_migrations"} {
-		var approved bool
-		err := tx.QueryRowContext(ctx, `
-			SELECT NOT c.relrowsecurity AND NOT c.relforcerowsecurity
-				AND NOT EXISTS (
-					SELECT 1 FROM pg_catalog.pg_policy p
-					WHERE p.polrelid = c.oid
-				)
-			FROM pg_catalog.pg_class c
-			WHERE c.oid = pg_catalog.to_regclass($1)
-		`, table).Scan(&approved)
-		if err != nil || !approved {
-			return fmt.Errorf("%w: unapproved legacy RLS state on %s", ErrCatalogDrift, table)
-		}
+	if err := verifyTenantRLSPolicies(ctx, tx); err != nil {
+		return err
 	}
 
 	// The Outbox can only describe a Decision owned by the same tenant.
