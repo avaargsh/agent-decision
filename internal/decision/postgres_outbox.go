@@ -22,6 +22,33 @@ var ErrCatalogDrift = errors.New("Decision PostgreSQL catalog integrity drift")
 const migrationLockClass int32 = 71002
 const migrationLockObject int32 = 1
 
+// These exact, non-SECURITY-DEFINER trigger callback bodies are the only
+// executable routines a runtime login may encounter outside its bound schema.
+// PostgreSQL grants EXECUTE to PUBLIC by default, but trigger-returning
+// functions cannot be invoked as ordinary SQL functions.
+const decisionRecordMutationTriggerBody = `BEGIN
+    RAISE EXCEPTION 'decision_records are append-only';
+END;`
+
+const decisionOutboxDeleteTriggerBody = `BEGIN
+    RAISE EXCEPTION 'outbox events are append-only';
+END;`
+
+const decisionOutboxIdentityMutationTriggerBody = `BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
+       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
+       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
+       OR NEW.event_type IS DISTINCT FROM OLD.event_type
+       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+       OR NEW.payload IS DISTINCT FROM OLD.payload
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'outbox event identity and payload are immutable';
+    END IF;
+    RETURN NEW;
+END;`
+
 // validDecisionSchema is intentionally narrower than PostgreSQL identifiers:
 // only deployment-reviewed lowercase ASCII schemas are eligible, avoiding
 // truncation, quoting ambiguities and reserved internal namespaces.
@@ -661,35 +688,9 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 		name string
 		body string
 	}{
-		{
-			name: "reject_decision_record_mutation()",
-			body: `BEGIN
-    RAISE EXCEPTION 'decision_records are append-only';
-END;`,
-		},
-		{
-			name: "reject_decision_outbox_delete()",
-			body: `BEGIN
-    RAISE EXCEPTION 'outbox events are append-only';
-END;`,
-		},
-		{
-			name: "reject_decision_outbox_identity_mutation()",
-			body: `BEGIN
-    IF NEW.event_id IS DISTINCT FROM OLD.event_id
-       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
-       OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type
-       OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
-       OR NEW.aggregate_version IS DISTINCT FROM OLD.aggregate_version
-       OR NEW.event_type IS DISTINCT FROM OLD.event_type
-       OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
-       OR NEW.payload IS DISTINCT FROM OLD.payload
-       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
-        RAISE EXCEPTION 'outbox event identity and payload are immutable';
-    END IF;
-    RETURN NEW;
-END;`,
-		},
+		{name: "reject_decision_record_mutation()", body: decisionRecordMutationTriggerBody},
+		{name: "reject_decision_outbox_delete()", body: decisionOutboxDeleteTriggerBody},
+		{name: "reject_decision_outbox_identity_mutation()", body: decisionOutboxIdentityMutationTriggerBody},
 	}
 	for _, expected := range immutableFunctions {
 		var actualSource string
