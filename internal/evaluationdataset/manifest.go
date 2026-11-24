@@ -222,6 +222,41 @@ func ValidateSplitUse(split Split, purpose Purpose) error {
 	}
 }
 
+// VerifyIndependentReviewArtifacts checks the exact bytes for both independent
+// reviewer labels for every case. The final adjudicated label is checked by
+// VerifyArtifacts; reviewer identity/signature trust is a separate gate.
+func VerifyIndependentReviewArtifacts(manifest Manifest, reviewerLabels map[string][]io.Reader) error {
+	if len(manifest.Cases) == 0 || len(reviewerLabels) != len(manifest.Cases) {
+		return ErrArtifactIntegrity
+	}
+	seen := make(map[string]struct{}, len(manifest.Cases))
+	for _, item := range manifest.Cases {
+		if !validIdentifier(item.CaseID) || len(item.Adjudication.IndependentLabelSHA256) != 2 {
+			return ErrArtifactIntegrity
+		}
+		if _, exists := seen[item.CaseID]; exists {
+			return ErrArtifactIntegrity
+		}
+		seen[item.CaseID] = struct{}{}
+		readers := reviewerLabels[item.CaseID]
+		if len(readers) != 2 {
+			return ErrArtifactIntegrity
+		}
+		for i := range readers {
+			if !validSHA256(item.Adjudication.IndependentLabelSHA256[i]) ||
+				verifyReaderDigest(readers[i], item.Adjudication.IndependentLabelSHA256[i]) != nil {
+				return fmt.Errorf("%w: independent reviewer label %d for %s", ErrArtifactIntegrity, i+1, item.CaseID)
+			}
+		}
+	}
+	for id := range reviewerLabels {
+		if _, exists := seen[id]; !exists {
+			return ErrArtifactIntegrity
+		}
+	}
+	return nil
+}
+
 // VerifyAuthorizationArtifacts checks the exact grant and de-identification
 // attestation bytes referenced by the manifest. Signature and signer trust
 // verification remain the responsibility of the production authority layer.
