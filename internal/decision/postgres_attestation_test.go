@@ -462,3 +462,213 @@ func TestCatalogAttestationPinsSchemaAcrossPooledConnections(t *testing.T) {
 		t.Fatalf("restored schema B migration re-entry failed: %v", err)
 	}
 }
+
+
+// TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL reproduces
+// the historical migration-reentry path while unrelated relations in the
+// SAME schema churn PostgreSQL catalogs. The trigger is deliberately weakened
+// and restored serially; concurrent attestors only run while it is restored.
+// This distinguishes expected trigger drift from an unexpected mapping-CHECK
+// mismatch during restoration.
+func TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	admin.SetMaxOpenConns(24)
+	if err := admin.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := fmt.Sprintf("attest_restore_stress_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	}()
+
+	if err := MigrateInSchema(ctx, admin, schema); err != nil {
+		t.Fatalf("install target schema: %v", err)
+	}
+
+	const ddlWorkers = 4
+	const ddlIterations = 96
+	const attestationWorkers = 2
+	const attestationsPerWorker = 48
+	const restoreIterations = 48
+
+	for worker := 0; worker < ddlWorkers; worker++ {
+		table := fmt.Sprintf("%s.catalog_churn_%d", schema, worker)
+		if _, err := admin.ExecContext(ctx, "CREATE TABLE "+table+" (id integer NOT NULL)"); err != nil {
+			t.Fatalf("create same-schema catalog churn table %d: %v", worker, err)
+		}
+	}
+
+	signature := schema + ".reject_decision_record_mutation()"
+	var originalFunction string
+	if err := admin.QueryRowContext(ctx,
+		"SELECT pg_catalog.pg_get_functiondef(pg_catalog.to_regprocedure($1))",
+		signature,
+	).Scan(&originalFunction); err != nil {
+		t.Fatalf("read original trigger function: %v", err)
+	}
+	noOpFunction := "CREATE OR REPLACE FUNCTION " + schema +
+		".reject_decision_record_mutation() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END;'"
+
+	// Establish a sequential baseline before introducing catalog concurrency.
+	for i := 0; i < 3; i++ {
+		if err := MigrateInSchema(ctx, admin, schema); err != nil {
+			t.Fatalf("sequential migration baseline %d: %v", i, err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, admin, schema); err != nil {
+			t.Fatalf("sequential read-only baseline %d: %v", i, err)
+		}
+	}
+
+	var catalogGate sync.RWMutex
+	errs := make(chan error, ddlWorkers+attestationWorkers+1)
+	var wg sync.WaitGroup
+	report := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case errs <- err:
+		default:
+		}
+		cancel()
+	}
+
+	// Repeatedly execute the exact trigger-handler rewrite/restore sequence
+	// that historically preceded the intermittent mapping-constraint error.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if _, err := admin.ExecContext(context.Background(), originalFunction); err != nil {
+				select {
+				case errs <- fmt.Errorf("restore trigger function during cleanup: %w", err):
+				default:
+				}
+			}
+		}()
+		for i := 0; i < restoreIterations; i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			catalogGate.Lock()
+			if _, err := admin.ExecContext(ctx, noOpFunction); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("rewrite trigger function iteration %d: %w", i, err))
+				}
+				return
+			}
+			err := MigrateInSchema(ctx, admin, schema)
+			if !errors.Is(err, ErrCatalogDrift) ||
+				!strings.Contains(err.Error(), "Decision trigger function drift: reject_decision_record_mutation()") {
+				catalogGate.Unlock()
+				report(fmt.Errorf("weakened trigger must fail at the handler check, iteration %d: %v", i, err))
+				return
+			}
+			if _, err := admin.ExecContext(ctx, originalFunction); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restore trigger function iteration %d: %w", i, err))
+				}
+				return
+			}
+			err = MigrateInSchema(ctx, admin, schema)
+			catalogGate.Unlock()
+			if err != nil {
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restored trigger migration iteration %d: %w", i, err))
+				}
+				return
+			}
+		}
+	}()
+
+	// Catalog DDL is deliberately in the target schema but on unrelated
+	// relations. Each worker owns a distinct table to avoid table-lock
+	// contention obscuring shared pg_class/pg_constraint catalog activity.
+	for worker := 0; worker < ddlWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			table := fmt.Sprintf("%s.catalog_churn_%d", schema, worker)
+			for i := 0; i < ddlIterations; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				constraint := fmt.Sprintf("catalog_churn_ck_%d", i)
+				add := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (id >= %d)", table, constraint, i)
+				drop := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", table, constraint)
+				if _, err := admin.ExecContext(ctx, add); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL add worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+				if _, err := admin.ExecContext(ctx, drop); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL drop worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	// Read-only attestors share the schema with the DDL churn. The RW gate
+	// prevents them from observing the intentionally weakened trigger body.
+	for worker := 0; worker < attestationWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < attestationsPerWorker; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				catalogGate.RLock()
+				err := VerifyInstalledCatalogInSchema(ctx, admin, schema)
+				catalogGate.RUnlock()
+				if err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("read-only attestation worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("trigger-restore/catalog-DDL stress test exceeded its 90-second deadline")
+	}
+	if ctx.Err() == nil {
+		if err := MigrateInSchema(ctx, admin, schema); err != nil {
+			t.Errorf("final restored migration attestation: %v", err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, admin, schema); err != nil {
+			t.Errorf("final restored read-only attestation: %v", err)
+		}
+		t.Logf("stress completed: trigger restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
+	}
+}
