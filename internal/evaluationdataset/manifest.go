@@ -54,6 +54,7 @@ type Manifest struct {
 type Authorization struct {
 	SourceOwner               string    `json:"source_owner"`
 	GrantRef                  string    `json:"grant_ref"`
+	GrantSHA256               string    `json:"grant_sha256"`
 	ApprovedAt                time.Time `json:"approved_at"`
 	ExpiresAt                 time.Time `json:"expires_at"`
 	ScopeSHA256               string    `json:"scope_sha256"`
@@ -192,6 +193,19 @@ func ValidateManifest(manifest Manifest, now time.Time) (AdmissionReport, error)
 	return report, nil
 }
 
+// VerifyAuthorizationArtifacts checks the exact grant and de-identification
+// attestation bytes referenced by the manifest. Signature and signer trust
+// verification remain the responsibility of the production authority layer.
+func VerifyAuthorizationArtifacts(manifest Manifest, grant, deidentification io.Reader) error {
+	if !validSHA256(manifest.Authorization.GrantSHA256) ||
+		!validSHA256(manifest.Authorization.DeidentificationSHA256) ||
+		verifyReaderDigest(grant, manifest.Authorization.GrantSHA256) != nil ||
+		verifyReaderDigest(deidentification, manifest.Authorization.DeidentificationSHA256) != nil {
+		return ErrArtifactIntegrity
+	}
+	return nil
+}
+
 // VerifyArtifacts streams the exact evidence and final-label bytes for every
 // case and compares their SHA-256 digests. Both maps must contain exactly one
 // non-nil reader per case; missing or extra artifacts fail closed.
@@ -232,6 +246,7 @@ func VerifyArtifacts(manifest Manifest, evidence, labels map[string]io.Reader) e
 func validAuthorization(authorization Authorization, now time.Time) bool {
 	return validIdentifier(authorization.SourceOwner) &&
 		validIdentifier(authorization.GrantRef) &&
+		validSHA256(authorization.GrantSHA256) &&
 		!authorization.ApprovedAt.IsZero() && !authorization.ApprovedAt.After(now) &&
 		!authorization.ExpiresAt.IsZero() && authorization.ExpiresAt.After(now) &&
 		authorization.ExpiresAt.After(authorization.ApprovedAt) &&
