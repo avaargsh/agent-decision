@@ -179,4 +179,95 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 	}
 	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='0002_decision_outbox.sql' WHERE version=2"); err != nil { t.Fatal(err) }
 	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil { t.Fatalf("restored history: %v", err) }
+
+	// A same-name CHECK can retain every expected keyword while adding an
+	// unconditional TRUE branch. The read-only attestor must compare the
+	// complete predicate, not merely search for required substrings.
+	t.Run("weakened_mapping_identity_check_or_true", func(t *testing.T) {
+		target := schema + ".decision_tenant_logins"
+		var before string
+		if err := admin.QueryRowContext(ctx, `
+			SELECT pg_catalog.pg_get_constraintdef(c.oid)
+			FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass($1)
+			  AND c.conname = 'decision_tenant_logins_identity_ck'
+		`, target).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_identity_ck"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `ALTER TABLE `+target+` ADD CONSTRAINT decision_tenant_logins_identity_ck CHECK (
+			(login_role::text <> ''
+			 AND (
+				(login_kind = 'application' AND tenant_id IS NOT NULL AND tenant_id <> '')
+				OR (login_kind = 'dispatcher' AND tenant_id IS NULL)
+			 )
+			) OR TRUE
+		)`); err != nil {
+			t.Fatal(err)
+		}
+		login := fmt.Sprintf("attest_bypass_%d", time.Now().UnixNano())
+		if _, err := admin.ExecContext(ctx, "INSERT INTO "+target+" (login_role, tenant_id, login_kind) VALUES ($1::name, NULL, 'application')", login); err != nil {
+			t.Fatalf("weakened CHECK did not demonstrate the expected bypass: %v", err)
+		}
+		if _, err := admin.ExecContext(ctx, "DELETE FROM "+target+" WHERE login_role = $1::name", login); err != nil {
+			t.Fatal(err)
+		}
+		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		migrationErr := MigrateInSchema(ctx, admin, schema)
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_identity_ck"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ADD CONSTRAINT decision_tenant_logins_identity_ck "+before); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored identity CHECK did not pass: %v", err)
+		}
+		if !errors.Is(verifyErr, ErrCatalogDrift) {
+			t.Fatalf("read-only attestation accepted a same-name mapping CHECK with OR TRUE: %v", verifyErr)
+		}
+		if !errors.Is(migrationErr, ErrCatalogDrift) {
+			t.Fatalf("migration re-entry accepted a same-name mapping CHECK with OR TRUE: %v", migrationErr)
+		}
+	})
+
+	t.Run("weakened_mapping_login_kind_check_or_true", func(t *testing.T) {
+		target := schema + ".decision_tenant_logins"
+		var before string
+		if err := admin.QueryRowContext(ctx, `
+			SELECT pg_catalog.pg_get_constraintdef(c.oid)
+			FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass($1)
+			  AND c.conname = 'decision_tenant_logins_login_kind_check'
+		`, target).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_login_kind_check"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `ALTER TABLE `+target+` ADD CONSTRAINT decision_tenant_logins_login_kind_check CHECK (
+			(login_kind IN ('application', 'dispatcher')) OR TRUE
+		)`); err != nil {
+			t.Fatal(err)
+		}
+		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		migrationErr := MigrateInSchema(ctx, admin, schema)
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_login_kind_check"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ADD CONSTRAINT decision_tenant_logins_login_kind_check "+before); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored login_kind CHECK did not pass: %v", err)
+		}
+		if !errors.Is(verifyErr, ErrCatalogDrift) {
+			t.Fatalf("read-only attestation accepted a same-name login_kind CHECK with OR TRUE: %v", verifyErr)
+		}
+		if !errors.Is(migrationErr, ErrCatalogDrift) {
+			t.Fatalf("migration re-entry accepted a same-name login_kind CHECK with OR TRUE: %v", migrationErr)
+		}
+	})
 }
