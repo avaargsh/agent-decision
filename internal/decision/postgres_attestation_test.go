@@ -747,8 +747,8 @@ func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 		},
 		{
 			name: "missing critical check",
-			ddl: "ALTER TABLE %s.decision_records DROP CONSTRAINT decision_records_json_identity_ck",
-			want: "critical CHECK decision_records.decision_records_json_identity_ck missing mismatch",
+			ddl: "ALTER TABLE %s.outbox_events DROP CONSTRAINT outbox_lease_pair_ck",
+			want: "critical CHECK outbox_events.outbox_lease_pair_ck missing mismatch",
 		},
 	}
 	for i, tc := range cases {
