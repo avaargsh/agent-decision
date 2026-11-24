@@ -302,21 +302,25 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	`).Scan(&mappingPublicAccessOK); err != nil || !mappingPublicAccessOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping must not be granted to PUBLIC", ErrCatalogDrift)
 	}
+	// Materialize only the pinned relation's constraints before deparsing.
+	// Other schemas may undergo concurrent DDL; never deparse their OIDs.
 	var mappingConstraintsOK bool
 	if err := tx.QueryRowContext(ctx, `
+		WITH mapping_constraints AS MATERIALIZED (
+			SELECT c.* FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
+		)
 		SELECT
-			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
-			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
-			   AND c.conname = 'decision_tenant_logins_pkey'
+			(SELECT count(*) = 1 FROM mapping_constraints AS c
+			 WHERE c.conname = 'decision_tenant_logins_pkey'
 			   AND c.contype = 'p' AND c.convalidated
 			   AND c.conkey = ARRAY[(
 			       SELECT a.attnum FROM pg_catalog.pg_attribute AS a
 			       WHERE a.attrelid = c.conrelid AND a.attname = 'login_role' AND a.attnum > 0
 			   )]::smallint[])
 			AND
-			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
-			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
-			   AND c.conname = 'decision_tenant_logins_identity_ck'
+			(SELECT count(*) = 1 FROM mapping_constraints AS c
+			 WHERE c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%login_role%'
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
@@ -325,18 +329,16 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id IS NULL%'
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id <>%')
 			AND
-			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
-			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
-			   AND c.conname = 'decision_tenant_logins_login_kind_check'
+			(SELECT count(*) = 1 FROM mapping_constraints AS c
+			 WHERE c.conname = 'decision_tenant_logins_login_kind_check'
 			   AND c.contype = 'c' AND c.convalidated
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
 			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%dispatcher%')
 			AND
 			(SELECT count(*) = 1
-			 FROM pg_catalog.pg_constraint AS c
+			 FROM mapping_constraints AS c
 			 JOIN pg_catalog.pg_index AS i ON i.indexrelid = c.conindid
-			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
-			   AND c.conname = 'decision_tenant_logins_tenant_uq'
+			 WHERE c.conname = 'decision_tenant_logins_tenant_uq'
 			   AND c.contype = 'u' AND c.convalidated
 			   AND c.conkey = ARRAY[(
 			       SELECT a.attnum FROM pg_catalog.pg_attribute AS a
@@ -344,7 +346,14 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			   )]::smallint[]
 			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready
 			   AND i.indnkeyatts = 1 AND i.indnatts = 1)
-	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
+	`).Scan(&mappingConstraintsOK); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			return fmt.Errorf("%w: inspect tenant LOGIN mapping constraints (SQLSTATE %s)", ErrCatalogDrift, pgErr.Code)
+		}
+		return fmt.Errorf("%w: inspect tenant LOGIN mapping constraints (%T)", ErrCatalogDrift, err)
+	}
+	if !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
 
