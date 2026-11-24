@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -270,4 +271,102 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 			t.Fatalf("migration re-entry accepted a same-name login_kind CHECK with OR TRUE: %v", migrationErr)
 		}
 	})
+}
+
+
+// TestCatalogAttestationStableDuringUnrelatedDDL exercises the migration and
+// read-only attestation paths while PostgreSQL's shared catalogs are changing
+// in a different schema. A sequential baseline runs first so any failure is
+// attributable to the concurrent phase rather than an invalid fixture.
+func TestCatalogAttestationStableDuringUnrelatedDDL(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	admin.SetMaxOpenConns(16)
+	if err := admin.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	targetSchema := "attest_stress_" + suffix
+	noiseSchema := "catalog_noise_" + suffix
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+targetSchema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+targetSchema+" CASCADE")
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+noiseSchema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+noiseSchema+" CASCADE")
+
+	if err := MigrateInSchema(ctx, admin, targetSchema); err != nil {
+		t.Fatalf("install target schema: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, "CREATE TABLE "+noiseSchema+".catalog_churn (id integer NOT NULL)"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := MigrateInSchema(ctx, admin, targetSchema); err != nil {
+			t.Fatalf("sequential migration baseline %d: %v", i, err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, admin, targetSchema); err != nil {
+			t.Fatalf("sequential read-only baseline %d: %v", i, err)
+		}
+	}
+
+	const ddlIterations = 24
+	const workers = 4
+	const attestationsPerWorker = 8
+	errs := make(chan error, workers+1)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < ddlIterations; i++ {
+			constraint := fmt.Sprintf("catalog_churn_ck_%d", i)
+			add := fmt.Sprintf("ALTER TABLE %s.catalog_churn ADD CONSTRAINT %s CHECK (id >= %d)", noiseSchema, constraint, i)
+			drop := fmt.Sprintf("ALTER TABLE %s.catalog_churn DROP CONSTRAINT %s", noiseSchema, constraint)
+			if _, err := admin.ExecContext(ctx, add); err != nil {
+				errs <- fmt.Errorf("unrelated DDL add %d: %w", i, err)
+				return
+			}
+			if _, err := admin.ExecContext(ctx, drop); err != nil {
+				errs <- fmt.Errorf("unrelated DDL drop %d: %w", i, err)
+				return
+			}
+		}
+	}()
+
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < attestationsPerWorker; i++ {
+				if err := VerifyInstalledCatalogInSchema(ctx, admin, targetSchema); err != nil {
+					errs <- fmt.Errorf("read-only attestation worker %d iteration %d: %w", worker, i, err)
+					return
+				}
+				if err := MigrateInSchema(ctx, admin, targetSchema); err != nil {
+					errs <- fmt.Errorf("migration re-entry worker %d iteration %d: %w", worker, i, err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }
