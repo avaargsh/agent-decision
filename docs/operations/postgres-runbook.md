@@ -24,7 +24,7 @@ CREATE ROLE agent_decision_attestor LOGIN;
 
 CREATE DATABASE agent_decision OWNER agent_decision_migrator;
 
-\\connect agent_decision
+\connect agent_decision
 
 REVOKE ALL ON DATABASE agent_decision FROM PUBLIC;
 GRANT CONNECT ON DATABASE agent_decision TO
