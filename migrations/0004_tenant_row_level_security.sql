@@ -21,9 +21,7 @@ COMMENT ON TABLE decision_tenant_logins IS
     'Migrator-owned mapping from authenticated PostgreSQL LOGIN to one tenant or the global Outbox dispatcher. Runtime roles are read-only.';
 
 ALTER TABLE decision_records ENABLE ROW LEVEL SECURITY;
-ALTER TABLE decision_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE outbox_events FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY decision_records_tenant_select
 ON decision_records
