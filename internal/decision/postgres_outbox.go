@@ -299,24 +299,29 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 
 	type expectedPolicy struct {
 		command string
+		andCount int
 		qualTokens []string
 		checkTokens []string
 	}
 	expected := map[string]expectedPolicy{
 		"decision_records_tenant_select": {
 			command: "r",
-			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
+			andCount: 3,
+			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"decision_records_tenant_insert": {
 			command: "a",
+			andCount: 3,
 			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_tenant_insert": {
 			command: "a",
+			andCount: 3,
 			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "outbox_events.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_dispatcher_select": {
 			command: "r",
+			andCount: 2,
 			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 		},
 		"outbox_events_dispatcher_update": {
@@ -355,7 +360,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			}
 			containsAll := func(value string, tokens []string) bool {
 				normalized := normalize(value)
-				if normalized == "" || strings.Contains(normalized, " or ") {
+				if normalized == "" || strings.Contains(normalized, " or ") ||
+					strings.Contains(normalized, " not ") || strings.Contains(normalized, "case ") ||
+					strings.Contains(normalized, " <> ") || strings.Contains(normalized, " != ") ||
+					strings.Contains(normalized, " is distinct from ") ||
+					strings.Count(normalized, " and ") != policy.andCount {
 					return false
 				}
 				for _, token := range tokens {
