@@ -171,6 +171,11 @@ func TestHypothesisEvaluationReportRejectsInvalidDataset(t *testing.T) {
 			out[0].ExpectedStatus = ""
 			return out
 		}()},
+		{"binding_expectation_without_publication", "sre-deployment-correlation-v1", func() []hypothesisEvaluationCase {
+			out := append([]hypothesisEvaluationCase{}, valid...)
+			out[4].ExpectedBindingsBound = true
+			return out
+		}()},
 		{"ambiguous_expected_outcome", "sre-deployment-correlation-v1", func() []hypothesisEvaluationCase {
 			out := append([]hypothesisEvaluationCase{}, valid...)
 			out[0].ExpectedError = errors.New("unexpected")
