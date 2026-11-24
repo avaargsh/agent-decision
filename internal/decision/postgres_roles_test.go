@@ -116,6 +116,48 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
 
+	// The same permission class is not sufficient for a provisioned login
+	// binding. Pin the deployment-reviewed database, role name and role OID.
+	t.Run("pinned_login_identity", func(t *testing.T) {
+		var database string
+		var appOID, dispatcherOID uint32
+		if err := admin.QueryRowContext(ctx, "SELECT current_database(), (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=$1), (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=$2)", appRole, dispatcherRole).Scan(&database, &appOID, &dispatcherOID); err != nil {
+			t.Fatal(err)
+		}
+		pin := runtimeLoginBinding{Database: database, RoleName: appRole, RoleOID: appOID}
+		if err := verifyBoundRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication, pin); err != nil {
+			t.Fatalf("valid provisioned application login: %v", err)
+		}
+		dispatcherPin := runtimeLoginBinding{Database: database, RoleName: dispatcherRole, RoleOID: dispatcherOID}
+		if err := verifyBoundRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher, dispatcherPin); err != nil {
+			t.Fatalf("valid provisioned dispatcher login: %v", err)
+		}
+		for _, tc := range []struct {
+			name string
+			pin runtimeLoginBinding
+		}{
+			{"wrong_database", runtimeLoginBinding{Database: database+"_other", RoleName: appRole, RoleOID: appOID}},
+			{"wrong_role_name", runtimeLoginBinding{Database: database, RoleName: dispatcherRole, RoleOID: appOID}},
+			{"wrong_role_oid", runtimeLoginBinding{Database: database, RoleName: appRole, RoleOID: dispatcherOID}},
+			{"wrong_identity", dispatcherPin},
+			{"empty_binding", runtimeLoginBinding{}},
+			{"missing_oid", runtimeLoginBinding{Database: database, RoleName: appRole}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if err := verifyBoundRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication, tc.pin); !errors.Is(err, ErrCatalogDrift) {
+					t.Fatalf("untrusted login binding accepted: %v", err)
+				}
+			})
+		}
+		// A valid pin must not bypass existing effective-ACL restrictions.
+		exec("GRANT SELECT ON "+schema+".outbox_events TO "+appRole)
+		defer exec("REVOKE SELECT ON "+schema+".outbox_events FROM "+appRole)
+		if err := verifyBoundRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication, pin); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("pinned login bypassed privilege check: %v", err)
+		}
+	})
+	check(app, RuntimeRoleApplication)
+
 	// A role must not be able to create persistent objects outside the
 	// approved schema, even when the foreign namespace has no objects or
 	// USAGE grant. This tests effective CREATE rather than existing ACLs.
