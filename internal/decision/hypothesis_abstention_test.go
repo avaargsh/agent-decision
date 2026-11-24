@@ -59,6 +59,7 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			name: "conflicting_symptom",
 			observations: []hypothesisObservation{symptom, negativeSymptom},
 			want: []hypothesisAbstentionReason{
+				hypothesisAbstentionMissingDeploymentObservation,
 				hypothesisAbstentionConflictingSymptomObservations,
 			},
 		},
@@ -66,6 +67,7 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			name: "conflicting_deployment",
 			observations: []hypothesisObservation{change, negativeChange},
 			want: []hypothesisAbstentionReason{
+				hypothesisAbstentionMissingSymptomObservation,
 				hypothesisAbstentionConflictingDeploymentObservations,
 			},
 		},
