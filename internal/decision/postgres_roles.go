@@ -57,78 +57,8 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	}
 	defer tx.Rollback()
 
-	// The application/dispatcher use unqualified SQL after this audit. Check
-	// the connection's original lookup path BEFORE pinning our own read-only
-	// inspection transaction; otherwise an unsafe runtime pool can pass.
-	// This is a point-in-time check on this authenticated connection, not
-	// proof that every pooled connection or a later session is unchanged.
-	var configuredPath string
-	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&configuredPath); err != nil {
-		return fmt.Errorf("%w: inspect runtime pool search_path: %v", ErrCatalogDrift, err)
-	}
-	if configuredPath != schema+", pg_catalog, pg_temp" {
-		return fmt.Errorf("%w: runtime pool search_path is not exclusively pinned to approved schema", ErrCatalogDrift)
-	}
-
-	// Never rely on ambient search_path or an untrusted current_schema value.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.set_config('search_path',
-		pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
-		return fmt.Errorf("%w: bind runtime role schema: %v", ErrCatalogDrift, err)
-	}
-	// pg_stat_activity.usesysid identifies the originally authenticated login,
-	// unlike session_user/current_user, both of which a superuser may reset.
-	// Disallow ADMIN membership even without current SET or INHERIT access.
-	var identityOK bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT r.rolcanlogin
-		       AND NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
-		            r.rolreplication OR r.rolbypassrls)
-		       AND session_user = current_user
-		       AND EXISTS (
-		           SELECT 1 FROM pg_catalog.pg_stat_activity AS login
-		           WHERE login.pid = pg_catalog.pg_backend_pid()
-		             AND login.usesysid = r.oid
-		       )
-		       AND pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')
-		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
-		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
-		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
-		       AND NOT EXISTS (
-		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
-		           WHERE reachable.rolname <> current_user
-		             AND pg_catalog.pg_has_role(current_user, reachable.oid, 'SET')
-		       )
-		       AND NOT EXISTS (
-		           SELECT 1 FROM pg_catalog.pg_auth_members AS membership
-		           WHERE membership.admin_option
-		             AND pg_catalog.pg_has_role(r.oid, membership.member, 'MEMBER')
-		       )
-		FROM pg_catalog.pg_roles AS r
-		JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1
-		WHERE r.rolname = current_user
-	`, schema).Scan(&identityOK); err != nil || !identityOK {
-		return fmt.Errorf("%w: unsafe runtime database role identity/ownership", ErrCatalogDrift)
-	}
-
-	// Check the pin on the same transaction and authenticated backend as
-	// the original LOGIN and ACL audit; a second pool checkout is unsafe.
-	if binding != nil {
-		var bound bool
-		err := tx.QueryRowContext(ctx, `
-			SELECT pg_catalog.current_database()::text = $1
-				AND session_user::text = $2
-				AND current_user::text = $2
-				AND EXISTS (
-					SELECT 1 FROM pg_catalog.pg_stat_activity AS login
-					JOIN pg_catalog.pg_roles AS r ON r.oid = login.usesysid
-					WHERE login.pid = pg_catalog.pg_backend_pid()
-					  AND r.rolname::text = $2
-					  AND r.oid = $3::pg_catalog.oid
-				)
-		`, binding.Database, binding.RoleName, int64(binding.RoleOID)).Scan(&bound)
-		if err != nil || !bound {
-			return fmt.Errorf("%w: runtime login binding mismatch", ErrCatalogDrift)
-		}
+	if err := verifyRuntimeTransactionIdentity(ctx, tx, schema, binding); err != nil {
+		return err
 	}
 
 	// Every table and column grant is checked. A table-wide UPDATE grant is
@@ -342,3 +272,84 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	return nil
 }
 
+
+// verifyRuntimeTransactionIdentity verifies the actual backend of tx, not
+// a separate pool checkout. The role/ownership checks are shared with the
+// startup ACL audit. This is not a full per-transaction ACL or RLS audit.
+func verifyRuntimeTransactionIdentity(ctx context.Context, tx *sql.Tx, schema string, binding *runtimeLoginBinding) error {
+	// The application/dispatcher use unqualified SQL after this audit. Check
+	// the connection's original lookup path BEFORE pinning our own read-only
+	// inspection transaction; otherwise an unsafe runtime pool can pass.
+	// This is a point-in-time check on this authenticated connection, not
+	// proof that every pooled connection or a later session is unchanged.
+	var configuredPath string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&configuredPath); err != nil {
+		return fmt.Errorf("%w: inspect runtime pool search_path: %v", ErrCatalogDrift, err)
+	}
+	if configuredPath != schema+", pg_catalog, pg_temp" {
+		return fmt.Errorf("%w: runtime pool search_path is not exclusively pinned to approved schema", ErrCatalogDrift)
+	}
+
+	// Never rely on ambient search_path or an untrusted current_schema value.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.set_config('search_path',
+		pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
+		return fmt.Errorf("%w: bind runtime role schema: %v", ErrCatalogDrift, err)
+	}
+	// pg_stat_activity.usesysid identifies the originally authenticated login,
+	// unlike session_user/current_user, both of which a superuser may reset.
+	// Disallow ADMIN membership even without current SET or INHERIT access.
+	var identityOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT r.rolcanlogin
+		       AND NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
+		            r.rolreplication OR r.rolbypassrls)
+		       AND session_user = current_user
+		       AND EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_stat_activity AS login
+		           WHERE login.pid = pg_catalog.pg_backend_pid()
+		             AND login.usesysid = r.oid
+		       )
+		       AND pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')
+		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
+		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
+		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
+		       AND NOT EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
+		           WHERE reachable.rolname <> current_user
+		             AND pg_catalog.pg_has_role(current_user, reachable.oid, 'SET')
+		       )
+		       AND NOT EXISTS (
+		           SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+		           WHERE membership.admin_option
+		             AND pg_catalog.pg_has_role(r.oid, membership.member, 'MEMBER')
+		       )
+		FROM pg_catalog.pg_roles AS r
+		JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1
+		WHERE r.rolname = current_user
+	`, schema).Scan(&identityOK); err != nil || !identityOK {
+		return fmt.Errorf("%w: unsafe runtime database role identity/ownership", ErrCatalogDrift)
+	}
+
+	// Check the pin on the same transaction and authenticated backend as
+	// the original LOGIN and ACL audit; a second pool checkout is unsafe.
+	if binding != nil {
+		var bound bool
+		err := tx.QueryRowContext(ctx, `
+			SELECT pg_catalog.current_database()::text = $1
+				AND session_user::text = $2
+				AND current_user::text = $2
+				AND EXISTS (
+					SELECT 1 FROM pg_catalog.pg_stat_activity AS login
+					JOIN pg_catalog.pg_roles AS r ON r.oid = login.usesysid
+					WHERE login.pid = pg_catalog.pg_backend_pid()
+					  AND r.rolname::text = $2
+					  AND r.oid = $3::pg_catalog.oid
+				)
+		`, binding.Database, binding.RoleName, int64(binding.RoleOID)).Scan(&bound)
+		if err != nil || !bound {
+			return fmt.Errorf("%w: runtime login binding mismatch", ErrCatalogDrift)
+		}
+	}
+
+	return nil
+}

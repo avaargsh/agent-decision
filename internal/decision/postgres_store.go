@@ -13,7 +13,32 @@ var ErrStoreUnavailable = errors.New("decision store unavailable")
 
 // PostgresStore persists immutable DecisionRecords. The database primary key
 // enforces tenant-scoped idempotency across processes and replicas.
-type PostgresStore struct { db *sql.DB }
+type PostgresStore struct {
+	db *sql.DB
+	bound *tenantTransactionBinding
+}
+
+// tenantTransactionBinding is supplied by trusted deployment configuration.
+// It is not derived from an incoming request. A bound store is private until
+// pool routing, policy attestation and dispatcher separation are complete.
+type tenantTransactionBinding struct {
+	tenantID string
+	schema string
+	login runtimeLoginBinding
+}
+
+func newBoundPostgresStore(db *sql.DB, schema, tenantID string, login runtimeLoginBinding) (*PostgresStore, error) {
+	if db == nil {
+		return nil, ErrStoreUnavailable
+	}
+	if !validDecisionSchema(schema) || !nameRe.MatchString(tenantID) ||
+		login.Database == "" || login.RoleName == "" || login.RoleOID == 0 {
+		return nil, fmt.Errorf("%w: incomplete tenant transaction binding", ErrCatalogDrift)
+	}
+	return &PostgresStore{db: db, bound: &tenantTransactionBinding{
+		tenantID: tenantID, schema: schema, login: login,
+	}}, nil
+}
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
 
@@ -29,6 +54,9 @@ func (s *PostgresStore) beginTenantTx(ctx context.Context, tenantID string, read
 	if tenantID == "" {
 		return nil, fmt.Errorf("%w: empty tenant context", ErrInvalidRequest)
 	}
+	if s.bound != nil && s.bound.tenantID != tenantID {
+		return nil, fmt.Errorf("%w: tenant transaction binding mismatch", ErrAuthorityRejected)
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
 	if err != nil {
 		return nil, storeUnavailable("begin tenant transaction", err)
@@ -41,6 +69,12 @@ func (s *PostgresStore) beginTenantTx(ctx context.Context, tenantID string, read
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(pg_catalog.current_setting('decision.tenant_id', true), '')").Scan(&ambient); err != nil || ambient != "" {
 		_ = tx.Rollback()
 		return nil, fmt.Errorf("%w: unsafe ambient tenant context", ErrCatalogDrift)
+	}
+	if s.bound != nil {
+		if err := verifyRuntimeTransactionIdentity(ctx, tx, s.bound.schema, &s.bound.login); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, true)", tenantID); err != nil {
 		_ = tx.Rollback()
