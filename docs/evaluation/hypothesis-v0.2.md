@@ -12,7 +12,7 @@ The current fixtures use typed categorical assertions such as `SYMPTOM_INCREASED
 
 The internal report schema is `sre.hypothesis-evaluation-report.v2`.
 
-- `scenario_count`, `passed_count`, and `failed_count` count labelled fixture cases. A case passes only when its expected status/error and its independently labelled exact-reference binding expectation both match.
+- `scenario_count`, `passed_count`, and `failed_count` count labelled fixture cases. A case passes only when its expected status/error, independently labelled exact-reference binding expectation, and abstention-reason expectation all match.
 - `scenario_pass_rate_basis_points` is `passed_count / scenario_count` scaled by 10,000 using integer arithmetic.
 - `accepted_count` and `rejected_count` distinguish evaluations that returned a hypothesis result from fail-closed input/proof rejection.
 - `abstention_count` counts accepted `CONFLICTING`, `INSUFFICIENT`, and `UNTESTED` results. `abstention_rate_basis_points` uses accepted cases as its denominator; `abstention_rate_measured` is false when there are no accepted cases.
@@ -32,11 +32,9 @@ The current tests cover:
 | Supporting symptom and preceding deployment | `SUPPORTED` |
 | Missing deployment observation | `INSUFFICIENT` |
 | Symptom with no deployment in the investigation window | `CONTRADICTED` |
-| Unrelated evidence only | `UNTESTED` |
-| Conflicting symptom observations | `CONFLICTING` |
-| No observations | `UNTESTED` with missing symptom and deployment reasons |
-| Unrelated evidence only | `UNTESTED` with `NO_RELEVANT_EVIDENCE` |
+| Unrelated evidence only | `UNTESTED` with missing symptom/deployment and `NO_RELEVANT_EVIDENCE` reasons |
 | Conflicting symptom or deployment observations | `CONFLICTING` with a dimension-specific conflict reason |
+| No observations | `UNTESTED` with missing symptom and deployment reasons |
 | Unknown request evidence reference | fail closed with `ErrInvalidRequest` |
 | Wrong signer on a request-bound reference | fail closed with `ErrAuthorityRejected` |
 
