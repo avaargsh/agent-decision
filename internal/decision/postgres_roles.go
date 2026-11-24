@@ -249,18 +249,22 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			WHERE ns.nspname = $1
 			  AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
 			  AND NOT (
-			    fn.proname IN (
-			      'reject_decision_record_mutation',
-			      'reject_decision_outbox_identity_mutation',
-			      'reject_decision_outbox_delete'
-			    )
-			    AND fn.prokind = 'f'
+			    fn.prokind = 'f'
 			    AND fn.pronargs = 0
+			    AND fn.prolang = (SELECT oid FROM pg_catalog.pg_language WHERE lanname = 'plpgsql')
 			    AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			    AND fn.provolatile = 'v'
 			    AND NOT fn.prosecdef
+			    AND fn.proconfig IS NULL
+			    AND (
+			      (fn.proname = 'reject_decision_record_mutation' AND fn.prosrc = $2)
+			      OR (fn.proname = 'reject_decision_outbox_delete' AND fn.prosrc = $3)
+			      OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND fn.prosrc = $4)
+			    )
 			  )
 		)
-	`, schema).Scan(&unreviewedExecutable); err != nil || unreviewedExecutable {
+	`, schema, decisionRecordMutationTriggerBody, decisionOutboxDeleteTriggerBody,
+		decisionOutboxIdentityMutationTriggerBody).Scan(&unreviewedExecutable); err != nil || unreviewedExecutable {
 		return fmt.Errorf("%w: unexpected effective EXECUTE on unreviewed schema routine", ErrCatalogDrift)
 	}
 
@@ -298,6 +302,20 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			      SELECT 1 FROM pg_catalog.pg_proc AS fn
 			      WHERE fn.pronamespace = ns.oid
 			        AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
+			        AND NOT (
+			          fn.prokind = 'f'
+			          AND fn.pronargs = 0
+			          AND fn.prolang = (SELECT oid FROM pg_catalog.pg_language WHERE lanname = 'plpgsql')
+			          AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			          AND fn.provolatile = 'v'
+			          AND NOT fn.prosecdef
+			          AND fn.proconfig IS NULL
+			          AND (
+			            (fn.proname = 'reject_decision_record_mutation' AND fn.prosrc = $2)
+			            OR (fn.proname = 'reject_decision_outbox_delete' AND fn.prosrc = $3)
+			            OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND fn.prosrc = $4)
+			          )
+			        )
 			    ) OR EXISTS (
 			      SELECT 1 FROM pg_catalog.pg_class AS rel
 			      WHERE rel.relnamespace = ns.oid
@@ -328,7 +346,8 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			    )
 			  )
 		)
-	`, schema).Scan(&externalAccess); err != nil || externalAccess {
+	`, schema, decisionRecordMutationTriggerBody, decisionOutboxDeleteTriggerBody,
+		decisionOutboxIdentityMutationTriggerBody).Scan(&externalAccess); err != nil || externalAccess {
 		return fmt.Errorf("%w: effective access to an unreviewed external schema object", ErrCatalogDrift)
 	}
 
