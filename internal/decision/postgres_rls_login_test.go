@@ -139,6 +139,56 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 				t.Fatalf("pool identity/budget mismatch: %q %v", actual, err)
 			}
 		}
+		// Exercise the registry as the actual decision.Store. Every operation
+		// must select the configured tenant pool and use its bound LOGIN in
+		// the same transaction, with RLS as the final database boundary.
+		var routedStore Store = registry
+		routedRecord := func(tenant, suffix, digit string) Record {
+			return Record{
+				DecisionID: "dec_" + strings.Repeat(digit, 64),
+				TenantID: tenant, SubjectID: "subject", AgentID: "agent-1",
+				SessionID: "session-1", RunID: "routed-run-" + suffix,
+				InvocationID: "routed-invocation-" + suffix,
+				RequestSHA256: strings.Repeat(digit, 64), CreatedAt: time.Now().UTC(),
+				Status: StatusProposed, ReasonCodes: []string{}, Evidence: []EvidenceRef{},
+				Plan: PlanCandidate{PlanID: "routed-plan-" + suffix, SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+			}
+		}
+		routeA, routeB := routedRecord("tenant-a", "a", "c"), routedRecord("tenant-b", "b", "d")
+		// Simulate a post-startup pool-map swap. Per-transaction attestation
+		// must reject it before ledger or Outbox side effects.
+		registry.mu.Lock()
+		registry.pools["tenant-a"] = second
+		registry.mu.Unlock()
+		if _, created, err := routedStore.SaveOrGet(ctx, routeA); created || !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("swapped tenant pool accepted: created=%t err=%v", created, err)
+		}
+		registry.mu.Lock()
+		registry.pools["tenant-a"] = first
+		registry.mu.Unlock()
+		for _, rec := range []Record{routeA, routeB} {
+			if got, created, err := routedStore.SaveOrGet(ctx, rec); err != nil || !created || got.TenantID != rec.TenantID {
+				t.Fatalf("routed first write tenant=%s created=%t err=%v", rec.TenantID, created, err)
+			}
+			if got, created, err := routedStore.SaveOrGet(ctx, rec); err != nil || created || got.DecisionID != rec.DecisionID {
+				t.Fatalf("routed replay tenant=%s created=%t err=%v", rec.TenantID, created, err)
+			}
+			if got, err := routedStore.GetByInvocation(ctx, rec.TenantID, rec.InvocationID); err != nil || got.DecisionID != rec.DecisionID {
+				t.Fatalf("routed invocation lookup tenant=%s err=%v", rec.TenantID, err)
+			}
+			if got, err := routedStore.GetByDecisionID(ctx, rec.TenantID, rec.AgentID, rec.SessionID, rec.DecisionID); err != nil || got.DecisionID != rec.DecisionID {
+				t.Fatalf("routed decision lookup tenant=%s err=%v", rec.TenantID, err)
+			}
+			if got, err := routedStore.ListByRun(ctx, rec.TenantID, rec.AgentID, rec.SessionID, rec.RunID, nil, 10); err != nil || len(got) != 1 || got[0].DecisionID != rec.DecisionID {
+				t.Fatalf("routed run listing tenant=%s rows=%d err=%v", rec.TenantID, len(got), err)
+			}
+		}
+		if _, err := routedStore.GetByInvocation(ctx, "tenant-a", routeB.InvocationID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("cross-tenant routed read exposed foreign record: %v", err)
+		}
+		if _, err := routedStore.GetByInvocation(ctx, "tenant-unknown", routeA.InvocationID); !errors.Is(err, ErrAuthorityRejected) {
+			t.Fatalf("unknown tenant fallback: %v", err)
+		}
 		principal.TenantID = "tenant-unknown"
 		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrAuthorityRejected) {
 			t.Fatalf("unknown tenant got pool: %v", err)
@@ -152,6 +202,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		principal.TenantID = "tenant-a"
 		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrStoreUnavailable) {
 			t.Fatalf("closed registry resolved: %v", err)
+		}
+		if _, err := routedStore.GetByInvocation(ctx, "tenant-a", routeA.InvocationID); !errors.Is(err, ErrStoreUnavailable) {
+			t.Fatalf("closed registry Store remained available: %v", err)
 		}
 		for _, db := range opened {
 			if err := db.PingContext(ctx); err == nil {
@@ -209,6 +262,10 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	// before business SQL, rather than relying on fixture RLS or a startup
 	// sample. The legacy constructor remains unchanged in this slice.
 	t.Run("bound_transaction_identity", func(t *testing.T) {
+		var baselineRecords, baselineEvents int
+		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&baselineRecords, &baselineEvents); err != nil {
+			t.Fatal(err)
+		}
 		var pin runtimeLoginBinding
 		pin.RoleName = roleA
 		if err := admin.QueryRowContext(ctx, "SELECT current_database(), oid FROM pg_catalog.pg_roles WHERE rolname=$1", roleA).Scan(&pin.Database, &pin.RoleOID); err != nil {
@@ -289,8 +346,8 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			_ = tx.Rollback()
 		}
 		var records, eventCount int
-		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 0 || eventCount != 0 {
-			t.Fatalf("rejected transactions produced side effects: %d %d %v", records, eventCount, err)
+		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != baselineRecords || eventCount != baselineEvents {
+			t.Fatalf("rejected transactions produced side effects: before=%d/%d after=%d/%d err=%v", baselineRecords, baselineEvents, records, eventCount, err)
 		}
 	})
 	// A direct foreign Outbox INSERT must fail at its own policy, not at
@@ -380,7 +437,8 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			_ = tx.Rollback()
 			want, wantTenant := 0, ""
 			if scope == tc.own.TenantID {
-				want, wantTenant = 1, tc.own.TenantID
+				// One routed-store record plus the direct PostgresStore fixture.
+				want, wantTenant = 2, tc.own.TenantID
 			}
 			if err != nil || count != want || visible != wantTenant {
 				t.Fatalf("unfiltered scope %q: count=%d tenant=%q err=%v", scope, count, visible, err)
@@ -392,7 +450,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	var records, eventCount int
-	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 2 || eventCount != 2 {
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 4 || eventCount != 4 {
 		t.Fatalf("denied write changed atomic rows: %d %d %v", records, eventCount, err)
 	}
 	if _, err := worker.ExecContext(ctx, "SELECT record FROM decision_records"); err == nil {
@@ -401,7 +459,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	requireDeniedOutbox(worker, a)
 	dispatcher := NewPostgresStore(worker)
 	claimed, err := dispatcher.Claim(ctx, "rls-worker", 10, time.Minute)
-	if err != nil || len(claimed) != 2 {
+	if err != nil || len(claimed) != 4 {
 		t.Fatalf("explicit cross-tenant dispatch: events=%d err=%v", len(claimed), err)
 	}
 	for _, event := range claimed {
