@@ -47,6 +47,9 @@ func DispatchOnce(ctx context.Context, store Store, publisher Publisher, workerI
 		lease <= 0 || retryDelay < 0 {
 		return 0, errors.New("invalid outbox dispatcher configuration")
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	events, err := store.Claim(ctx, workerID, limit, lease)
 	if err != nil {
 		return 0, err
@@ -54,6 +57,14 @@ func DispatchOnce(ctx context.Context, store Store, publisher Publisher, workerI
 	published := 0
 	var firstErr error
 	for _, event := range events {
+		// Leave unprocessed claims to expire; cancellation must not start
+		// another publish even when the publisher ignores its context.
+		if err := ctx.Err(); err != nil {
+			if firstErr != nil {
+				return published, firstErr
+			}
+			return published, err
+		}
 		if err := publisher.Publish(ctx, event); err != nil {
 			if retryErr := store.Retry(ctx, event.ID, workerID, event.Attempts, retryDelay, ReasonPublishFailed); retryErr != nil && firstErr == nil {
 				firstErr = retryErr
