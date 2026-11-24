@@ -845,7 +845,7 @@ func TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL(t *testing.T) {
 				return
 			}
 			err := decision.MigrateInSchema(ctx, db, schema)
-			expected := "missing or unreadable trigger decision_records.decision_records_no_truncate"
+			expected := "trigger decision_records.decision_records_no_truncate missing"
 			if !errors.Is(err, decision.ErrCatalogDrift) || !strings.Contains(err.Error(), expected) {
 				_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS decision_records_no_truncate ON decision_records")
 				_, _ = db.ExecContext(context.Background(), restoreTrigger)
