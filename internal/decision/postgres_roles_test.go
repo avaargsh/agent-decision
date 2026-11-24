@@ -174,6 +174,18 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	})
 	check(app, RuntimeRoleApplication)
 
+	// The exception for known trigger callbacks must remain exact and narrow:
+	// an unrelated SECURITY DEFINER routine in the same external schema is
+	// still an effective external execution capability and must be rejected.
+	t.Run("external_security_definer_function_denied", func(t *testing.T) {
+		exec("CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'")
+		if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("external SECURITY DEFINER function passed role audit: %v", err)
+		}
+		exec("DROP FUNCTION " + externalSchema + ".unreviewed_definer()")
+		check(app, RuntimeRoleApplication)
+	})
+
 	// A role must not be able to create persistent objects outside the
 	// approved schema, even when the foreign namespace has no objects or
 	// USAGE grant. This tests effective CREATE rather than existing ACLs.
