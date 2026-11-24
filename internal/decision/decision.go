@@ -484,13 +484,14 @@ func recordFromVerifiedRequest(principal Principal, req Request, strategy Strate
 	// mutate already-verified evidence or capabilities before output validation.
 	result := strategy.Plan(cloneRequest(req), decisionID)
 	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
-	result.Steps = append([]PlanStep{}, result.Steps...)
+	// Detach nested evidence bindings before validating or hashing the plan.
+	result.Steps = clonePlanSteps(result.Steps)
 	if err := validateStrategyResult(req, result); err != nil {
 		return Record{}, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
 	record.Status = result.Status
 	record.ReasonCodes = append([]string{}, result.ReasonCodes...)
-	record.Plan.Steps = append([]PlanStep{}, result.Steps...)
+	record.Plan.Steps = result.Steps
 	record.Plan.PlanHash = planHash(record.Plan)
 	return record, nil
 }
@@ -525,12 +526,18 @@ func cloneRequest(req Request) Request {
 	return req
 }
 
+// clonePlanSteps transfers ownership of every mutable step buffer.
+func clonePlanSteps(steps []PlanStep) []PlanStep {
+	copied := append([]PlanStep{}, steps...)
+	for i := range copied {
+		copied[i].EvidenceRefs = append([]EvidenceBinding{}, copied[i].EvidenceRefs...)
+	}
+	return copied
+}
+
 func clone(record Record) Record {
 	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
 	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
-	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
-	for i := range record.Plan.Steps {
-		record.Plan.Steps[i].EvidenceRefs = append([]EvidenceBinding{}, record.Plan.Steps[i].EvidenceRefs...)
-	}
+	record.Plan.Steps = clonePlanSteps(record.Plan.Steps)
 	return record
 }
