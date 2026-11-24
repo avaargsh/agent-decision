@@ -144,8 +144,12 @@ func (c *authorityClient) read(ctx context.Context, method,path string, body []b
 	if res.StatusCode==http.StatusForbidden || res.StatusCode==http.StatusUnauthorized {
 		return nil,ErrAuthorityRejected
 	}
-	if res.StatusCode!=http.StatusOK || res.Header.Get("Cache-Control")!="no-store" ||
-		res.Header.Get("Content-Type")!="application/json" {
+	// Require the exact singleton response contract; Header.Get ignores
+	// later field values and can hide conflicting cache/media declarations.
+	cacheControl := res.Header.Values("Cache-Control")
+	contentType := res.Header.Values("Content-Type")
+	if res.StatusCode!=http.StatusOK || len(cacheControl)!=1 || cacheControl[0]!="no-store" ||
+		len(contentType)!=1 || contentType[0]!="application/json" {
 		return nil,ErrAuthorityUnavailable
 	}
 	raw,err:=io.ReadAll(io.LimitReader(res.Body,int64(max)+1))
