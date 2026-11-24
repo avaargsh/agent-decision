@@ -62,5 +62,7 @@ jobs:
           grep -Fq -- '--- PASS: TestIndependentSourceRegistryLiveObservationAndRevocation ' "$RUNNER_TEMP/evidence-source.log"
       - name: Test
         run: go test -race ./...
+      - name: Repeat PostgreSQL catalog and Outbox suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
       - name: Vet
         run: go vet ./...
