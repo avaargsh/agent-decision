@@ -284,7 +284,10 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	// invoke schema-qualified functions, views, tables or sequences elsewhere.
 	// Audit effective privileges only in reachable, non-system namespaces:
 	// the default public namespace is fine if it offers no usable objects.
-	// This includes implicit PUBLIC grants and inherited role memberships.
+	// Non-definer, zero-argument trigger callbacks cannot be invoked directly
+	// and are the only external-routine exception; all other callable routines
+	// remain denied, including ordinary SECURITY INVOKER and SECURITY DEFINER
+	// functions. This includes implicit PUBLIC grants and inherited memberships.
 	var externalAccess bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
