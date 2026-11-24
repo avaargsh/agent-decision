@@ -288,6 +288,20 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	`).Scan(&mappingOwnerOK); err != nil || !mappingOwnerOK {
 		return fmt.Errorf("%w: protected Decision relations must share the migration-history owner", ErrCatalogDrift)
 	}
+	var mappingPublicAccessOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT NOT EXISTS (
+			SELECT 1
+			FROM pg_catalog.pg_class AS relation,
+			     LATERAL pg_catalog.aclexplode(
+			         COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+			     ) AS privilege
+			WHERE relation.oid = pg_catalog.to_regclass('decision_tenant_logins')
+			  AND privilege.grantee = 0
+		)
+	`).Scan(&mappingPublicAccessOK); err != nil || !mappingPublicAccessOK {
+		return fmt.Errorf("%w: tenant LOGIN mapping must not be granted to PUBLIC", ErrCatalogDrift)
+	}
 	var mappingConstraintsOK bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
