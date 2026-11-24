@@ -14,8 +14,14 @@ func validTenantPoolStoreConfig() TenantPoolStoreConfig {
 			Database: "decision", RoleName: "decision_dispatcher", RoleOID: 103,
 		},
 		Tenants: []TenantPostgresLogin{
-			{TenantID: "tenant-a", Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_a", RoleOID: 101}},
-			{TenantID: "tenant-b", Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_b", RoleOID: 102}},
+			{
+				TenantID: "tenant-a",
+				Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_a", RoleOID: 101},
+			},
+			{
+				TenantID: "tenant-b",
+				Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_b", RoleOID: 102},
+			},
 		},
 		MaxOpenPerTenant: 2,
 		MaxOpenTotal:     4,
@@ -29,31 +35,37 @@ func TestNewTenantPoolStoreRejectsInvalidConfigurationBeforeOpeningPools(t *test
 			return nil, nil
 		}
 	}
+	mutate := func(change func(*TenantPoolStoreConfig)) TenantPoolStoreConfig {
+		config := validTenantPoolStoreConfig()
+		change(&config)
+		return config
+	}
 	type testCase struct {
-		name    string
-		ctx     context.Context
-		config  TenantPoolStoreConfig
-		nilOpen bool
+		name       string
+		ctx        context.Context
+		config     TenantPoolStoreConfig
+		withOpener bool
 	}
 	cases := []testCase{
-		{name: "nil_context", ctx: nil, config: validTenantPoolStoreConfig()},
-		{name: "empty_schema", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Schema = ""; return c }()},
-		{name: "missing_dispatcher", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.DispatcherLogin = PostgresLoginIdentity{}; return c }()},
-		{name: "no_tenants", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants = nil; return c }()},
-		{name: "duplicate_tenant", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[1].TenantID = c.Tenants[0].TenantID; return c }()},
-		{name: "duplicate_login_name", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[1].Login.RoleName = c.Tenants[0].Login.RoleName; return c }()},
-		{name: "duplicate_login_oid", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[1].Login.RoleOID = c.Tenants[0].Login.RoleOID; return c }()},
-		{name: "dispatcher_alias", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[0].Login.RoleName = c.DispatcherLogin.RoleName; return c }()},
-		{name: "different_database", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[0].Login.Database = "other"; return c }()},
-		{name: "invalid_tenant", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.Tenants[0].TenantID = "tenant a"; return c }()},
-		{name: "over_budget", ctx: context.Background(), config: func() TenantPoolStoreConfig { c := validTenantPoolStoreConfig(); c.MaxOpenTotal = 3; return c }()},
-		{name: "nil_opener", ctx: context.Background(), config: validTenantPoolStoreConfig(), nilOpen: true},
+		{name: "nil_context", ctx: nil, config: validTenantPoolStoreConfig(), withOpener: true},
+		{name: "empty_schema", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Schema = "" }), withOpener: true},
+		{name: "missing_dispatcher", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.DispatcherLogin = PostgresLoginIdentity{} }), withOpener: true},
+		{name: "no_tenants", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants = nil }), withOpener: true},
+		{name: "duplicate_tenant", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[1].TenantID = c.Tenants[0].TenantID }), withOpener: true},
+		{name: "duplicate_login_name", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[1].Login.RoleName = c.Tenants[0].Login.RoleName }), withOpener: true},
+		{name: "duplicate_login_oid", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[1].Login.RoleOID = c.Tenants[0].Login.RoleOID }), withOpener: true},
+		{name: "dispatcher_alias", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[0].Login.RoleName = c.DispatcherLogin.RoleName }), withOpener: true},
+		{name: "different_database", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[0].Login.Database = "other" }), withOpener: true},
+		{name: "invalid_tenant", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.Tenants[0].TenantID = "tenant a" }), withOpener: true},
+		{name: "over_budget", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.MaxOpenTotal = 3 }), withOpener: true},
+		{name: "zero_per_tenant", ctx: context.Background(), config: mutate(func(c *TenantPoolStoreConfig) { c.MaxOpenPerTenant = 0 }), withOpener: true},
+		{name: "nil_opener", ctx: context.Background(), config: validTenantPoolStoreConfig(), withOpener: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			var opener TenantPoolOpener
-			if !tc.nilOpen {
+			if tc.withOpener {
 				opener = open(&calls)
 			}
 			store, err := NewTenantPoolStore(tc.ctx, tc.config, opener)

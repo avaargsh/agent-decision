@@ -126,13 +126,23 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 		poolStore, err := NewTenantPoolStore(ctx, TenantPoolStoreConfig{
 			Schema: schema,
-			DispatcherLogin: PostgresLoginIdentity{Database: dispatcher.Database, RoleName: dispatcher.RoleName, RoleOID: dispatcher.RoleOID},
+			DispatcherLogin: PostgresLoginIdentity{
+				Database: dispatcher.Database,
+				RoleName: dispatcher.RoleName,
+				RoleOID:  dispatcher.RoleOID,
+			},
 			Tenants: []TenantPostgresLogin{
-				{TenantID: "tenant-a", Login: PostgresLoginIdentity{Database: a.Database, RoleName: a.RoleName, RoleOID: a.RoleOID}},
-				{TenantID: "tenant-b", Login: PostgresLoginIdentity{Database: b.Database, RoleName: b.RoleName, RoleOID: b.RoleOID}},
+				{
+					TenantID: "tenant-a",
+					Login: PostgresLoginIdentity{Database: a.Database, RoleName: a.RoleName, RoleOID: a.RoleOID},
+				},
+				{
+					TenantID: "tenant-b",
+					Login: PostgresLoginIdentity{Database: b.Database, RoleName: b.RoleName, RoleOID: b.RoleOID},
+				},
 			},
 			MaxOpenPerTenant: 2,
-			MaxOpenTotal: 4,
+			MaxOpenTotal:     4,
 		}, publicFactory)
 		if err != nil {
 			t.Fatal(err)
