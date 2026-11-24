@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/avaargsh/agent-decision/internal/decision"
 )
@@ -205,8 +206,60 @@ func validJSONFieldName(key string) bool {
 	return true
 }
 
+// validJSONUnicode rejects malformed UTF-8 and unpaired UTF-16 surrogate
+// escapes before encoding/json can silently replace them with U+FFFD.
+// JSON syntax and object structure remain the decoder's responsibility.
+func validJSONUnicode(body []byte) bool {
+	if !utf8.Valid(body) {
+		return false
+	}
+	inString := false
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '"':
+			inString = !inString
+		case '\\':
+			if !inString {
+				continue
+			}
+			i++
+			if i >= len(body) {
+				return false
+			}
+			if body[i] != 'u' {
+				continue
+			}
+			if i+4 >= len(body) {
+				return false
+			}
+			unit, err := strconv.ParseUint(string(body[i+1:i+5]), 16, 16)
+			if err != nil {
+				return false
+			}
+			i += 4
+			switch {
+			case unit >= 0xD800 && unit <= 0xDBFF:
+				if i+6 >= len(body) || body[i+1] != '\\' || body[i+2] != 'u' {
+					return false
+				}
+				low, err := strconv.ParseUint(string(body[i+3:i+7]), 16, 16)
+				if err != nil || low < 0xDC00 || low > 0xDFFF {
+					return false
+				}
+				i += 6
+			case unit >= 0xDC00 && unit <= 0xDFFF:
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // validateJSONObjects rejects duplicate keys at every depth.
 func validateJSONObjects(body []byte) error {
+	if !validJSONUnicode(body) {
+		return errors.New("invalid JSON Unicode")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	var walk func(depth int) error
 	walk = func(depth int) error {
