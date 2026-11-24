@@ -277,6 +277,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 		SELECT
 			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
+			   AND c.conname = 'decision_tenant_logins_pkey'
+			   AND c.contype = 'p' AND c.convalidated)
+			AND
+			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
+			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated)
 			AND
@@ -287,6 +292,19 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
+	var ownershipOK bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT NOT EXISTS (
+			SELECT 1
+			FROM pg_catalog.pg_class AS c
+			JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+			WHERE n.nspname = pg_catalog.current_schema()
+			  AND c.relname IN ('decision_records', 'outbox_events', 'decision_tenant_logins', 'schema_migrations')
+			  AND c.relowner <> n.nspowner
+		)
+	`).Scan(&ownershipOK); err != nil || !ownershipOK {
+		return fmt.Errorf("%w: protected Decision relations must be owned by the approved schema owner", ErrCatalogDrift)
+	}
 
 	type expectedPolicy struct {
 		command string
@@ -296,24 +314,24 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	expected := map[string]expectedPolicy{
 		"decision_records_tenant_select": {
 			command: "r",
-			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "decision_records.tenant_id", "current_setting", "decision.tenant_id"},
+			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"decision_records_tenant_insert": {
 			command: "a",
-			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "decision_records.tenant_id", "current_setting", "decision.tenant_id"},
+			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_tenant_insert": {
 			command: "a",
-			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'application'", "login.tenant_id", "outbox_events.tenant_id", "current_setting", "decision.tenant_id"},
+			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "outbox_events.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_dispatcher_select": {
 			command: "r",
-			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
+			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 		},
 		"outbox_events_dispatcher_update": {
 			command: "w",
 			qualTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
-			checkTokens: []string{"decision_tenant_logins", "login.login_role", "session_user", "login.login_kind", "'dispatcher'", "login.tenant_id is null"},
+			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 		},
 	}
 	for _, table := range []string{"decision_records", "outbox_events"} {
