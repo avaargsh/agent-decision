@@ -13,6 +13,7 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 	}
 
 	symptom := observe(0, symptomIncreased)
+	negative := observe(0, symptomNotIncreased)
 	change := observe(2, deploymentPrecedesSymptom)
 	noChange := observe(2, noDeploymentInWindow)
 	unrelated := observe(1, unrelatedObservation)
@@ -79,6 +80,11 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 		{
 			name: "contradicted",
 			observations: []hypothesisObservation{symptom, noChange},
+			want: []hypothesisAbstentionReason{},
+		},
+		{
+			name: "contradicted_with_missing_other_dimension",
+			observations: []hypothesisObservation{negative},
 			want: []hypothesisAbstentionReason{},
 		},
 	}
