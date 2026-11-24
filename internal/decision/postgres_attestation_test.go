@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -228,8 +229,14 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		if !errors.Is(verifyErr, ErrCatalogDrift) {
 			t.Fatalf("read-only attestation accepted a same-name mapping CHECK with OR TRUE: %v", verifyErr)
 		}
+		if !strings.Contains(verifyErr.Error(), "tenant LOGIN mapping identity CHECK mismatch") {
+			t.Fatalf("read-only attestation did not identify the failing identity CHECK: %v", verifyErr)
+		}
 		if !errors.Is(migrationErr, ErrCatalogDrift) {
 			t.Fatalf("migration re-entry accepted a same-name mapping CHECK with OR TRUE: %v", migrationErr)
+		}
+		if !strings.Contains(migrationErr.Error(), "tenant LOGIN mapping identity CHECK mismatch") {
+			t.Fatalf("migration re-entry did not identify the failing identity CHECK: %v", migrationErr)
 		}
 	})
 
@@ -266,8 +273,14 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		if !errors.Is(verifyErr, ErrCatalogDrift) {
 			t.Fatalf("read-only attestation accepted a same-name login_kind CHECK with OR TRUE: %v", verifyErr)
 		}
+		if !strings.Contains(verifyErr.Error(), "tenant LOGIN mapping login_kind CHECK mismatch") {
+			t.Fatalf("read-only attestation did not identify the failing login_kind CHECK: %v", verifyErr)
+		}
 		if !errors.Is(migrationErr, ErrCatalogDrift) {
 			t.Fatalf("migration re-entry accepted a same-name login_kind CHECK with OR TRUE: %v", migrationErr)
+		}
+		if !strings.Contains(migrationErr.Error(), "tenant LOGIN mapping login_kind CHECK mismatch") {
+			t.Fatalf("migration re-entry did not identify the failing login_kind CHECK: %v", migrationErr)
 		}
 	})
 }
