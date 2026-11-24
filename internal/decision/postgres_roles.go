@@ -284,7 +284,10 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	// invoke schema-qualified functions, views, tables or sequences elsewhere.
 	// Audit effective privileges only in reachable, non-system namespaces:
 	// the default public namespace is fine if it offers no usable objects.
-	// This includes implicit PUBLIC grants and inherited role memberships.
+	// Non-definer, zero-argument trigger callbacks cannot be invoked directly
+	// and are the only external-routine exception; all other callable routines
+	// remain denied, including ordinary SECURITY INVOKER and SECURITY DEFINER
+	// functions. This includes implicit PUBLIC grants and inherited memberships.
 	var externalAccess bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -298,6 +301,17 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			      SELECT 1 FROM pg_catalog.pg_proc AS fn
 			      WHERE fn.pronamespace = ns.oid
 			        AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
+			        AND NOT (
+			          fn.proname IN (
+			            'reject_decision_record_mutation',
+			            'reject_decision_outbox_identity_mutation',
+			            'reject_decision_outbox_delete'
+			          )
+			          AND fn.prokind = 'f'
+			          AND fn.pronargs = 0
+			          AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			          AND NOT fn.prosecdef
+			        )
 			    ) OR EXISTS (
 			      SELECT 1 FROM pg_catalog.pg_class AS rel
 			      WHERE rel.relnamespace = ns.oid

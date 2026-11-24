@@ -38,6 +38,16 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	// A separate schema may host unrelated, ordinary SECURITY INVOKER
+	// trigger callbacks. PUBLIC USAGE makes those routines visible to the
+	// restricted login, but they do not elevate its privileges.
+	externalSchema := "decision_external_triggers_" + seed
+	exec("CREATE SCHEMA " + externalSchema)
+	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+externalSchema+" CASCADE") }()
+	if err := MigrateInSchema(ctx, admin, externalSchema); err != nil {
+		t.Fatalf("create unrelated external schema fixture: %v", err)
+	}
+	exec("GRANT USAGE ON SCHEMA " + externalSchema + " TO PUBLIC")
 	password := "ephemeral_role_gate_" + seed
 	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
 	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
@@ -118,8 +128,75 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		t.Helper()
 		if err := VerifyRuntimeDatabaseRole(ctx, db, schema, role); err != nil { t.Fatal(err) }
 	}
+	var publicTriggerCallbacks int
+	if err := admin.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM pg_catalog.pg_proc AS fn
+		JOIN pg_catalog.pg_namespace AS ns ON ns.oid = fn.pronamespace
+		WHERE ns.nspname = $1
+		  AND fn.proname IN (
+		    'reject_decision_record_mutation',
+		    'reject_decision_outbox_identity_mutation',
+		    'reject_decision_outbox_delete'
+		  )
+		  AND fn.prokind = 'f'
+		  AND fn.pronargs = 0
+		  AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+		  AND NOT fn.prosecdef
+		  AND pg_catalog.has_function_privilege($2, fn.oid, 'EXECUTE')
+	`, externalSchema, appRole).Scan(&publicTriggerCallbacks); err != nil || publicTriggerCallbacks != 3 {
+		t.Fatalf("fixture must expose exactly three safe trigger callbacks to PUBLIC: count=%d err=%v", publicTriggerCallbacks, err)
+	}
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
+
+	// An ordinary external SECURITY INVOKER function is still an unreviewed
+	// callable object and must be rejected; only the three non-callable,
+	// migration-owned trigger callbacks above are exempt.
+	for _, tc := range []struct {
+		name, ddl, signature string
+	}{
+		{
+			name: "external_invoker_routine",
+			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_invoker() RETURNS integer LANGUAGE sql SECURITY INVOKER AS 'SELECT 1'",
+			signature: externalSchema + ".unreviewed_invoker()",
+		},
+		{
+			name: "external_definer_routine",
+			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
+			signature: externalSchema + ".unreviewed_definer()",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := admin.ExecContext(ctx, tc.ddl); err != nil {
+				t.Fatalf("create unreviewed external routine: %v", err)
+			}
+			if _, err := admin.ExecContext(ctx, "GRANT EXECUTE ON FUNCTION "+tc.signature+" TO PUBLIC"); err != nil {
+				t.Fatalf("grant external routine execution: %v", err)
+			}
+			for _, identity := range []struct {
+				name string
+				db *sql.DB
+				role RuntimeDatabaseRole
+			}{
+				{name: "application", db: app, role: RuntimeRoleApplication},
+				{name: "dispatcher", db: dispatcher, role: RuntimeRoleDispatcher},
+			} {
+				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
+					t.Errorf("%s accepted an unreviewed external %s routine: %v", identity.name, tc.name, err)
+				}
+			}
+			if _, err := admin.ExecContext(ctx, "DROP FUNCTION "+tc.signature); err != nil {
+				t.Fatalf("drop unreviewed external routine: %v", err)
+			}
+			if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); err != nil {
+				t.Errorf("application role remained rejected after routine removal: %v", err)
+			}
+			if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); err != nil {
+				t.Errorf("dispatcher role remained rejected after routine removal: %v", err)
+			}
+		})
+	}
 
 	// The same permission class is not sufficient for a provisioned login
 	// binding. Pin the deployment-reviewed database, role name and role OID.

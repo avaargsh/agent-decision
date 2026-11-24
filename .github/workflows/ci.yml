@@ -64,6 +64,8 @@ jobs:
       # Repeat this PostgreSQL 16 integration scenario in CI; production code does not retry attestation.
       - name: Repeat PostgreSQL Outbox catalog restoration regression
         run: go test -race -count=20 -run '^TestPostgresOutboxClaimLeaseRetryAndAck$' ./internal/outbox
+      - name: Repeat PostgreSQL Decision and Outbox package suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
       - name: Test
         run: go test -race ./...
       - name: Vet

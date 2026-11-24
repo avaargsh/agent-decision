@@ -134,8 +134,16 @@ func TestPostgresServiceReplaysCompletedInvocationAfterVerifierUnavailable(t *te
 	}
 
 	store := NewPostgresStore(db)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	principal := testPrincipal()
+	principal.TenantID = "restart-replay-" + suffix
 	request := validRequest()
+	request.InvocationID = "restart-replay-" + suffix
+	request.Identity.RunID = "restart-run-" + suffix
+	for i := range request.Evidence {
+		request.Evidence[i].TenantID = principal.TenantID
+		request.Evidence[i].RunID = request.Identity.RunID
+	}
 	firstService := NewService(store, allowAuthority{})
 	created, wasCreated, err := firstService.Decide(ctx, principal, request)
 	if err != nil || !wasCreated {
