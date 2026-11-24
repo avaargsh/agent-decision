@@ -168,8 +168,12 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			exec(tc.ddl)
-			exec("GRANT EXECUTE ON FUNCTION " + tc.signature + " TO PUBLIC")
+			if _, err := admin.ExecContext(ctx, tc.ddl); err != nil {
+				t.Fatalf("create unreviewed external routine: %v", err)
+			}
+			if _, err := admin.ExecContext(ctx, "GRANT EXECUTE ON FUNCTION "+tc.signature+" TO PUBLIC"); err != nil {
+				t.Fatalf("grant external routine execution: %v", err)
+			}
 			for _, identity := range []struct {
 				name string
 				db *sql.DB
@@ -182,9 +186,15 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 					t.Errorf("%s accepted an unreviewed external %s routine: %v", identity.name, tc.name, err)
 				}
 			}
-			exec("DROP FUNCTION " + tc.signature)
-			check(app, RuntimeRoleApplication)
-			check(dispatcher, RuntimeRoleDispatcher)
+			if _, err := admin.ExecContext(ctx, "DROP FUNCTION "+tc.signature); err != nil {
+				t.Fatalf("drop unreviewed external routine: %v", err)
+			}
+			if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); err != nil {
+				t.Errorf("application role remained rejected after routine removal: %v", err)
+			}
+			if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); err != nil {
+				t.Errorf("dispatcher role remained rejected after routine removal: %v", err)
+			}
 		})
 	}
 
