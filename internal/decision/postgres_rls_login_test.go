@@ -92,6 +92,104 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 		return db
 	}
+	// Exercise the pool ownership boundary using distinct actual LOGINs.
+	// These fixture policies are disposable; this is not production routing.
+	t.Run("tenant_pool_registry", func(t *testing.T) {
+		pin := func(role string) runtimeLoginBinding {
+			t.Helper()
+			var p runtimeLoginBinding
+			p.RoleName = role
+			if err := admin.QueryRowContext(ctx, "SELECT current_database(), oid FROM pg_catalog.pg_roles WHERE rolname=$1", role).Scan(&p.Database, &p.RoleOID); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+		a, b, dispatcher := pin(roleA), pin(roleB), pin(workerRole)
+		logins, err := newTenantLoginRegistry(dispatcher, []tenantLoginEntry{
+			{TenantID: "tenant-a", Login: a},
+			{TenantID: "tenant-b", Login: b},
+		}, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		principal := Principal{TenantID: "tenant-a", SubjectID: "subject", AgentID: "agent", SessionID: "session", CallerID: "agent-runtime"}
+		var opened []*sql.DB
+		factory := func(_ context.Context, p runtimeLoginBinding) (*sql.DB, error) {
+			db := open(p.RoleName)
+			opened = append(opened, db)
+			return db, nil
+		}
+		registry, err := newTenantPoolRegistry(ctx, logins, schema, 2, 4, factory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer registry.close()
+		first, err := registry.resolve(principal)
+		if err != nil || first != opened[0] {
+			t.Fatalf("tenant-a pool: %v", err)
+		}
+		principal.TenantID = "tenant-b"
+		second, err := registry.resolve(principal)
+		if err != nil || second != opened[1] || second == first {
+			t.Fatalf("tenant-b pool: %v", err)
+		}
+		for i, db := range []*sql.DB{first, second} {
+			var actual string
+			if err := db.QueryRowContext(ctx, "SELECT session_user").Scan(&actual); err != nil || actual != []string{roleA, roleB}[i] || db.Stats().MaxOpenConnections != 2 {
+				t.Fatalf("pool identity/budget mismatch: %q %v", actual, err)
+			}
+		}
+		principal.TenantID = "tenant-unknown"
+		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrAuthorityRejected) {
+			t.Fatalf("unknown tenant got pool: %v", err)
+		}
+		if err := registry.close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.close(); err != nil {
+			t.Fatal(err)
+		}
+		principal.TenantID = "tenant-a"
+		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrStoreUnavailable) {
+			t.Fatalf("closed registry resolved: %v", err)
+		}
+		for _, db := range opened {
+			if err := db.PingContext(ctx); err == nil {
+				t.Fatal("owned pool not closed")
+			}
+		}
+		opened = nil
+		if got, err := newTenantPoolRegistry(ctx, logins, schema, 2, 3, factory); got != nil || !errors.Is(err, ErrCatalogDrift) || len(opened) != 0 {
+			t.Fatalf("over-budget config opened connections: %v", err)
+		}
+		for _, mode := range []string{"wrong_login", "alias", "factory_error"} {
+			t.Run(mode, func(t *testing.T) {
+				opened = nil
+				got, err := newTenantPoolRegistry(ctx, logins, schema, 1, 2, func(ctx context.Context, p runtimeLoginBinding) (*sql.DB, error) {
+					if len(opened) == 0 {
+						return factory(ctx, p)
+					}
+					if mode == "alias" {
+						return opened[0], nil
+					}
+					if mode == "wrong_login" {
+						return factory(ctx, a)
+					}
+					db, _ := factory(ctx, p)
+					return db, errors.New("factory failure")
+				})
+				if got != nil || err == nil {
+					t.Fatalf("partial or misrouted registry accepted: %v", err)
+				}
+				for _, db := range opened {
+					if err := db.PingContext(ctx); err == nil {
+						t.Fatal("initialization failure leaked pool")
+					}
+				}
+			})
+		}
+	})
+
 	dbA, dbB, worker := open(roleA), open(roleB), open(workerRole)
 	defer dbA.Close()
 	defer dbB.Close()
