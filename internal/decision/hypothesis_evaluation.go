@@ -58,10 +58,6 @@ type hypothesisEvaluationSplitSummary struct {
 	AcceptedCount int `json:"accepted_count"`
 	RejectedCount int `json:"rejected_count"`
 	AbstentionCount int `json:"abstention_count"`
-	AbstentionReasonCaseCount int `json:"abstention_reason_case_count"`
-	AbstentionReasonCaseMatches int `json:"abstention_reason_case_matches"`
-	AbstentionReasonAccuracyMeasured bool `json:"abstention_reason_accuracy_measured"`
-	AbstentionReasonAccuracyBasisPoints int `json:"abstention_reason_accuracy_basis_points"`
 }
 
 type hypothesisEvaluationReport struct {
@@ -75,6 +71,10 @@ type hypothesisEvaluationReport struct {
 	AcceptedCount int `json:"accepted_count"`
 	RejectedCount int `json:"rejected_count"`
 	AbstentionCount int `json:"abstention_count"`
+	AbstentionReasonCaseCount int `json:"abstention_reason_case_count"`
+	AbstentionReasonCaseMatches int `json:"abstention_reason_case_matches"`
+	AbstentionReasonAccuracyMeasured bool `json:"abstention_reason_accuracy_measured"`
+	AbstentionReasonAccuracyBasisPoints int `json:"abstention_reason_accuracy_basis_points"`
 	AbstentionRateMeasured bool `json:"abstention_rate_measured"`
 	AbstentionRateBasisPoints int `json:"abstention_rate_basis_points"`
 	EvidenceBindingCaseCount int `json:"evidence_binding_case_count"`
