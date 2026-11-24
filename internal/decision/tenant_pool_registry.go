@@ -71,6 +71,9 @@ func newTenantPoolRegistry(ctx context.Context, logins *tenantLoginRegistry, sch
 		if err := verifyBoundRuntimeDatabaseRole(ctx, db, schema, RuntimeRoleApplication, pin); err != nil {
 			return nil, fmt.Errorf("%w: tenant pool identity or privilege check failed", ErrCatalogDrift)
 		}
+		if err := verifyTenantLoginMapping(ctx, db, schema, tenant, pin); err != nil {
+			return nil, fmt.Errorf("%w: tenant LOGIN mapping check failed", ErrCatalogDrift)
+		}
 		r.pools[tenant] = db
 	}
 	if err := ctx.Err(); err != nil {
