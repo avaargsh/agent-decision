@@ -118,6 +118,47 @@ func TestPostgresStoreTransactionTenantContext(t *testing.T) {
 		t.Fatalf("cross-tenant decision must be absent: %v", err)
 	}
 	assertClean()
+	// SET LOCAL restores the previous session setting, not necessarily an
+	// empty value. Reject an already contaminated connection before any
+	// store operation, even when its ambient value equals the requested tenant.
+	for _, ambient := range []string{a.TenantID, b.TenantID} {
+		t.Run("dirty_session_"+ambient, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, false)", ambient); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := db.ExecContext(ctx, "RESET decision.tenant_id"); err != nil {
+					t.Errorf("restore session fixture: %v", err)
+				}
+			}()
+			if _, created, err := store.SaveOrGet(ctx, a); created || !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("dirty session replay accepted: created=%t err=%v", created, err)
+			}
+			if _, err := store.GetByInvocation(ctx, a.TenantID, a.InvocationID); !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("dirty session invocation read accepted: %v", err)
+			}
+			if _, err := store.GetByDecisionID(ctx, a.TenantID, a.AgentID, a.SessionID, a.DecisionID); !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("dirty session decision read accepted: %v", err)
+			}
+			if got, err := store.ListByRun(ctx, a.TenantID, a.AgentID, a.SessionID, a.RunID, nil, 10); got != nil || !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("dirty session listing accepted: rows=%d err=%v", len(got), err)
+			}
+			fresh := makeRecord("tenant-a", "d")
+			fresh.InvocationID = "dirty-session-write-"+ambient
+			if _, created, err := store.SaveOrGet(ctx, fresh); created || !errors.Is(err, ErrCatalogDrift) {
+				t.Errorf("dirty session fresh write accepted: created=%t err=%v", created, err)
+			}
+		})
+		assertClean()
+		if got, err := store.GetByInvocation(ctx, a.TenantID, a.InvocationID); err != nil || got.DecisionID != a.DecisionID {
+			t.Fatalf("clean session recovery: %v", err)
+		}
+		assertClean()
+	}
+	var dirtyRecords, dirtyEvents int
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records), (SELECT count(*) FROM "+schema+".outbox_events)").Scan(&dirtyRecords, &dirtyEvents); err != nil || dirtyRecords != 2 || dirtyEvents != 2 {
+		t.Fatalf("dirty session changed ledger/outbox: %d %d %v", dirtyRecords, dirtyEvents, err)
+	}
 	// Force the second insert of the atomic write to fail, then reuse the same
 	// pool connection. Neither the ledger nor the tenant setting may survive.
 	exec("DROP POLICY context_outbox ON " + schema + ".outbox_events")
