@@ -31,12 +31,13 @@ type hypothesisObservation struct {
 }
 
 type hypothesisResult struct {
-	ID            string
-	Status        hypothesisStatus
-	Assumptions   []string
-	Supporting    []hypothesisObservation
-	Contradicting []hypothesisObservation
-	Missing       []string
+	ID               string
+	Status           hypothesisStatus
+	Assumptions      []string
+	Supporting       []hypothesisObservation
+	Contradicting    []hypothesisObservation
+	Missing          []string
+	AbstentionReasons []hypothesisAbstentionReason
 }
 
 // evaluateDeploymentHypothesis is an internal, offline evaluator. The caller
@@ -74,7 +75,8 @@ func evaluateDeploymentHypothesis(p Principal, req Request, observations []hypot
 		},
 		Supporting:    []hypothesisObservation{},
 		Contradicting: []hypothesisObservation{},
-		Missing:       []string{},
+		Missing:           []string{},
+		AbstentionReasons: []hypothesisAbstentionReason{},
 	}
 	seen := make(map[EvidenceBinding]struct{}, len(observations))
 	var symptomYes, symptomNo, changeYes, changeNo bool
@@ -138,6 +140,30 @@ func evaluateDeploymentHypothesis(p Principal, req Request, observations []hypot
 		result.Status = hypothesisInsufficient
 	default:
 		result.Status = hypothesisUntested
+	}
+
+	// Reason codes describe abstention only. A contradicted hypothesis is a
+	// decisive negative result even if its other evidence dimension is missing;
+	// Missing still records that coverage gap separately.
+	if result.Status == hypothesisConflicting ||
+		result.Status == hypothesisInsufficient ||
+		result.Status == hypothesisUntested {
+		if !symptomYes && !symptomNo {
+			result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionMissingSymptomObservation)
+		}
+		if !changeYes && !changeNo {
+			result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionMissingDeploymentObservation)
+		}
+		if symptomYes && symptomNo {
+			result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionConflictingSymptomObservations)
+		}
+		if changeYes && changeNo {
+			result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionConflictingDeploymentObservations)
+		}
+		if result.Status == hypothesisUntested && len(observations) > 0 &&
+			len(result.Supporting)+len(result.Contradicting) == 0 {
+			result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionNoRelevantEvidence)
+		}
 	}
 	sortHypothesisObservations(result.Supporting)
 	sortHypothesisObservations(result.Contradicting)

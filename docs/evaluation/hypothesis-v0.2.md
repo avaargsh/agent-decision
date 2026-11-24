@@ -1,4 +1,4 @@
-# Hypothesis Evaluation Report v1
+# Hypothesis Evaluation Report v2
 
 ## Status and scope
 
@@ -10,12 +10,15 @@ The current fixtures use typed categorical assertions such as `SYMPTOM_INCREASED
 
 ## Report metrics
 
-The internal report schema is `sre.hypothesis-evaluation-report.v1`.
+The internal report schema is `sre.hypothesis-evaluation-report.v2`.
 
-- `scenario_count`, `passed_count`, and `failed_count` count labelled fixture cases. A case passes only when its expected status/error and its independently labelled exact-reference binding expectation both match.
+- `scenario_count`, `passed_count`, and `failed_count` count labelled fixture cases. A case passes only when its expected status/error, independently labelled exact-reference binding expectation, and abstention-reason expectation all match.
 - `scenario_pass_rate_basis_points` is `passed_count / scenario_count` scaled by 10,000 using integer arithmetic.
 - `accepted_count` and `rejected_count` distinguish evaluations that returned a hypothesis result from fail-closed input/proof rejection.
 - `abstention_count` counts accepted `CONFLICTING`, `INSUFFICIENT`, and `UNTESTED` results. `abstention_rate_basis_points` uses accepted cases as its denominator; `abstention_rate_measured` is false when there are no accepted cases.
+- Each accepted case carries a deterministic `abstention_reasons` list. The taxonomy distinguishes missing symptom evidence, missing deployment evidence, conflicting symptom observations, conflicting deployment observations, and evidence that is present but irrelevant. A conflict in one dimension does not hide missing evidence in the other dimension; both reasons are retained in canonical order.
+- The `missing` field remains the evidence-coverage list for every status. Abstention reason codes are emitted only for `CONFLICTING`, `INSUFFICIENT`, and `UNTESTED`; a `CONTRADICTED` result can still have a missing orthogonal observation while its abstention-reason list stays empty.
+- `abstention_reason_accuracy_basis_points` compares the exact ordered reason list with the fixture's expected reason labels across accepted cases. Its denominator is `abstention_reason_case_count`; rejected proof/input cases are excluded because no hypothesis result exists.
 - `evidence_binding_case_count` counts cases containing at least one signed publication. `evidence_binding_accuracy_basis_points` measures whether the case-level expectation that **all** publication references are exactly bound to the request is correct. Its denominator is cases, not individual evidence references. It is deliberately separate from scenario pass rate and from signature verification.
 - `status_counts` and `split_summaries` use fixed ordering. Case rows are sorted by stable case ID. Rates use integer basis points to keep output deterministic and avoid false precision.
 
@@ -30,9 +33,9 @@ The current tests cover:
 | Supporting symptom and preceding deployment | `SUPPORTED` |
 | Missing deployment observation | `INSUFFICIENT` |
 | Symptom with no deployment in the investigation window | `CONTRADICTED` |
-| Unrelated evidence only | `UNTESTED` |
-| Conflicting symptom observations | `CONFLICTING` |
-| No observations | `UNTESTED` |
+| Unrelated evidence only | `UNTESTED` with missing symptom/deployment and `NO_RELEVANT_EVIDENCE` reasons |
+| Conflicting symptom or deployment observations | `CONFLICTING` with a dimension-specific conflict reason |
+| No observations | `UNTESTED` with missing symptom and deployment reasons |
 | Unknown request evidence reference | fail closed with `ErrInvalidRequest` |
 | Wrong signer on a request-bound reference | fail closed with `ErrAuthorityRejected` |
 
@@ -46,5 +49,7 @@ Input order permutation must not change the report. An intentionally incorrect b
 4. Bind source-owned typed fact schemas and freshness/revocation proof to the incident's common observation window.
 5. Publish sample counts, cohort coverage, missingness, disagreement, abstention, evidence-binding results, and per-class errors. Do not publish a single headline accuracy without denominators.
 6. Keep calibration, mitigation quality, execution outcome, recovery outcome, and production release gates separate from this read-only hypothesis report.
+
+The reason taxonomy is explanatory metadata, not a causal conclusion, confidence score, or instruction to execute an action. It does not change the live decision path.
 
 No live decision, authorization, permit, tool execution, ledger mutation, or production source-registry integration is added by this evaluation harness.
