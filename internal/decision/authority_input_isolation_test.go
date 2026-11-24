@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -23,12 +24,21 @@ func TestAuthorityVerifierCannotMutateDecisionInputs(t *testing.T) {
 	store := NewMemoryStore()
 	svc := NewService(store, mutatingAuthority{})
 
-	record, created, err := svc.Decide(ctx, principal, req)
-	if err != nil || !created {
-		t.Fatalf("create: created=%t err=%v", created, err)
+	if _, _, err := svc.Decide(ctx, principal, req); !errors.Is(err, ErrAuthorityRejected) {
+		t.Fatalf("mutated authority input must be rejected: %v", err)
 	}
 	if digest(req) != digest(original) {
 		t.Fatal("authority verifier modified caller-owned request")
+	}
+	if _, err := store.GetByInvocation(ctx, principal.TenantID, req.InvocationID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected request must not be persisted: %v", err)
+	}
+
+	// An unchanged, independently verified request may retry the invocation.
+	svc = NewService(store, allowAuthority{})
+	record, created, err := svc.Decide(ctx, principal, original)
+	if err != nil || !created {
+		t.Fatalf("create: created=%t err=%v", created, err)
 	}
 	expectedFingerprint := digest(struct {
 		Principal Principal
