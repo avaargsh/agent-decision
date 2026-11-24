@@ -38,6 +38,17 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	// A separate Decision schema may coexist with legacy/default-schema
+	// trigger callbacks. Their safe, non-SECURITY-DEFINER trigger functions
+	// must not make an otherwise least-privilege runtime login fail its
+	// external-schema audit merely because PUBLIC can see the namespace.
+	externalSchema := "decision_external_triggers_" + seed
+	exec("CREATE SCHEMA " + externalSchema)
+	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+externalSchema+" CASCADE") }()
+	if err := MigrateInSchema(ctx, admin, externalSchema); err != nil {
+		t.Fatal(err)
+	}
+	exec("GRANT USAGE ON SCHEMA " + externalSchema + " TO PUBLIC")
 	password := "ephemeral_role_gate_" + seed
 	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
 	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
