@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestDeploymentHypothesisEvaluation(t *testing.T) {
@@ -43,7 +44,7 @@ func TestDeploymentHypothesisEvaluation(t *testing.T) {
 			}
 		})
 	}
-	// Independent evidence sources can disagree about the same fact.
+	// Distinct evidence references can disagree about the same fact.
 	conflicting := req.Evidence[2]
 	conflicting.Ref = "change-conflict"
 	conflicting.AttestationRef = "att-change-conflict"
@@ -81,5 +82,82 @@ func TestDeploymentHypothesisRejectsUnboundObservation(t *testing.T) {
 				t.Fatalf("unbound observation accepted: %+v %v", got, err)
 			}
 		})
+	}
+}
+
+func TestDeploymentHypothesisRejectsInvalidEvaluationContext(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mutate func(*Principal, *Request, *[]hypothesisObservation, *time.Time)
+	}{
+		{"duplicate_observation", func(_ *Principal, _ *Request, o *[]hypothesisObservation, _ *time.Time) {
+			*o = append(*o, (*o)[0])
+		}},
+		{"contradictory_same_reference", func(_ *Principal, _ *Request, o *[]hypothesisObservation, _ *time.Time) {
+			other := (*o)[0]
+			other.Fact = symptomNotIncreased
+			*o = append(*o, other)
+		}},
+		{"future_collection", func(_ *Principal, _ *Request, _ *[]hypothesisObservation, now *time.Time) {
+			*now = now.Add(-time.Nanosecond)
+		}},
+		{"zero_clock", func(_ *Principal, _ *Request, _ *[]hypothesisObservation, now *time.Time) {
+			*now = time.Time{}
+		}},
+		{"snapshot_expired_at_boundary", func(_ *Principal, r *Request, _ *[]hypothesisObservation, now *time.Time) {
+			r.ContextSnapshot.ExpiresAt = *now
+		}},
+		{"evidence_expired_at_boundary", func(_ *Principal, r *Request, o *[]hypothesisObservation, now *time.Time) {
+			r.Evidence[0].ExpiresAt = *now
+			r.Evidence[0].CollectedAt = now.Add(-time.Second)
+			(*o)[0].Evidence = r.Evidence[0]
+		}},
+		{"unreferenced_revoked_evidence", func(_ *Principal, r *Request, _ *[]hypothesisObservation, _ *time.Time) {
+			r.Evidence[1].RevocationState = "revoked"
+		}},
+		{"wrong_principal_tenant", func(p *Principal, _ *Request, _ *[]hypothesisObservation, _ *time.Time) {
+			p.TenantID = "tenant-b"
+		}},
+		{"wrong_principal_session", func(p *Principal, _ *Request, _ *[]hypothesisObservation, _ *time.Time) {
+			p.SessionID = "session-99"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, req := testPrincipal(), validRequest()
+			now := req.Evidence[0].CollectedAt
+			observations := []hypothesisObservation{{Evidence: req.Evidence[0], Fact: symptomIncreased}}
+			tc.mutate(&p, &req, &observations, &now)
+			got, err := evaluateDeploymentHypothesis(p, req, observations, now)
+			if !errors.Is(err, ErrInvalidRequest) || !reflect.DeepEqual(got, hypothesisResult{}) {
+				t.Fatalf("invalid context accepted: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestDeploymentHypothesisResultOwnsEvidence(t *testing.T) {
+	req := validRequest()
+	now := req.Evidence[0].CollectedAt
+	observations := []hypothesisObservation{
+		{Evidence: req.Evidence[0], Fact: symptomIncreased},
+		{Evidence: req.Evidence[2], Fact: deploymentPrecedesSymptom},
+	}
+	got, err := evaluateDeploymentHypothesis(testPrincipal(), req, observations, now)
+	if err != nil || got.Status != hypothesisSupported || len(got.Supporting) != 2 {
+		t.Fatalf("unexpected evaluation: %+v %v", got, err)
+	}
+	// The sorted result contains a value copy of the change evidence.
+	original := observations[1]
+	if got.Supporting[0] != original {
+		t.Fatalf("expected exact change evidence, got %+v", got.Supporting[0])
+	}
+	observations[1].Evidence.Ref = "mutated-observation"
+	req.Evidence[2].Ref = "mutated-request"
+	if got.Supporting[0] != original {
+		t.Fatal("input mutation changed result")
+	}
+	got.Supporting[0].Evidence.Ref = "mutated-result"
+	if observations[1].Evidence.Ref != "mutated-observation" || req.Evidence[2].Ref != "mutated-request" {
+		t.Fatal("result mutation changed inputs")
 	}
 }
