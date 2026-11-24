@@ -288,9 +288,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		} else {
 			_ = tx.Rollback()
 		}
-		var records, events int
-		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &events); err != nil || records != 0 || events != 0 {
-			t.Fatalf("rejected transactions produced side effects: %d %d %v", records, events, err)
+		var records, eventCount int
+		if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 0 || eventCount != 0 {
+			t.Fatalf("rejected transactions produced side effects: %d %d %v", records, eventCount, err)
 		}
 	})
 	// A direct foreign Outbox INSERT must fail at its own policy, not at
