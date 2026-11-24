@@ -21,7 +21,8 @@
 
 - [x] Define a versioned, typed, tenant/Agent/Run/service-scoped Evidence Envelope v1 with observation windows, collection time, revocation state, and validation tests.
 - [x] Internal deterministic deployment-correlation hypothesis evaluator and signed typed-observation offline adapter; signatures establish source attribution, not fact truth or causality.
-- [x] Fixture-only evaluation report with deterministic status, abstention, scenario pass-rate, and exact-reference binding metrics; synthetic Gold/Holdout fixture labels are not a human-reviewed incident benchmark.
+- [x] Fixture-only evaluation report with deterministic status, abstention, scenario pass-rate, exact-reference binding, and abstention-reason accuracy metrics; synthetic Gold/Holdout fixture labels are not a human-reviewed incident benchmark.
+- [x] Deterministic abstention reason taxonomy for missing, conflicting, and irrelevant evidence, with per-case offline evaluation and reason-accuracy reporting.
 - [ ] Collect and independently adjudicate real SRE incident Gold/Holdout trajectories before making operational accuracy claims.
 - [ ] Implement production AuthorityVerifier integration for tenant ownership, attestation, digest, expiry, and revocation.
 - [ ] Evidence freshness, provenance, quality, and coverage policy (requires per-kind operational thresholds and source semantics).
