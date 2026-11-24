@@ -63,7 +63,28 @@ jobs:
       # The Outbox catalog-restoration regression was historically intermittent.
       # Repeat this PostgreSQL 16 integration scenario in CI; production code does not retry attestation.
       - name: Repeat PostgreSQL Outbox catalog restoration regression
-        run: go test -race -count=20 -run '^TestPostgresOutboxClaimLeaseRetryAndAck$' ./internal/outbox
+        run: go test -race -count=20 -run '^TestPostgresOutboxClaimLeaseRetryAndAck      # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
+      - name: Repeat same-schema trigger restore and catalog DDL stress regression
+        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
+      - name: Repeat PostgreSQL Decision and Outbox package suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+ ./internal/outbox
+      # Reproduce the historical TRUNCATE-guard restore point under same-schema catalog churn.
+      - name: Repeat Outbox TRUNCATE guard restore and same-schema DDL stress regression
+        run: go test -race -count=3 -run '^TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL      # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
+      - name: Repeat same-schema trigger restore and catalog DDL stress regression
+        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
+      - name: Repeat PostgreSQL Decision and Outbox package suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+ ./internal/outbox
       # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
       - name: Repeat same-schema trigger restore and catalog DDL stress regression
         run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
