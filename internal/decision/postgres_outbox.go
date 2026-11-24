@@ -48,7 +48,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 
 // MigrateInSchema applies the ledger within a trusted, caller-configured
 // PostgreSQL schema. The schema must come from deployment configuration, never
-// from an HTTP request or untrusted data. All unqualified legacy v1-v3 DDL
+// from an HTTP request or untrusted data. All unqualified migration v1-v4 DDL
 // resolves inside a transaction-local schema-first search_path, with pg_temp
 // explicitly LAST so temporary tables cannot shadow protected relations.
 func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
