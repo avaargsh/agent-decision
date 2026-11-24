@@ -38,6 +38,16 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	// A separate schema may host unrelated, ordinary SECURITY INVOKER
+	// trigger callbacks. PUBLIC USAGE makes those routines visible to the
+	// restricted login, but they do not elevate its privileges.
+	externalSchema := "decision_external_triggers_" + seed
+	exec("CREATE SCHEMA " + externalSchema)
+	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+externalSchema+" CASCADE") }()
+	if err := MigrateInSchema(ctx, admin, externalSchema); err != nil {
+		t.Fatalf("create unrelated external schema fixture: %v", err)
+	}
+	exec("GRANT USAGE ON SCHEMA " + externalSchema + " TO PUBLIC")
 	password := "ephemeral_role_gate_" + seed
 	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
 	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
