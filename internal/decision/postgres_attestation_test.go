@@ -237,6 +237,7 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		migrationErr := MigrateInSchema(ctx, admin, schema)
 		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_identity_ck"); err != nil {
 			t.Fatal(err)
 		}
@@ -248,6 +249,9 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		}
 		if !errors.Is(verifyErr, ErrCatalogDrift) {
 			t.Fatalf("read-only attestation accepted a same-name mapping CHECK with OR TRUE: %v", verifyErr)
+		}
+		if !errors.Is(migrationErr, ErrCatalogDrift) {
+			t.Fatalf("migration re-entry accepted a same-name mapping CHECK with OR TRUE: %v", migrationErr)
 		}
 	})
 
@@ -271,6 +275,7 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		migrationErr := MigrateInSchema(ctx, admin, schema)
 		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_login_kind_check"); err != nil {
 			t.Fatal(err)
 		}
@@ -282,6 +287,9 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		}
 		if !errors.Is(verifyErr, ErrCatalogDrift) {
 			t.Fatalf("read-only attestation accepted a same-name login_kind CHECK with OR TRUE: %v", verifyErr)
+		}
+		if !errors.Is(migrationErr, ErrCatalogDrift) {
+			t.Fatalf("migration re-entry accepted a same-name login_kind CHECK with OR TRUE: %v", migrationErr)
 		}
 	})
 }
