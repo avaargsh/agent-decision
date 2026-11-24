@@ -257,9 +257,9 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			    AND NOT fn.prosecdef
 			    AND fn.proconfig IS NULL
 			    AND (
-			      (fn.proname = 'reject_decision_record_mutation' AND fn.prosrc = $2)
-			      OR (fn.proname = 'reject_decision_outbox_delete' AND fn.prosrc = $3)
-			      OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND fn.prosrc = $4)
+			      (fn.proname = 'reject_decision_record_mutation' AND pg_catalog.btrim(fn.prosrc) = $2)
+			      OR (fn.proname = 'reject_decision_outbox_delete' AND pg_catalog.btrim(fn.prosrc) = $3)
+			      OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND pg_catalog.btrim(fn.prosrc) = $4)
 			    )
 			  )
 		)
@@ -311,9 +311,9 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			          AND NOT fn.prosecdef
 			          AND fn.proconfig IS NULL
 			          AND (
-			            (fn.proname = 'reject_decision_record_mutation' AND fn.prosrc = $2)
-			            OR (fn.proname = 'reject_decision_outbox_delete' AND fn.prosrc = $3)
-			            OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND fn.prosrc = $4)
+			            (fn.proname = 'reject_decision_record_mutation' AND pg_catalog.btrim(fn.prosrc) = $2)
+			            OR (fn.proname = 'reject_decision_outbox_delete' AND pg_catalog.btrim(fn.prosrc) = $3)
+			            OR (fn.proname = 'reject_decision_outbox_identity_mutation' AND pg_catalog.btrim(fn.prosrc) = $4)
 			          )
 			        )
 			    ) OR EXISTS (
