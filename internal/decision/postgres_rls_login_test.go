@@ -434,7 +434,8 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			_ = tx.Rollback()
 			want, wantTenant := 0, ""
 			if scope == tc.own.TenantID {
-				want, wantTenant = 1, tc.own.TenantID
+				// One routed-store record plus the direct PostgresStore fixture.
+				want, wantTenant = 2, tc.own.TenantID
 			}
 			if err != nil || count != want || visible != wantTenant {
 				t.Fatalf("unfiltered scope %q: count=%d tenant=%q err=%v", scope, count, visible, err)
@@ -446,7 +447,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	var records, eventCount int
-	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 2 || eventCount != 2 {
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+ledger+"), (SELECT count(*) FROM "+events+")").Scan(&records, &eventCount); err != nil || records != 4 || eventCount != 4 {
 		t.Fatalf("denied write changed atomic rows: %d %d %v", records, eventCount, err)
 	}
 	if _, err := worker.ExecContext(ctx, "SELECT record FROM decision_records"); err == nil {
