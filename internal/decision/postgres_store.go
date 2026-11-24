@@ -70,6 +70,12 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 		return Record{}, false, fmt.Errorf("invalid record for persistence")
 	}
 	record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
+	// Reads reject zero creation time, including timestamps that normalize
+	// to zero at PostgreSQL's microsecond precision. Never commit a record
+	// that the ledger cannot subsequently replay.
+	if record.CreatedAt.IsZero() {
+		return Record{}, false, fmt.Errorf("%w: zero normalized record creation time", ErrInvalidRequest)
+	}
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return Record{}, false, fmt.Errorf("marshal decision record: %w", err)
