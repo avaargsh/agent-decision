@@ -2,8 +2,10 @@ package decision
 
 import (
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,7 +71,7 @@ func evaluationReportCases(t *testing.T) []hypothesisEvaluationCase {
 			ID: "05-no-observations", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: fixture.request,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
-			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: true,
+			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: false,
 		},
 		{
 			ID: "06-unbound-reference", Split: hypothesisEvaluationHoldoutFixture,
@@ -124,6 +126,29 @@ func TestHypothesisEvaluationReportDetectsIncorrectBindingExpectation(t *testing
 	if report.PassedCount != 6 || report.FailedCount != 1 ||
 		report.EvidenceBindingCaseMatches != 5 || report.EvidenceBindingAccuracyBasisPoints != 8333 {
 		t.Fatalf("binding expectation mismatch was not reported: %+v", report)
+	}
+}
+
+
+func TestHypothesisEvaluationReportMarksUnmeasuredBindingAndSerializesFalse(t *testing.T) {
+	cases := evaluationReportCases(t)
+	cases = cases[4:5]
+	report, err := buildHypothesisEvaluationReport("empty-binding-fixture", cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EvidenceBindingAccuracyMeasured || report.EvidenceBindingCaseCount != 0 ||
+		report.EvidenceBindingAccuracyBasisPoints != 0 {
+		t.Fatalf("empty binding denominator must be explicitly unmeasured: %+v", report)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"evidence_binding_checked":false`) ||
+		!strings.Contains(string(encoded), `"expected_bindings_bound":false`) ||
+		!strings.Contains(string(encoded), `"actual_bindings_bound":false`) {
+		t.Fatalf("report omitted explicit false binding state: %s", encoded)
 	}
 }
 
