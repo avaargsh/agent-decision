@@ -308,7 +308,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_pkey'
-			   AND c.contype = 'p' AND c.convalidated)
+			   AND c.contype = 'p' AND c.convalidated
+			   AND c.conkey = ARRAY[(
+			       SELECT a.attnum FROM pg_catalog.pg_attribute AS a
+			       WHERE a.attrelid = c.conrelid AND a.attname = 'login_role' AND a.attnum > 0
+			   )]::smallint[])
 			AND
 			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
@@ -321,7 +325,12 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_tenant_uq'
 			   AND c.contype = 'u' AND c.convalidated
-			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready)
+			   AND c.conkey = ARRAY[(
+			       SELECT a.attnum FROM pg_catalog.pg_attribute AS a
+			       WHERE a.attrelid = c.conrelid AND a.attname = 'tenant_id' AND a.attnum > 0
+			   )]::smallint[]
+			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready
+			   AND i.indnkeyatts = 1 AND i.indnatts = 1)
 	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
