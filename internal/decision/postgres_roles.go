@@ -25,6 +25,26 @@ const (
 // must be combined with catalog attestation, real TLS/identity, and tenant
 // authorization at the service/database boundary.
 func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole) error {
+	return verifyRuntimeDatabaseRole(ctx, db, schema, role, nil)
+}
+
+// runtimeLoginBinding is a deployment-owned identity pin, not an HTTP
+// credential or tenant claim. Role OIDs are local to a PostgreSQL cluster;
+// TLS/server identity and re-provisioning after restore are separate checks.
+type runtimeLoginBinding struct {
+	Database string
+	RoleName string
+	RoleOID  uint32
+}
+
+func verifyBoundRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole, binding runtimeLoginBinding) error {
+	if binding.Database == "" || binding.RoleName == "" || binding.RoleOID == 0 {
+		return fmt.Errorf("%w: incomplete runtime login binding", ErrCatalogDrift)
+	}
+	return verifyRuntimeDatabaseRole(ctx, db, schema, role, &binding)
+}
+
+func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole, binding *runtimeLoginBinding) error {
 	if db == nil {
 		return ErrStoreUnavailable
 	}
@@ -88,6 +108,27 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		WHERE r.rolname = current_user
 	`, schema).Scan(&identityOK); err != nil || !identityOK {
 		return fmt.Errorf("%w: unsafe runtime database role identity/ownership", ErrCatalogDrift)
+	}
+
+	// Check the pin on the same transaction and authenticated backend as
+	// the original LOGIN and ACL audit; a second pool checkout is unsafe.
+	if binding != nil {
+		var bound bool
+		err := tx.QueryRowContext(ctx, `
+			SELECT pg_catalog.current_database()::text = $1
+				AND session_user::text = $2
+				AND current_user::text = $2
+				AND EXISTS (
+					SELECT 1 FROM pg_catalog.pg_stat_activity AS login
+					JOIN pg_catalog.pg_roles AS r ON r.oid = login.usesysid
+					WHERE login.pid = pg_catalog.pg_backend_pid()
+					  AND r.rolname::text = $2
+					  AND r.oid = $3::pg_catalog.oid
+				)
+		`, binding.Database, binding.RoleName, int64(binding.RoleOID)).Scan(&bound)
+		if err != nil || !bound {
+			return fmt.Errorf("%w: runtime login binding mismatch", ErrCatalogDrift)
+		}
 	}
 
 	// Every table and column grant is checked. A table-wide UPDATE grant is
