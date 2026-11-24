@@ -261,22 +261,30 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 		Evidence:append([]EvidenceRef{},evidence...),
 	}
 	if principal.Validate()!=nil || req.Validate()!=nil{return fail(ErrAuthorityRejected)}
-	// Network reads are sequential. All signed inputs must still be fresh
-	// at the final observation, not merely at their individual read times.
-	// This is a point-in-time check, not an atomic distributed revocation fence.
-	finalNow:=a.currentTime()
-	for _, snapshot:=range []SnapshotRef{req.ContextSnapshot,req.CapabilitySnapshot}{
-		if finalNow.Before(snapshot.IssuedAt) || !finalNow.Before(snapshot.ExpiresAt){
-			return fail(ErrAuthorityRejected)
-		}
-	}
-	for _, e:=range req.Evidence{
-		source,ok:=a.sources[e.SourceID]
-		if !ok || !evidenceScopeMatches(source.scope,e,finalNow){
-			return fail(ErrAuthorityRejected)
-		}
+	if !a.inputsFreshAt(req, a.currentTime()) {
+		return fail(ErrAuthorityRejected)
 	}
 	return principal,req,nil
+}
+
+// inputsFreshAt is shared by the final observation of both new turns and
+// continuation receipts. It does not claim atomic distributed revocation.
+func (a *LiveAuthority) inputsFreshAt(req Request, now time.Time) bool {
+	if now.IsZero() {
+		return false
+	}
+	for _, snapshot := range []SnapshotRef{req.ContextSnapshot, req.CapabilitySnapshot} {
+		if now.Before(snapshot.IssuedAt) || !now.Before(snapshot.ExpiresAt) {
+			return false
+		}
+	}
+	for _, e := range req.Evidence {
+		source, ok := a.sources[e.SourceID]
+		if !ok || !evidenceScopeMatches(source.scope, e, now) {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveTurn only accepts reference selectors and Evidence claims. All

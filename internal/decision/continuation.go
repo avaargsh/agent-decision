@@ -47,7 +47,9 @@ func (a *LiveAuthority) VerifyCommittedTurn(ctx context.Context, store Store, ru
 	if err != nil {
 		return empty, err
 	}
-	if before != after {
+	// build's final observation precedes this additional network read.
+	// Never issue a continuation receipt for inputs stale at this point.
+	if before != after || !a.inputsFreshAt(req, a.currentTime()) {
 		return empty, ErrAuthorityRejected
 	}
 	return ContinuationReceipt{
