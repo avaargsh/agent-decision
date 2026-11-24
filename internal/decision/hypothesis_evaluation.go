@@ -99,6 +99,9 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 		if item.Split != hypothesisEvaluationGoldFixture && item.Split != hypothesisEvaluationHoldoutFixture {
 			return hypothesisEvaluationReport{}, ErrInvalidRequest
 		}
+		if len(item.Publications) == 0 && item.ExpectedBindingsBound {
+			return hypothesisEvaluationReport{}, ErrInvalidRequest
+		}
 		if item.ExpectedError != nil {
 			if item.ExpectedStatus != "" ||
 				(!errors.Is(item.ExpectedError, ErrInvalidRequest) && !errors.Is(item.ExpectedError, ErrAuthorityRejected)) {
