@@ -206,7 +206,7 @@ func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
 			Scan(&enabled, &eventType, &expectedFunction, &unconditional, &restrictedColumns)
 		if errors.Is(err, sql.ErrNoRows) {
-			return catalogAttestationMismatch("trigger " + item.table + "." + item.name + " missing")
+			return catalogAttestationMissing("trigger " + item.table + "." + item.name)
 		}
 		if err != nil {
 			return catalogAttestationQueryFailure("trigger "+item.table+"."+item.name, err)
@@ -245,6 +245,10 @@ func catalogAttestationMismatch(check string) error {
 	return fmt.Errorf("%w: %s mismatch", ErrCatalogDrift, check)
 }
 
+func catalogAttestationMissing(check string) error {
+	return fmt.Errorf("%w: %s missing", ErrCatalogDrift, check)
+}
+
 // verifyTenantRLSPolicies pins the exact v0004 RLS surface. Runtime tenant
 // authority comes from the authenticated PostgreSQL session_user mapping;
 // decision.tenant_id is only a transaction-local equality guard.
@@ -266,7 +270,7 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			WHERE c.oid = pg_catalog.to_regclass($1)
 		`, expected.table).Scan(&enabled, &forced)
 		if errors.Is(err, sql.ErrNoRows) {
-			return catalogAttestationMismatch("RLS relation " + expected.table + " missing")
+			return catalogAttestationMissing("RLS relation " + expected.table)
 		}
 		if err != nil {
 			return catalogAttestationQueryFailure("RLS flags for "+expected.table, err)
@@ -654,7 +658,7 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 		`, expected.table, expected.name).Scan(&installed)
 		checkName := "critical CHECK " + expected.table + "." + expected.name
 		if errors.Is(err, sql.ErrNoRows) {
-			return catalogAttestationMismatch(checkName + " missing")
+			return catalogAttestationMissing(checkName)
 		}
 		if err != nil {
 			return catalogAttestationQueryFailure(checkName, err)
@@ -717,7 +721,7 @@ END;`,
 		`, expected.name).Scan(&actualSource)
 		checkName := "Decision trigger function " + expected.name
 		if errors.Is(err, sql.ErrNoRows) {
-			return catalogAttestationMismatch(checkName + " missing or invalid")
+			return catalogAttestationMissing(checkName + " (missing or invalid)")
 		}
 		if err != nil {
 			return catalogAttestationQueryFailure(checkName, err)
