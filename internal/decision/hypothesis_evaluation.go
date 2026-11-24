@@ -39,8 +39,8 @@ type hypothesisEvaluationCaseResult struct {
 	ActualErrorClass string `json:"actual_error_class,omitempty"`
 	Passed bool `json:"passed"`
 	EvidenceBindingChecked bool `json:"evidence_binding_checked"`
-	ExpectedBindingsBound bool `json:"expected_bindings_bound,omitempty"`
-	ActualBindingsBound bool `json:"actual_bindings_bound,omitempty"`
+	ExpectedBindingsBound bool `json:"expected_bindings_bound"`
+	ActualBindingsBound bool `json:"actual_bindings_bound"`
 }
 
 type hypothesisEvaluationStatusCount struct {
