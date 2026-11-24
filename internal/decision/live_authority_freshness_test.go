@@ -21,6 +21,15 @@ func (f freshnessTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // The transport returns real signed, byte-bound publications but uses a
 // deterministic clock instead of relying on wall-clock sleeps or remote TLS.
 func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
+	testFinalFreshness(t, false)
+}
+
+func TestContinuationRejectsInputsStaleAtFinalObservation(t *testing.T) {
+	testFinalFreshness(t, true)
+}
+
+func testFinalFreshness(t *testing.T, continuation bool) {
+	t.Helper()
 	for _, tc := range []struct {
 		name                     string
 		snapshotTTL, evidenceTTL time.Duration
@@ -33,7 +42,7 @@ func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
 		{"evidence max age", 10 * time.Minute, 10 * time.Minute, 2 * time.Minute, time.Minute + time.Second, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			start := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+			start := time.Date(2025, 11, 24, 0, 0, 0, 0, time.UTC)
 			now := start
 			marshal := func(v any) []byte {
 				t.Helper()
@@ -70,6 +79,21 @@ func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
 				IssuedAt: start.Add(-time.Minute), ExpiresAt: start.Add(tc.snapshotTTL),
 				Services: []string{input.Service}, Capabilities: []acpReleaseContract{},
 			}
+			caps := []CapabilityRef{}
+			for _, id := range []string{"sre.changes.read", "sre.logs.read", "sre.metrics.read"} {
+				contract := acpReleaseContract{
+					ID: id, Version: "1.0.0", InputSchema: json.RawMessage(`{}`),
+					OutputSchema: json.RawMessage(`{}`), EffectClass: "read_only",
+					Idempotency: "safe", TenantScoped: true,
+				}
+				release.Capabilities = append(release.Capabilities, contract)
+				caps = append(caps, CapabilityRef{
+					ID: id, Version: contract.Version, ContractSHA256: acpHash(marshal(contract)),
+					InputSchemaRef: "sha256:" + acpHash(contract.InputSchema),
+					OutputSchemaRef: "sha256:" + acpHash(contract.OutputSchema),
+					EffectClass: "read_only", Idempotency: "safe", TenantScoped: true,
+				})
+			}
 			releaseBytes := marshal(release)
 			runtime.ConfigDigest = "sha256:" + acpHash(releaseBytes)
 			binding := acpWireBinding{
@@ -94,7 +118,7 @@ func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
 				SchemaVersion: "acp.decision-publication.v1", Authority: binding, Context: contextValue,
 				ContextSnapshot: snapshot("ctx", "acp-context-v1", contextBytes),
 				CapabilitySnapshot: snapshot("cap", release.CatalogVersion, releaseBytes),
-				Capabilities: []CapabilityRef{}, ContextContent: contextBytes, CapabilityContent: releaseBytes,
+				Capabilities: caps, ContextContent: contextBytes, CapabilityContent: releaseBytes,
 			})
 			acpWire := marshal(signedACP{KeyID: keyID, Payload: payload, Signature: ed25519.Sign(acpKey, payload)})
 			scope := EvidenceSourceScope{
@@ -123,22 +147,75 @@ func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
 					}),
 				}}
 			}
+			refs := []EvidenceRef{ref}
+			sources := map[string]pinnedEvidenceSource{scope.SourceID: {
+				client: client(proof, nil), scope: scope, key: sourceKey.Public().(ed25519.PublicKey),
+			}}
+			for _, kind := range []string{"logs", "change"} {
+				s := scope
+				s.SourceID = kind + "-1"
+				s.Source = kind
+				s.EvidenceType = kind
+				e, wire, err := PublishEvidence(s, EvidenceObservation{
+					Ref: "sample-" + kind, ObservedFrom: start.Add(-time.Minute), ObservedTo: start,
+					ObservedAt: start, CollectedAt: start, ExpiresAt: start.Add(tc.evidenceTTL),
+				}, []byte(kind), sourceKey, start)
+				if err != nil {
+					t.Fatal(err)
+				}
+				refs = append(refs, e)
+				sources[s.SourceID] = pinnedEvidenceSource{client: client(wire, nil), scope: s, key: sourceKey.Public().(ed25519.PublicKey)}
+			}
 			calls := 0
+			delayAt := 2
+			if continuation {
+				delayAt = 0 // First build an unexpired committed record.
+			}
 			a := &LiveAuthority{
 				tenant: runtime.TenantID, acpKey: acpPub, now: func() time.Time { return now },
 				runtime: client(marshal(runtime), func() {
 					calls++
-					if calls == 2 {
+					if calls == delayAt {
 						now = start.Add(tc.delay)
 					}
 				}),
 				acp: client(acpWire, nil),
-				sources: map[string]pinnedEvidenceSource{scope.SourceID: {
-					client: client(proof, nil), scope: scope, key: sourceKey.Public().(ed25519.PublicKey),
-				}},
+				sources: sources,
 			}
-			_, _, err = a.ResolveTurn(context.Background(), runtime.RunID, runtime.InvocationID, []EvidenceRef{ref})
-			if calls != 2 {
+			ctx := context.Background()
+			expectedCalls := 2
+			if continuation {
+				p, req, buildErr := a.ResolveTurn(ctx, runtime.RunID, runtime.InvocationID, refs)
+				if buildErr != nil {
+					t.Fatal(buildErr)
+				}
+				record, buildErr := recordFromVerifiedRequest(p, req, SREReadOnlyStrategy{}, start)
+				if buildErr != nil || record.Status != StatusProposed {
+					t.Fatalf("fixture requires proposed record: %v %s", buildErr, record.Status)
+				}
+				store := NewMemoryStore()
+				if _, created, saveErr := store.SaveOrGet(ctx, record); saveErr != nil || !created {
+					t.Fatalf("fixture store: %v", saveErr)
+				}
+				calls = 0
+				delayAt = 4 // before, build's two reads, after.
+				expectedCalls = 4
+				var receipt ContinuationReceipt
+				receipt, err = a.VerifyCommittedTurn(ctx, store, runtime.RunID, runtime.InvocationID)
+				if tc.wantReject && receipt != (ContinuationReceipt{}) {
+					t.Fatal("rejected continuation returned a receipt")
+				}
+				if !tc.wantReject && err == nil && receipt.DecisionID != record.DecisionID {
+					t.Fatal("fresh continuation did not bind stored decision")
+				}
+				got, lookupErr := store.GetByInvocation(ctx, p.TenantID, req.InvocationID)
+				if lookupErr != nil || digest(got) != digest(record) {
+					t.Fatal("continuation modified ledger")
+				}
+			} else {
+				_, _, err = a.ResolveTurn(ctx, runtime.RunID, runtime.InvocationID, refs)
+			}
+			if calls != expectedCalls {
 				t.Fatalf("fixture never reached final Runtime read: calls=%d err=%v", calls, err)
 			}
 			if tc.wantReject {
