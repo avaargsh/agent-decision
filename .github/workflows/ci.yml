@@ -66,12 +66,7 @@ jobs:
         run: go test -race -count=20 -run '^TestPostgresOutboxClaimLeaseRetryAndAck$' ./internal/outbox
       # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
       - name: Repeat same-schema trigger restore and catalog DDL stress regression
-        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL        run: go test -race -count=3 ./internal/decision ./internal/outbox
-      - name: Test
-        run: go test -race ./...
-      - name: Vet
-        run: go vet ./...
- ./internal/decision
+        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
       - name: Repeat PostgreSQL Decision and Outbox package suites
         run: go test -race -count=3 ./internal/decision ./internal/outbox
       - name: Test
