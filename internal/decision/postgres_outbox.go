@@ -214,7 +214,7 @@ func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 		if enabled != "O" || eventType != item.triggerType ||
 			!expectedFunction.Valid || !expectedFunction.Bool || !unconditional ||
 			restrictedColumns != "" {
-			return catalogAttestationMismatch("trigger " + item.table + "." + item.name + " definition")
+			return catalogAttestationMismatch("altered or restricted trigger " + item.table + "." + item.name)
 		}
 	}
 	return nil
@@ -664,7 +664,7 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 			return catalogAttestationQueryFailure(checkName, err)
 		}
 		if installed != expected.expression {
-			return catalogAttestationMismatch(checkName + " predicate")
+			return catalogAttestationMismatch("altered CHECK predicate " + expected.table + "." + expected.name)
 		}
 	}
 
@@ -727,7 +727,7 @@ END;`,
 			return catalogAttestationQueryFailure(checkName, err)
 		}
 		if strings.TrimSpace(actualSource) != expected.body {
-			return catalogAttestationMismatch(checkName + " source")
+			return catalogAttestationMismatch("Decision trigger function drift: " + expected.name)
 		}
 	}
 	return nil
