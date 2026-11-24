@@ -25,7 +25,7 @@
 - [ ] Collect and independently adjudicate real SRE incident Gold/Holdout trajectories before making operational accuracy claims.
 - [ ] Implement production AuthorityVerifier integration for tenant ownership, attestation, digest, expiry, and revocation.
 - [ ] Evidence freshness, provenance, quality, and coverage policy (requires per-kind operational thresholds and source semantics).
-- [ ] Hypothesis model with explicit supporting and contradicting evidence references.
+- [x] Private deterministic hypothesis model with explicit supporting/contradicting evidence references and signed typed-observation offline adapter; fixture-only evaluation report is documented, while live revocation, human-curated incident Gold/Holdout and causal inference remain out of scope.
 - [ ] Investigation result ingestion and bounded follow-up decision steps.
 - [ ] DecisionRecord schema evolution and replay compatibility tests.
 
