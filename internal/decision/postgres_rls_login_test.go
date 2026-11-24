@@ -70,6 +70,12 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	if err := VerifyInstalledCatalogInSchema(ctx, admin, schema); err != nil {
 		t.Fatalf("v0004 RLS migration catalog attestation: %v", err)
 	}
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ('duplicate-tenant-login', 'tenant-a', 'application')"); err == nil {
+		t.Fatal("mapping table accepted a second application LOGIN for the same tenant")
+	}
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ('duplicate-dispatcher-login', NULL, 'dispatcher')"); err == nil {
+		t.Fatal("mapping table accepted a second global dispatcher LOGIN")
+	}
 	open := func(role string) *sql.DB {
 		t.Helper()
 		cfg, err := pgx.ParseConfig(dsn)
