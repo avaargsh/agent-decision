@@ -20,6 +20,8 @@ CREATE TABLE decision_tenant_logins (
 COMMENT ON TABLE decision_tenant_logins IS
     'Migrator-owned mapping from authenticated PostgreSQL LOGIN to one tenant or the global Outbox dispatcher. Runtime roles are read-only.';
 
+REVOKE ALL ON TABLE decision_tenant_logins FROM PUBLIC;
+
 ALTER TABLE decision_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
 
