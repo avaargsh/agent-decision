@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -719,3 +720,228 @@ func (s *fakeStore) Retry(_ context.Context, _ string, _ string, _ int, _ time.D
 type fakePublisher struct{ err error }
 
 func (p fakePublisher) Publish(context.Context, outbox.Event) error { return p.err }
+
+
+// TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL exercises the
+// exact DROP/CREATE TRUNCATE-guard restoration path that historically
+// preceded an intermittent tenant LOGIN mapping-constraint attestation
+// failure. It deliberately uses the same pgx search_path runtime parameter
+// as the Outbox integration suite, while unrelated DDL churns the target
+// schema's shared PostgreSQL catalogs.
+func TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.SetMaxOpenConns(24)
+	if err := admin.PingContext(ctx); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+
+	schema := fmt.Sprintf("outbox_restore_stress_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		_, _ = admin.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	config.RuntimeParams["search_path"] = schema
+	db := stdlib.OpenDB(*config)
+	db.SetMaxOpenConns(24)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		_, _ = admin.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	restoreTrigger := "CREATE TRIGGER decision_records_no_truncate " +
+		"BEFORE TRUNCATE ON decision_records FOR EACH STATEMENT " +
+		"EXECUTE FUNCTION reject_decision_record_mutation()"
+	defer func() {
+		// Always restore the protected trigger before dropping the isolated
+		// schema, including when an assertion fails mid-cycle.
+		_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS decision_records_no_truncate ON decision_records")
+		_, _ = db.ExecContext(context.Background(), restoreTrigger)
+		_ = db.Close()
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		_ = admin.Close()
+	}()
+
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+		t.Fatalf("install target schema: %v", err)
+	}
+
+	const ddlWorkers = 4
+	const ddlIterations = 96
+	const attestationWorkers = 2
+	const attestationsPerWorker = 48
+	const restoreIterations = 48
+
+	for worker := 0; worker < ddlWorkers; worker++ {
+		table := fmt.Sprintf("%s.catalog_churn_%d", schema, worker)
+		if _, err := admin.ExecContext(ctx, "CREATE TABLE "+table+" (id integer NOT NULL)"); err != nil {
+			t.Fatalf("create same-schema catalog churn table %d: %v", worker, err)
+		}
+	}
+
+	// Establish the exact Outbox pool/search_path path before introducing DDL
+	// concurrency. This also warms pgx's per-connection statement cache.
+	for i := 0; i < 3; i++ {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("sequential migration baseline %d: %v", i, err)
+		}
+		if err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("sequential read-only baseline %d: %v", i, err)
+		}
+	}
+
+	var catalogGate sync.RWMutex
+	errs := make(chan error, ddlWorkers+attestationWorkers+1)
+	var wg sync.WaitGroup
+	report := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case errs <- err:
+		default:
+		}
+		cancel()
+	}
+
+	// The write-side worker mirrors the historical test exactly: remove the
+	// TRUNCATE guard, require migration re-entry to fail at that trigger check,
+	// restore it, then require the mapping catalog and all other guards to pass.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS decision_records_no_truncate ON decision_records")
+			_, _ = db.ExecContext(context.Background(), restoreTrigger)
+		}()
+		for i := 0; i < restoreIterations; i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			catalogGate.Lock()
+			if _, err := db.ExecContext(ctx, "DROP TRIGGER decision_records_no_truncate ON decision_records"); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("drop TRUNCATE guard iteration %d: %w", i, err))
+				}
+				return
+			}
+			err := decision.MigrateInSchema(ctx, db, schema)
+			expected := "missing or unreadable trigger decision_records.decision_records_no_truncate"
+			if !errors.Is(err, decision.ErrCatalogDrift) || !strings.Contains(err.Error(), expected) {
+				_, _ = db.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS decision_records_no_truncate ON decision_records")
+				_, _ = db.ExecContext(context.Background(), restoreTrigger)
+				catalogGate.Unlock()
+				report(fmt.Errorf("missing TRUNCATE guard must fail at its own check, iteration %d: %v", i, err))
+				return
+			}
+			if _, err := db.ExecContext(ctx, restoreTrigger); err != nil {
+				catalogGate.Unlock()
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restore TRUNCATE guard iteration %d: %w", i, err))
+				}
+				return
+			}
+			err = decision.MigrateInSchema(ctx, db, schema)
+			catalogGate.Unlock()
+			if err != nil {
+				if ctx.Err() == nil {
+					report(fmt.Errorf("restored TRUNCATE guard migration iteration %d: %w", i, err))
+				}
+				return
+			}
+		}
+	}()
+
+	// Each worker mutates a different relation. This creates real pg_class and
+	// pg_constraint catalog churn without introducing table-lock contention
+	// against the DecisionRecord or tenant LOGIN mapping relations.
+	for worker := 0; worker < ddlWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			table := fmt.Sprintf("%s.catalog_churn_%d", schema, worker)
+			for i := 0; i < ddlIterations; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				constraint := fmt.Sprintf("catalog_churn_ck_%d", i)
+				add := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (id >= %d)", table, constraint, i)
+				drop := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", table, constraint)
+				if _, err := admin.ExecContext(ctx, add); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL add worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+				if _, err := admin.ExecContext(ctx, drop); err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("same-schema unrelated DDL drop worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	// Attestors use the same pgx pool with a schema-specific runtime search_path.
+	// The RW gate prevents them from observing the intentionally absent trigger.
+	for worker := 0; worker < attestationWorkers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < attestationsPerWorker; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				catalogGate.RLock()
+				err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema)
+				catalogGate.RUnlock()
+				if err != nil {
+					if ctx.Err() == nil {
+						report(fmt.Errorf("read-only attestation worker %d iteration %d: %w", worker, i, err))
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("TRUNCATE-guard/catalog-DDL stress test exceeded its 90-second deadline")
+	}
+	if ctx.Err() == nil {
+		if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+			t.Errorf("final restored migration attestation: %v", err)
+		}
+		if err := decision.VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+			t.Errorf("final restored read-only attestation: %v", err)
+		}
+		t.Logf("stress completed: TRUNCATE guard restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
+	}
+}
