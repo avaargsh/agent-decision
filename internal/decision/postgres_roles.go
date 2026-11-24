@@ -226,6 +226,22 @@ func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: unexpected effective EXECUTE on unreviewed schema routine", ErrCatalogDrift)
 	}
 
+	// A foreign namespace need not contain any objects (or grant USAGE)
+	// to permit persistent DDL. Deny effective CREATE independently of
+	// object access, including grants inherited via PUBLIC or other roles.
+	var externalCreate bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_catalog.pg_namespace AS ns
+			WHERE ns.nspname <> $1
+			  AND ns.nspname <> 'information_schema'
+			  AND pg_catalog.left(ns.nspname, 3) <> 'pg_'
+			  AND pg_catalog.has_schema_privilege(current_user, ns.oid, 'CREATE')
+		)
+	`, schema).Scan(&externalCreate); err != nil || externalCreate {
+		return fmt.Errorf("%w: effective CREATE on unreviewed external schema", ErrCatalogDrift)
+	}
+
 	// search_path pinning protects unqualified runtime SQL, but a role may
 	// invoke schema-qualified functions, views, tables or sequences elsewhere.
 	// Audit effective privileges only in reachable, non-system namespaces:
