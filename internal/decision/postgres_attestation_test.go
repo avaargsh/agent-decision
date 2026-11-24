@@ -104,6 +104,46 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		})
 	}
 
+	// A same-name permissive replacement must not pass merely because the
+	// approved policy name and command still exist.
+	t.Run("weakened_same_name_tenant_policy", func(t *testing.T) {
+		target := schema + ".decision_records"
+		if _, err := admin.ExecContext(ctx, "DROP POLICY decision_records_tenant_select ON "+target); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "CREATE POLICY decision_records_tenant_select ON "+target+" AS PERMISSIVE FOR SELECT TO PUBLIC USING (true)"); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("weakened same-name RLS policy passed attestation: %v", err)
+		}
+		if err := MigrateInSchema(ctx, admin, schema); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("migration re-entry accepted weakened same-name RLS policy: %v", err)
+		}
+		if _, err := admin.ExecContext(ctx, "DROP POLICY decision_records_tenant_select ON "+target); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `CREATE POLICY decision_records_tenant_select
+			ON `+target+` AS PERMISSIVE FOR SELECT TO PUBLIC
+			USING (
+				tenant_id = NULLIF(pg_catalog.current_setting('decision.tenant_id', true), '')
+				AND EXISTS (
+					SELECT 1 FROM decision_tenant_logins AS login
+					WHERE login.login_role = SESSION_USER
+					  AND login.login_kind = 'application'
+					  AND login.tenant_id = decision_records.tenant_id
+				)
+			)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored exact tenant policy: %v", err)
+		}
+		if err := MigrateInSchema(ctx, admin, schema); err != nil {
+			t.Fatalf("restored migration re-entry: %v", err)
+		}
+	})
+
 	// The same-name installed trigger must be checked without any DDL/repair
 	// by the restricted verifier. The owner deliberately tampers and restores.
 	target := schema+".decision_records"
