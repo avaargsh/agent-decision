@@ -49,6 +49,7 @@ func VerifyInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema stri
 		"0001_create_decision_records.sql",
 		"0002_decision_outbox.sql",
 		"0003_append_only_truncate_guards.sql",
+		"0004_tenant_row_level_security.sql",
 	}
 	expectedDigests := make([]string, len(approved))
 	for i, name := range approved {
