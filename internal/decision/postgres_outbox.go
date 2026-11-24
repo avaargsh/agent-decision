@@ -647,15 +647,17 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 	}
 	for _, expected := range criticalChecks {
 		var installed string
+		var constraintType string
+		var validated, noInherit bool
 		err := tx.QueryRowContext(ctx, `
-			SELECT pg_get_expr(c.conbin, c.conrelid)
-			FROM pg_constraint c
-			WHERE c.conrelid = to_regclass($1)
+			SELECT c.contype::text, c.convalidated, c.connoinherit,
+			       COALESCE(pg_catalog.pg_get_expr(c.conbin, c.conrelid), '')
+			FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass($1)
 			  AND c.conname = $2
-			  AND c.contype = 'c'
-			  AND c.convalidated
-			  AND NOT c.connoinherit
-		`, expected.table, expected.name).Scan(&installed)
+		`, expected.table, expected.name).Scan(
+			&constraintType, &validated, &noInherit, &installed,
+		)
 		checkName := "critical CHECK " + expected.table + "." + expected.name
 		if errors.Is(err, sql.ErrNoRows) {
 			return catalogAttestationMissing(checkName)
@@ -663,7 +665,8 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 		if err != nil {
 			return catalogAttestationQueryFailure(checkName, err)
 		}
-		if installed != expected.expression {
+		if constraintType != "c" || !validated || noInherit ||
+			installed != expected.expression {
 			return catalogAttestationMismatch("altered CHECK predicate " + expected.table + "." + expected.name)
 		}
 	}
@@ -709,27 +712,36 @@ END;`,
 	}
 	for _, expected := range immutableFunctions {
 		var actualSource string
+		var metadataOK bool
 		err := tx.QueryRowContext(ctx, `
-			SELECT p.prosrc FROM pg_proc p
-			WHERE p.oid=to_regprocedure($1)
-			  AND p.pronargs=0
-			  AND p.prokind='f'
-			  AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql')
-			  AND p.prorettype='pg_catalog.trigger'::regtype
-			  AND p.provolatile='v'
-			  AND NOT p.prosecdef AND p.proconfig IS NULL
-		`, expected.name).Scan(&actualSource)
+			SELECT p.prosrc,
+			       p.pronargs = 0
+			       AND p.prokind = 'f'
+			       AND p.prolang = (
+			           SELECT oid FROM pg_catalog.pg_language WHERE lanname = 'plpgsql'
+			       )
+			       AND p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			       AND p.provolatile = 'v'
+			       AND NOT p.prosecdef
+			       AND p.proconfig IS NULL
+			FROM pg_catalog.pg_proc AS p
+			WHERE p.oid = pg_catalog.to_regprocedure($1)
+		`, expected.name).Scan(&actualSource, &metadataOK)
 		checkName := "Decision trigger function " + expected.name
 		if errors.Is(err, sql.ErrNoRows) {
-			return catalogAttestationMissing(checkName + " (missing or invalid)")
+			return catalogAttestationMissing(checkName)
 		}
 		if err != nil {
 			return catalogAttestationQueryFailure(checkName, err)
+		}
+		if !metadataOK {
+			return catalogAttestationMismatch(checkName + " metadata")
 		}
 		if strings.TrimSpace(actualSource) != expected.body {
 			return catalogAttestationMismatch("Decision trigger function drift: " + expected.name)
 		}
 	}
+
 	return nil
 }
 

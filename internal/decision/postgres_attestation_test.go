@@ -793,3 +793,98 @@ func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 		})
 	}
 }
+
+// TestCatalogAttestationDistinguishesMissingFromInvalidMetadata ensures that
+// a present object with an invalid catalog attribute is not mislabeled as
+// absent merely because the verifier's lookup filtered that attribute out.
+func TestCatalogAttestationDistinguishesMissingFromInvalidMetadata(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(8)
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := fmt.Sprintf("catalog_invalid_metadata_%d", time.Now().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Errorf("drop diagnostic schema: %v", err)
+		}
+	}()
+	if err := MigrateInSchema(ctx, db, schema); err != nil {
+		t.Fatalf("install diagnostic schema: %v", err)
+	}
+
+	t.Run("unvalidated critical CHECK is a mismatch", func(t *testing.T) {
+		var approvedDefinition string
+		if err := db.QueryRowContext(ctx, `
+			SELECT pg_catalog.pg_get_constraintdef(c.oid)
+			FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass($1)
+			  AND c.conname = $2 AND c.contype = 'c'
+		`, schema+".outbox_events", "outbox_lease_pair_ck").Scan(&approvedDefinition); err != nil {
+			t.Fatalf("read approved CHECK definition: %v", err)
+		}
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE "+schema+".outbox_events DROP CONSTRAINT outbox_lease_pair_ck"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE "+schema+".outbox_events ADD CONSTRAINT outbox_lease_pair_ck "+approvedDefinition+" NOT VALID"); err != nil {
+			t.Fatal(err)
+		}
+		// Restore the valid constraint before asserting so a failure cannot
+		// contaminate the following independent function-metadata case.
+		err := VerifyInstalledCatalogInSchema(ctx, db, schema)
+		_, dropErr := db.ExecContext(ctx,
+			"ALTER TABLE "+schema+".outbox_events DROP CONSTRAINT outbox_lease_pair_ck")
+		_, restoreErr := db.ExecContext(ctx,
+			"ALTER TABLE "+schema+".outbox_events ADD CONSTRAINT outbox_lease_pair_ck "+approvedDefinition)
+		if dropErr != nil || restoreErr != nil {
+			t.Fatalf("restore approved CHECK after probe: drop=%v restore=%v", dropErr, restoreErr)
+		}
+		if !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("unvalidated CHECK must fail closed: %v", err)
+		}
+		if !strings.Contains(err.Error(), "altered CHECK predicate outbox_events.outbox_lease_pair_ck mismatch") {
+			t.Fatalf("present but unvalidated CHECK must be classified as mismatch, got: %v", err)
+		}
+		if strings.Contains(err.Error(), " missing") {
+			t.Fatalf("present but unvalidated CHECK must not be classified as missing: %v", err)
+		}
+	})
+
+	t.Run("SECURITY DEFINER trigger function is a metadata mismatch", func(t *testing.T) {
+		signature := schema + ".reject_decision_record_mutation()"
+		if _, err := db.ExecContext(ctx, "ALTER FUNCTION "+signature+" SECURITY DEFINER"); err != nil {
+			t.Fatal(err)
+		}
+		err := VerifyInstalledCatalogInSchema(ctx, db, schema)
+		_, restoreErr := db.ExecContext(ctx, "ALTER FUNCTION "+signature+" SECURITY INVOKER")
+		if restoreErr != nil {
+			t.Fatalf("restore trigger function security mode: %v", restoreErr)
+		}
+		if !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("SECURITY DEFINER trigger function must fail closed: %v", err)
+		}
+		if !strings.Contains(err.Error(), "Decision trigger function reject_decision_record_mutation() metadata mismatch") {
+			t.Fatalf("present but invalid trigger-function metadata must be classified as mismatch, got: %v", err)
+		}
+		if strings.Contains(err.Error(), " missing") {
+			t.Fatalf("present but invalid trigger function must not be classified as missing: %v", err)
+		}
+	})
+}
