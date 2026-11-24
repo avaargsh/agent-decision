@@ -318,19 +318,19 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%login_role%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%application%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%dispatcher%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%tenant_id IS NOT NULL%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%tenant_id IS NULL%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%tenant_id <>%')
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%login_role%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%dispatcher%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id IS NOT NULL%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id IS NULL%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id <>%')
 			AND
 			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_login_kind_check'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%application%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) LIKE '%dispatcher%')
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
+			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%dispatcher%')
 			AND
 			(SELECT count(*) = 1
 			 FROM pg_catalog.pg_constraint AS c
