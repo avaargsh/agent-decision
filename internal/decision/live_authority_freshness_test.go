@@ -46,7 +46,12 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 		{"snapshot expiry", time.Minute, 10 * time.Minute, 5 * time.Minute, time.Minute, true},
 		{"evidence expiry", 10 * time.Minute, time.Minute, 5 * time.Minute, time.Minute, true},
 		{"evidence max age", 10 * time.Minute, 10 * time.Minute, 2 * time.Minute, time.Minute + time.Second, true},
+		{"intermediate runtime drift", 10 * time.Minute, 10 * time.Minute, 5 * time.Minute, 0, true},
 	} {
+		drift := tc.name == "intermediate runtime drift"
+		if drift && !continuation {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			start := time.Date(2025, 11, 24, 0, 0, 0, 0, time.UTC)
 			now := start
@@ -206,6 +211,22 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 				calls = 0
 				delayAt = 4 // before, build's two reads, after.
 				expectedCalls = 4
+				if drift {
+					// Simulate inconsistent authenticated Runtime observations:
+					// outer reads see version 1, both inner reads version 2.
+					// The committed proposal does not encode breaker version.
+					inner := runtime
+					inner.BreakerVersion++
+					transport := a.runtime.client.Transport
+					a.runtime.client.Transport = freshnessTransport(func(r *http.Request) (*http.Response, error) {
+						res, err := transport.RoundTrip(r)
+						if err == nil && (calls == 2 || calls == 3) {
+							_ = res.Body.Close()
+							res.Body = io.NopCloser(bytes.NewReader(marshal(inner)))
+						}
+						return res, err
+					})
+				}
 				if guard {
 					step := record.Plan.Steps[0]
 					request := GuardPlanStepRequest{
@@ -248,12 +269,12 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 			} else {
 				_, _, err = a.ResolveTurn(ctx, runtime.RunID, runtime.InvocationID, refs)
 			}
-			if calls != expectedCalls {
-				t.Fatalf("fixture never reached final Runtime read: calls=%d err=%v", calls, err)
+			if (!drift && calls != expectedCalls) || (drift && (calls < 2 || calls > expectedCalls)) {
+				t.Fatalf("unexpected Runtime observation count: calls=%d err=%v", calls, err)
 			}
 			if tc.wantReject {
 				if !errors.Is(err, ErrAuthorityRejected) {
-					t.Fatalf("stale input accepted after final Runtime read: %v", err)
+					t.Fatalf("inconsistent or stale authority inputs accepted: %v", err)
 				}
 			} else if err != nil {
 				t.Fatalf("fresh input rejected: %v", err)
