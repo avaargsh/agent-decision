@@ -21,14 +21,20 @@ func (f freshnessTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // The transport returns real signed, byte-bound publications but uses a
 // deterministic clock instead of relying on wall-clock sleeps or remote TLS.
 func TestLiveAuthorityRejectsInputsStaleAtFinalObservation(t *testing.T) {
-	testFinalFreshness(t, false)
+	testFinalFreshness(t, false, false)
 }
 
 func TestContinuationRejectsInputsStaleAtFinalObservation(t *testing.T) {
-	testFinalFreshness(t, true)
+	testFinalFreshness(t, true, false)
 }
 
-func testFinalFreshness(t *testing.T, continuation bool) {
+// Guard receives only an exact read-only plan-step receipt; stale evidence
+// must never produce VERIFIED, even when all immutable selectors match.
+func TestGuardPlanRejectsInputsStaleAtFinalObservation(t *testing.T) {
+	testFinalFreshness(t, true, true)
+}
+
+func testFinalFreshness(t *testing.T, continuation, guard bool) {
 	t.Helper()
 	for _, tc := range []struct {
 		name                     string
@@ -200,13 +206,40 @@ func testFinalFreshness(t *testing.T, continuation bool) {
 				calls = 0
 				delayAt = 4 // before, build's two reads, after.
 				expectedCalls = 4
-				var receipt ContinuationReceipt
-				receipt, err = a.VerifyCommittedTurn(ctx, store, runtime.RunID, runtime.InvocationID)
-				if tc.wantReject && receipt != (ContinuationReceipt{}) {
-					t.Fatal("rejected continuation returned a receipt")
-				}
-				if !tc.wantReject && err == nil && receipt.DecisionID != record.DecisionID {
-					t.Fatal("fresh continuation did not bind stored decision")
+				if guard {
+					step := record.Plan.Steps[0]
+					request := GuardPlanStepRequest{
+						SchemaVersion: GuardPlanStepSchema,
+						RunID: runtime.RunID, AgentID: runtime.AgentID,
+						AgentReleaseID: runtime.AgentReleaseID, SessionID: runtime.SessionID,
+						DecisionID: record.DecisionID, PlanID: record.Plan.PlanID,
+						PlanHash: record.Plan.PlanHash, StepID: step.StepID,
+						CapabilityID: step.Capability.ID, CapabilityVersion: step.Capability.Version,
+						ResourceRef: step.TargetRef, Arguments: json.RawMessage(`{}`),
+						BreakerEpoch: runtime.BreakerEpoch, BreakerVersion: runtime.BreakerVersion,
+					}
+					var receipt GuardPlanStepReceipt
+					receipt, err = a.VerifyGuardPlanStep(ctx, store, p.TenantID, request)
+					if tc.wantReject && receipt != (GuardPlanStepReceipt{}) {
+						t.Fatal("rejected Guard step returned a receipt")
+					}
+					if !tc.wantReject && err == nil &&
+						(receipt.Status != "VERIFIED" || receipt.DecisionID != record.DecisionID ||
+							receipt.StepID != step.StepID || receipt.PlanHash != record.Plan.PlanHash ||
+							receipt.RecordSHA256 != digest(record) ||
+							receipt.BreakerEpoch != runtime.BreakerEpoch ||
+							receipt.BreakerVersion != runtime.BreakerVersion) {
+						t.Fatal("fresh Guard receipt did not bind the exact committed plan step")
+					}
+				} else {
+					var receipt ContinuationReceipt
+					receipt, err = a.VerifyCommittedTurn(ctx, store, runtime.RunID, runtime.InvocationID)
+					if tc.wantReject && receipt != (ContinuationReceipt{}) {
+						t.Fatal("rejected continuation returned a receipt")
+					}
+					if !tc.wantReject && err == nil && receipt.DecisionID != record.DecisionID {
+						t.Fatal("fresh continuation did not bind stored decision")
+					}
 				}
 				got, lookupErr := store.GetByInvocation(ctx, p.TenantID, req.InvocationID)
 				if lookupErr != nil || digest(got) != digest(record) {
