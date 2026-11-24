@@ -165,7 +165,8 @@ type EvidenceBinding struct {
 }
 
 func evidenceBindingKey(binding EvidenceBinding) string {
-	return binding.SourceID + "\\x00" + binding.Ref
+	// validOpaque rejects NUL in both components, so this separator cannot alias another pair.
+	return binding.SourceID + "\x00" + binding.Ref
 }
 
 type PlanStep struct {
@@ -295,7 +296,7 @@ func (r Request) Validate() error {
 		}
 		// A source reference identifies one immutable observation. Repeating it
 		// must not inflate evidence coverage or create ambiguous provenance.
-		evidenceKey := evidence.SourceID + "\x00" + evidence.Ref
+		evidenceKey := evidenceBindingKey(EvidenceBinding{SourceID: evidence.SourceID, Ref: evidence.Ref})
 		if _, exists := seenEvidence[evidenceKey]; exists {
 			return fmt.Errorf("%w: duplicate evidence reference", ErrInvalidRequest)
 		}
