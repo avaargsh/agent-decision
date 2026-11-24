@@ -227,6 +227,21 @@ func verifyDecisionCatalog(ctx context.Context, tx *sql.Tx) error {
 	return probeDecisionIdentityConstraint(ctx, tx)
 }
 
+// catalogAttestationQueryFailure preserves the public fail-closed error while
+// exposing only a stable check name and PostgreSQL SQLSTATE. It deliberately
+// omits server messages, query text, role names, and row contents.
+func catalogAttestationQueryFailure(check string, err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return fmt.Errorf("%w: %s query failed (SQLSTATE %s)", ErrCatalogDrift, check, pgErr.Code)
+	}
+	return fmt.Errorf("%w: %s query failed (%T)", ErrCatalogDrift, check, err)
+}
+
+func catalogAttestationMismatch(check string) error {
+	return fmt.Errorf("%w: %s mismatch", ErrCatalogDrift, check)
+}
+
 // verifyTenantRLSPolicies pins the exact v0004 RLS surface. Runtime tenant
 // authority comes from the authenticated PostgreSQL session_user mapping;
 // decision.tenant_id is only a transaction-local equality guard.
@@ -247,8 +262,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			FROM pg_catalog.pg_class AS c
 			WHERE c.oid = pg_catalog.to_regclass($1)
 		`, expected.table).Scan(&enabled, &forced)
-		if err != nil || enabled != expected.enabled || forced != expected.forced {
-			return fmt.Errorf("%w: unexpected RLS flags on %s", ErrCatalogDrift, expected.table)
+		if err != nil {
+			return catalogAttestationQueryFailure("RLS flags for "+expected.table, err)
+		}
+		if enabled != expected.enabled || forced != expected.forced {
+			return catalogAttestationMismatch("RLS flags for " + expected.table)
 		}
 	}
 
@@ -269,8 +287,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			AND (SELECT count(*) = 1 FROM pg_catalog.pg_attribute AS a
 			 WHERE a.attrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND a.attname = 'login_kind' AND a.atttypid = 'pg_catalog.text'::pg_catalog.regtype AND a.attnotnull)
-	`).Scan(&mappingShapeOK); err != nil || !mappingShapeOK {
-		return fmt.Errorf("%w: tenant LOGIN mapping table shape drift", ErrCatalogDrift)
+	`).Scan(&mappingShapeOK); err != nil {
+		return catalogAttestationQueryFailure("tenant LOGIN mapping table shape", err)
+	}
+	if !mappingShapeOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping table shape")
 	}
 	var mappingOwnerOK bool
 	if err := tx.QueryRowContext(ctx, `
@@ -285,8 +306,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			       FROM pg_catalog.pg_class AS history
 			       WHERE history.oid = pg_catalog.to_regclass('schema_migrations')
 			   ))
-	`).Scan(&mappingOwnerOK); err != nil || !mappingOwnerOK {
-		return fmt.Errorf("%w: protected Decision relations must share the migration-history owner", ErrCatalogDrift)
+	`).Scan(&mappingOwnerOK); err != nil {
+		return catalogAttestationQueryFailure("protected Decision relation owners", err)
+	}
+	if !mappingOwnerOK {
+		return catalogAttestationMismatch("protected Decision relation owners")
 	}
 	var mappingPublicAccessOK bool
 	if err := tx.QueryRowContext(ctx, `
@@ -299,8 +323,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			WHERE relation.oid = pg_catalog.to_regclass('decision_tenant_logins')
 			  AND privilege.grantee = 0
 		)
-	`).Scan(&mappingPublicAccessOK); err != nil || !mappingPublicAccessOK {
-		return fmt.Errorf("%w: tenant LOGIN mapping must not be granted to PUBLIC", ErrCatalogDrift)
+	`).Scan(&mappingPublicAccessOK); err != nil {
+		return catalogAttestationQueryFailure("tenant LOGIN mapping PUBLIC ACL", err)
+	}
+	if !mappingPublicAccessOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping PUBLIC ACL")
 	}
 	// Materialize only the pinned relation's constraints before deparsing.
 	// Other schemas may undergo concurrent DDL; never deparse their OIDs.
@@ -309,33 +336,30 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	// token and append OR TRUE, silently disabling the invariant.
 	const expectedIdentityCheck = `CHECK ((((login_role)::text <> ''::text) AND (((login_kind = 'application'::text) AND (tenant_id IS NOT NULL) AND (tenant_id <> ''::text)) OR ((login_kind = 'dispatcher'::text) AND (tenant_id IS NULL)))))`
 	const expectedLoginKindCheck = `CHECK ((login_kind = ANY (ARRAY['application'::text, 'dispatcher'::text])))`
-	var mappingConstraintsOK bool
+	var mappingConstraintCountOK, mappingPrimaryKeyOK, mappingIdentityCheckOK bool
+	var mappingLoginKindCheckOK, mappingTenantUniqueOK bool
 	if err := tx.QueryRowContext(ctx, `
 		WITH mapping_constraints AS MATERIALIZED (
 			SELECT c.* FROM pg_catalog.pg_constraint AS c
 			WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 		)
 		SELECT
-			(SELECT count(*) = 4 FROM mapping_constraints)
-			AND
+			(SELECT count(*) = 4 FROM mapping_constraints),
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_pkey'
 			   AND c.contype = 'p' AND c.convalidated
 			   AND c.conkey = ARRAY[(
 			       SELECT a.attnum FROM pg_catalog.pg_attribute AS a
 			       WHERE a.attrelid = c.conrelid AND a.attname = 'login_role' AND a.attnum > 0
-			   )]::smallint[])
-			AND
+			   )]::smallint[]),
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) = $1)
-			AND
+			   AND pg_catalog.pg_get_constraintdef(c.oid) = $1),
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_login_kind_check'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) = $2)
-			AND
+			   AND pg_catalog.pg_get_constraintdef(c.oid) = $2),
 			(SELECT count(*) = 1
 			 FROM mapping_constraints AS c
 			 JOIN pg_catalog.pg_index AS i ON i.indexrelid = c.conindid
@@ -347,15 +371,26 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			   )]::smallint[]
 			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready
 			   AND i.indnkeyatts = 1 AND i.indnatts = 1)
-	`, expectedIdentityCheck, expectedLoginKindCheck).Scan(&mappingConstraintsOK); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			return fmt.Errorf("%w: inspect tenant LOGIN mapping constraints (SQLSTATE %s)", ErrCatalogDrift, pgErr.Code)
-		}
-		return fmt.Errorf("%w: inspect tenant LOGIN mapping constraints (%T)", ErrCatalogDrift, err)
+	`, expectedIdentityCheck, expectedLoginKindCheck).Scan(
+		&mappingConstraintCountOK, &mappingPrimaryKeyOK, &mappingIdentityCheckOK,
+		&mappingLoginKindCheckOK, &mappingTenantUniqueOK,
+	); err != nil {
+		return catalogAttestationQueryFailure("tenant LOGIN mapping constraints", err)
 	}
-	if !mappingConstraintsOK {
-		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
+	if !mappingConstraintCountOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping constraint count")
+	}
+	if !mappingPrimaryKeyOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping primary key")
+	}
+	if !mappingIdentityCheckOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping identity CHECK")
+	}
+	if !mappingLoginKindCheckOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping login_kind CHECK")
+	}
+	if !mappingTenantUniqueOK {
+		return catalogAttestationMismatch("tenant LOGIN mapping tenant uniqueness constraint")
 	}
 
 	type expectedPolicy struct {
@@ -402,15 +437,15 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			ORDER BY p.polname
 		`, table)
 		if err != nil {
-			return fmt.Errorf("%w: inspect RLS policies on %s: %v", ErrCatalogDrift, table, err)
+			return catalogAttestationQueryFailure("RLS policies for "+table, err)
 		}
 		seen := 0
 		for rows.Next() {
 			var name, command, roles, qual, check string
 			var permissive bool
 			if err := rows.Scan(&name, &command, &permissive, &roles, &qual, &check); err != nil {
-				rows.Close()
-				return fmt.Errorf("%w: scan RLS policy on %s: %v", ErrCatalogDrift, table, err)
+				_ = rows.Close()
+				return catalogAttestationQueryFailure("RLS policy row for "+table, err)
 			}
 			policy, ok := expected[name]
 			if !ok || policy.command != command || !permissive || roles != "{0}" {
@@ -463,11 +498,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			delete(expected, name)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
-			return fmt.Errorf("%w: iterate RLS policies on %s: %v", ErrCatalogDrift, table, err)
+			_ = rows.Close()
+			return catalogAttestationQueryFailure("iterate RLS policies for "+table, err)
 		}
 		if err := rows.Close(); err != nil {
-			return fmt.Errorf("%w: close RLS policies on %s: %v", ErrCatalogDrift, table, err)
+			return catalogAttestationQueryFailure("close RLS policies for "+table, err)
 		}
 		want := 2
 		if table == "outbox_events" {
@@ -487,8 +522,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 				SELECT 1 FROM pg_catalog.pg_policy
 				WHERE polrelid = pg_catalog.to_regclass($1)
 			)
-		`, table).Scan(&noPolicies); err != nil || !noPolicies {
-			return fmt.Errorf("%w: unexpected RLS policy on %s", ErrCatalogDrift, table)
+		`, table).Scan(&noPolicies); err != nil {
+			return catalogAttestationQueryFailure("RLS absence for "+table, err)
+		}
+		if !noPolicies {
+			return catalogAttestationMismatch("unexpected RLS policy on " + table)
 		}
 	}
 	return nil
