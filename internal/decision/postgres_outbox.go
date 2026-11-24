@@ -304,6 +304,11 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	}
 	// Materialize only the pinned relation's constraints before deparsing.
 	// Other schemas may undergo concurrent DDL; never deparse their OIDs.
+	// Pin the complete PostgreSQL 16 deparsed CHECK definitions. Substring
+	// matching is unsafe: a same-name expression can retain every expected
+	// token and append OR TRUE, silently disabling the invariant.
+	const expectedIdentityCheck = `CHECK ((((login_role)::text <> ''::text) AND (((login_kind = 'application'::text) AND (tenant_id IS NOT NULL) AND (tenant_id <> ''::text)) OR ((login_kind = 'dispatcher'::text) AND (tenant_id IS NULL)))))`
+	const expectedLoginKindCheck = `CHECK ((login_kind = ANY (ARRAY['application'::text, 'dispatcher'::text])))`
 	var mappingConstraintsOK bool
 	if err := tx.QueryRowContext(ctx, `
 		WITH mapping_constraints AS MATERIALIZED (
@@ -311,6 +316,8 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 		)
 		SELECT
+			(SELECT count(*) = 4 FROM mapping_constraints)
+			AND
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_pkey'
 			   AND c.contype = 'p' AND c.convalidated
@@ -322,18 +329,12 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%login_role%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%dispatcher%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id IS NOT NULL%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id IS NULL%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%tenant_id <>%')
+			   AND pg_catalog.pg_get_constraintdef(c.oid) = $1)
 			AND
 			(SELECT count(*) = 1 FROM mapping_constraints AS c
 			 WHERE c.conname = 'decision_tenant_logins_login_kind_check'
 			   AND c.contype = 'c' AND c.convalidated
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%application%'
-			   AND pg_catalog.pg_get_constraintdef(c.oid) ILIKE '%dispatcher%')
+			   AND pg_catalog.pg_get_constraintdef(c.oid) = $2)
 			AND
 			(SELECT count(*) = 1
 			 FROM mapping_constraints AS c
@@ -346,7 +347,7 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			   )]::smallint[]
 			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready
 			   AND i.indnkeyatts = 1 AND i.indnatts = 1)
-	`).Scan(&mappingConstraintsOK); err != nil {
+	`, expectedIdentityCheck, expectedLoginKindCheck).Scan(&mappingConstraintsOK); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			return fmt.Errorf("%w: inspect tenant LOGIN mapping constraints (SQLSTATE %s)", ErrCatalogDrift, pgErr.Code)
@@ -356,7 +357,6 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	if !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
-
 
 	type expectedPolicy struct {
 		command string
