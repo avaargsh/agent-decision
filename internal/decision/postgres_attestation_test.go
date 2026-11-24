@@ -236,8 +236,52 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		if _, err := admin.ExecContext(ctx, "DELETE FROM "+target+" WHERE login_role = $1::name", login); err != nil {
 			t.Fatal(err)
 		}
-		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
-			t.Fatalf("read-only attestation accepted a same-name mapping CHECK with OR TRUE: %v", err)
+		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_identity_ck"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ADD CONSTRAINT decision_tenant_logins_identity_ck "+before); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored identity CHECK did not pass: %v", err)
+		}
+		if !errors.Is(verifyErr, ErrCatalogDrift) {
+			t.Fatalf("read-only attestation accepted a same-name mapping CHECK with OR TRUE: %v", verifyErr)
+		}
+	})
+
+	t.Run("weakened_mapping_login_kind_check_or_true", func(t *testing.T) {
+		target := schema + ".decision_tenant_logins"
+		var before string
+		if err := admin.QueryRowContext(ctx, `
+			SELECT pg_catalog.pg_get_constraintdef(c.oid)
+			FROM pg_catalog.pg_constraint AS c
+			WHERE c.conrelid = pg_catalog.to_regclass($1)
+			  AND c.conname = 'decision_tenant_logins_login_kind_check'
+		`, target).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_login_kind_check"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `ALTER TABLE `+target+` ADD CONSTRAINT decision_tenant_logins_login_kind_check CHECK (
+			(login_kind IN ('application', 'dispatcher')) OR TRUE
+		)`); err != nil {
+			t.Fatal(err)
+		}
+		verifyErr := VerifyInstalledCatalogInSchema(ctx, restricted, schema)
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_login_kind_check"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ADD CONSTRAINT decision_tenant_logins_login_kind_check "+before); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+			t.Fatalf("restored login_kind CHECK did not pass: %v", err)
+		}
+		if !errors.Is(verifyErr, ErrCatalogDrift) {
+			t.Fatalf("read-only attestation accepted a same-name login_kind CHECK with OR TRUE: %v", verifyErr)
 		}
 	})
 }
