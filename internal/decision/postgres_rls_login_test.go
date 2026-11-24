@@ -203,6 +203,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrStoreUnavailable) {
 			t.Fatalf("closed registry resolved: %v", err)
 		}
+		if _, err := routedStore.GetByInvocation(ctx, "tenant-a", routeA.InvocationID); !errors.Is(err, ErrStoreUnavailable) {
+			t.Fatalf("closed registry Store remained available: %v", err)
+		}
 		for _, db := range opened {
 			if err := db.PingContext(ctx); err == nil {
 				t.Fatal("owned pool not closed")
