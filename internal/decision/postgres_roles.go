@@ -383,6 +383,14 @@ func verifyRuntimeTransactionIdentity(ctx context.Context, tx *sql.Tx, schema st
 		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
 		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
 		       AND NOT EXISTS (
+		           SELECT 1
+		           FROM pg_catalog.pg_class AS protected
+		           WHERE protected.relnamespace = n.oid
+		             AND protected.relname IN ('decision_records', 'outbox_events', 'decision_tenant_logins', 'schema_migrations')
+		             AND (protected.relowner = r.oid
+		               OR pg_catalog.pg_has_role(r.oid, protected.relowner, 'MEMBER'))
+		       )
+		       AND NOT EXISTS (
 		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
 		           WHERE reachable.rolname <> current_user
 		             AND pg_catalog.pg_has_role(current_user, reachable.oid, 'SET')
