@@ -205,13 +205,16 @@ func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 		var unconditional bool
 		err := tx.QueryRowContext(ctx, query, item.table, item.name, item.function).
 			Scan(&enabled, &eventType, &expectedFunction, &unconditional, &restrictedColumns)
+		if errors.Is(err, sql.ErrNoRows) {
+			return catalogAttestationMismatch("trigger " + item.table + "." + item.name + " missing")
+		}
 		if err != nil {
-			return fmt.Errorf("%w: missing or unreadable trigger %s.%s", ErrCatalogDrift, item.table, item.name)
+			return catalogAttestationQueryFailure("trigger "+item.table+"."+item.name, err)
 		}
 		if enabled != "O" || eventType != item.triggerType ||
 			!expectedFunction.Valid || !expectedFunction.Bool || !unconditional ||
 			restrictedColumns != "" {
-			return fmt.Errorf("%w: altered or restricted trigger %s.%s", ErrCatalogDrift, item.table, item.name)
+			return catalogAttestationMismatch("trigger " + item.table + "." + item.name + " definition")
 		}
 	}
 	return nil
@@ -262,6 +265,9 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			FROM pg_catalog.pg_class AS c
 			WHERE c.oid = pg_catalog.to_regclass($1)
 		`, expected.table).Scan(&enabled, &forced)
+		if errors.Is(err, sql.ErrNoRows) {
+			return catalogAttestationMismatch("RLS relation " + expected.table + " missing")
+		}
 		if err != nil {
 			return catalogAttestationQueryFailure("RLS flags for "+expected.table, err)
 		}
@@ -541,7 +547,7 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 			AND to_regclass('outbox_events') IS NOT NULL
 			AND to_regclass('decision_tenant_logins') IS NOT NULL
 	`).Scan(&relationsOK); err != nil {
-		return fmt.Errorf("%w: inspect Decision relations: %v", ErrCatalogDrift, err)
+		return catalogAttestationQueryFailure("Decision relation presence", err)
 	}
 	if !relationsOK {
 		return fmt.Errorf("%w: missing Decision ledger or Outbox relation", ErrCatalogDrift)
@@ -574,10 +580,10 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 				)='tenant_id,decision_id'
 		)
 	`).Scan(&fkOK); err != nil {
-		return fmt.Errorf("%w: inspect tenant-bound Decision Outbox FK: %v", ErrCatalogDrift, err)
+		return catalogAttestationQueryFailure("tenant-bound Decision Outbox FK", err)
 	}
 	if !fkOK {
-		return fmt.Errorf("%w: tenant-bound Decision Outbox FK missing or rebound", ErrCatalogDrift)
+		return catalogAttestationMismatch("tenant-bound Decision Outbox FK missing or rebound")
 	}
 
 	// Trigger events, conditions, enabled state and handler identity are checked
@@ -595,10 +601,10 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 				AND c.contype='c' AND c.convalidated
 		)
 	`).Scan(&identityConstraintOK); err != nil {
-		return fmt.Errorf("%w: inspect Decision identity CHECK: %v", ErrCatalogDrift, err)
+		return catalogAttestationQueryFailure("Decision JSON identity CHECK", err)
 	}
 	if !identityConstraintOK {
-		return fmt.Errorf("%w: Decision JSON identity CHECK missing", ErrCatalogDrift)
+		return catalogAttestationMismatch("Decision JSON identity CHECK missing")
 	}
 
 
@@ -646,9 +652,15 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 			  AND c.convalidated
 			  AND NOT c.connoinherit
 		`, expected.table, expected.name).Scan(&installed)
-		if err != nil || installed != expected.expression {
-			return fmt.Errorf("%w: altered CHECK predicate %s.%s", ErrCatalogDrift,
-				expected.table, expected.name)
+		checkName := "critical CHECK " + expected.table + "." + expected.name
+		if errors.Is(err, sql.ErrNoRows) {
+			return catalogAttestationMismatch(checkName + " missing")
+		}
+		if err != nil {
+			return catalogAttestationQueryFailure(checkName, err)
+		}
+		if installed != expected.expression {
+			return catalogAttestationMismatch(checkName + " predicate")
 		}
 	}
 
@@ -703,8 +715,15 @@ END;`,
 			  AND p.provolatile='v'
 			  AND NOT p.prosecdef AND p.proconfig IS NULL
 		`, expected.name).Scan(&actualSource)
-		if err != nil || strings.TrimSpace(actualSource) != expected.body {
-			return fmt.Errorf("%w: Decision trigger function drift: %s", ErrCatalogDrift, expected.name)
+		checkName := "Decision trigger function " + expected.name
+		if errors.Is(err, sql.ErrNoRows) {
+			return catalogAttestationMismatch(checkName + " missing or invalid")
+		}
+		if err != nil {
+			return catalogAttestationQueryFailure(checkName, err)
+		}
+		if strings.TrimSpace(actualSource) != expected.body {
+			return catalogAttestationMismatch(checkName + " source")
 		}
 	}
 	return nil
