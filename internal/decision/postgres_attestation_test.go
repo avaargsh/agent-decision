@@ -128,7 +128,7 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 			USING (
 				tenant_id = NULLIF(pg_catalog.current_setting('decision.tenant_id', true), '')
 				AND EXISTS (
-					SELECT 1 FROM "+schema+".decision_tenant_logins AS login
+					SELECT 1 FROM `+schema+`.decision_tenant_logins AS login
 					WHERE login.login_role = SESSION_USER
 					  AND login.login_kind = 'application'
 					  AND login.tenant_id = decision_records.tenant_id
