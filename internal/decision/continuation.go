@@ -36,7 +36,7 @@ func (a *LiveAuthority) VerifyCommittedTurn(ctx context.Context, store Store, ru
 	if stored.RunID != runID || stored.InvocationID != invocation || stored.TenantID != before.TenantID {
 		return empty, ErrAuthorityRejected
 	}
-	principal, req, err := a.build(ctx, runID, invocation, stored.Evidence)
+	principal, req, err := a.buildWithRuntime(ctx, runID, invocation, stored.Evidence, &before)
 	if err != nil {
 		return empty, err
 	}

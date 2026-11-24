@@ -221,10 +221,19 @@ func (a *LiveAuthority) currentTime() time.Time {
 }
 
 func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evidence []EvidenceRef)(Principal,Request,error){
+	return a.buildWithRuntime(ctx,runID,invocation,evidence,nil)
+}
+
+// A continuation must bind its entire authority read to the initial
+// Runtime observation, not merely compare its outer before/after reads.
+func (a *LiveAuthority) buildWithRuntime(ctx context.Context, runID, invocation string, evidence []EvidenceRef, expected *RuntimeDecisionAuthority)(Principal,Request,error){
 	fail:=func(err error)(Principal,Request,error){return Principal{},Request{},err}
 	if len(evidence)>32 || evidence==nil{return fail(ErrAuthorityRejected)}
 	r,err:=a.currentRuntime(ctx,runID,invocation)
 	if err!=nil{return fail(err)}
+	if expected != nil && r != *expected {
+		return fail(ErrAuthorityRejected)
+	}
 	query:=url.Values{"run_id":{r.RunID},"request_digest":{r.RequestDigest}}
 	raw,err:=a.acp.read(ctx,http.MethodGet,"/internal/v1/decision-publication/"+r.RunIntentID+"?"+query.Encode(),nil,maxACPPublicationWire)
 	if err!=nil{return fail(err)}
