@@ -383,3 +383,81 @@ func TestCatalogAttestationStableDuringUnrelatedDDL(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+
+// TestCatalogAttestationPinsSchemaAcrossPooledConnections guards against
+// pgx prepared statements leaking unqualified relation bindings when one
+// database/sql pool migrates and attests multiple explicitly trusted schemas.
+// A single physical connection maximizes statement-cache reuse across the
+// alternating schema-local search_path values.
+func TestCatalogAttestationPinsSchemaAcrossPooledConnections(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	firstSchema := "attest_pool_a_" + suffix
+	secondSchema := "attest_pool_b_" + suffix
+	for _, schema := range []string{firstSchema, secondSchema} {
+		if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+			t.Fatal(err)
+		}
+		defer db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		if err := MigrateInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("install schema %s: %v", schema, err)
+		}
+	}
+
+	var approvedChecksum string
+	if err := db.QueryRowContext(ctx,
+		"SELECT checksum FROM "+firstSchema+".schema_migrations WHERE version = 4",
+	).Scan(&approvedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE "+secondSchema+".schema_migrations SET checksum = repeat('0', 64) WHERE version = 4",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm the statement cache against the valid schema, then alternate to the
+	// corrupted schema. The invalid ledger must never be read from schema A.
+	if err := VerifyInstalledCatalogInSchema(ctx, db, firstSchema); err != nil {
+		t.Fatalf("valid schema A rejected: %v", err)
+	}
+	if err := VerifyInstalledCatalogInSchema(ctx, db, secondSchema); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("read-only attestation accepted schema B's corrupted checksum after schema A: %v", err)
+	}
+	if err := MigrateInSchema(ctx, db, firstSchema); err != nil {
+		t.Fatalf("migration re-entry rejected valid schema A: %v", err)
+	}
+	if err := MigrateInSchema(ctx, db, secondSchema); !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("migration re-entry accepted schema B's corrupted checksum after schema A: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		"UPDATE "+secondSchema+".schema_migrations SET checksum = $1 WHERE version = 4",
+		approvedChecksum,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyInstalledCatalogInSchema(ctx, db, secondSchema); err != nil {
+		t.Fatalf("restored schema B rejected after schema A: %v", err)
+	}
+	if err := MigrateInSchema(ctx, db, secondSchema); err != nil {
+		t.Fatalf("restored schema B migration re-entry failed: %v", err)
+	}
+}
