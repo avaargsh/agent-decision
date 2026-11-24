@@ -10,7 +10,9 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -107,7 +109,7 @@ type AdmissionReport struct {
 // exact submitted bytes. It does not authenticate the source-owner grant or
 // reviewer identities; those remain external trust-verification gates.
 func ParseManifest(raw []byte, now time.Time) (Manifest, AdmissionReport, error) {
-	if len(raw) == 0 || len(raw) > MaximumManifestBytes || rejectDuplicateJSONKeys(raw) != nil {
+	if len(raw) == 0 || len(raw) > MaximumManifestBytes || !utf8.Valid(raw) || rejectDuplicateJSONKeys(raw) != nil {
 		return Manifest{}, AdmissionReport{}, ErrInvalidManifest
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -158,7 +160,7 @@ func ValidateManifest(manifest Manifest, now time.Time) (AdmissionReport, error)
 		if !validIdentifier(item.CaseID) || !validIdentifier(item.IncidentRef) ||
 			!validSHA256(item.EvidenceSHA256) ||
 			item.ObservationFrom.IsZero() || item.ObservationTo.IsZero() ||
-			!item.ObservationTo.After(item.ObservationFrom) ||
+			!item.ObservationTo.After(item.ObservationFrom) || item.ObservationTo.After(now) ||
 			!validAdjudication(item.Adjudication, item.ObservationTo, now) {
 			return AdmissionReport{}, ErrInvalidManifest
 		}
@@ -204,6 +206,9 @@ func ValidateManifest(manifest Manifest, now time.Time) (AdmissionReport, error)
 // ValidateSplitUse keeps Gold and Holdout data out of training/tuning paths.
 // Callers must enforce this check before exposing split artifacts to a consumer.
 func ValidateSplitUse(split Split, purpose Purpose) error {
+	if split != SplitDevelopment && split != SplitGold && split != SplitHoldout {
+		return ErrInvalidManifest
+	}
 	switch purpose {
 	case PurposeTraining:
 		if split == SplitDevelopment {
@@ -403,10 +408,11 @@ func consumeJSONValue(decoder *json.Decoder) error {
 			if !ok {
 				return ErrInvalidManifest
 			}
-			if _, exists := seen[key]; exists {
+			canonicalKey := strings.ToLower(key)
+			if _, exists := seen[canonicalKey]; exists {
 				return ErrInvalidManifest
 			}
-			seen[key] = struct{}{}
+			seen[canonicalKey] = struct{}{}
 			if err := consumeJSONValue(decoder); err != nil {
 				return err
 			}
