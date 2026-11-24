@@ -26,6 +26,13 @@ const (
 
 type Split string
 
+type Purpose string
+
+const (
+	PurposeTraining   Purpose = "TRAINING"
+	PurposeEvaluation Purpose = "EVALUATION"
+)
+
 const (
 	SplitDevelopment Split = "DEVELOPMENT"
 	SplitGold        Split = "GOLD"
@@ -36,6 +43,7 @@ var (
 	ErrInvalidManifest = errors.New("invalid incident dataset manifest")
 	ErrDatasetLeakage  = errors.New("incident dataset split leakage")
 	ErrArtifactIntegrity = errors.New("incident dataset artifact integrity failure")
+	ErrSplitUseDenied = errors.New("incident dataset split use denied")
 
 	identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
@@ -191,6 +199,27 @@ func ValidateManifest(manifest Manifest, now time.Time) (AdmissionReport, error)
 	sort.Strings(report.ReadinessBlockers)
 	report.CohortSizeReady = len(report.ReadinessBlockers) == 0
 	return report, nil
+}
+
+// ValidateSplitUse keeps Gold and Holdout data out of training/tuning paths.
+// Callers must enforce this check before exposing split artifacts to a consumer.
+func ValidateSplitUse(split Split, purpose Purpose) error {
+	switch purpose {
+	case PurposeTraining:
+		if split == SplitDevelopment {
+			return nil
+		}
+		return ErrSplitUseDenied
+	case PurposeEvaluation:
+		switch split {
+		case SplitDevelopment, SplitGold, SplitHoldout:
+			return nil
+		default:
+			return ErrInvalidManifest
+		}
+	default:
+		return ErrInvalidManifest
+	}
 }
 
 // VerifyAuthorizationArtifacts checks the exact grant and de-identification
