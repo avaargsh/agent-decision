@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -129,6 +130,14 @@ func TestHypothesisEvaluationReportIsDeterministicAndSeparatesMetrics(t *testing
 	reordered, err := buildHypothesisEvaluationReport("sre-deployment-correlation-v1", reversed)
 	if err != nil || !reflect.DeepEqual(report, reordered) {
 		t.Fatalf("dataset order changed report: first=%+v reordered=%+v err=%v", report, reordered, err)
+	}
+	firstJSON, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reorderedJSON, err := json.Marshal(reordered)
+	if err != nil || !bytes.Equal(firstJSON, reorderedJSON) {
+		t.Fatalf("dataset order changed serialized report: first=%s reordered=%s err=%v", firstJSON, reorderedJSON, err)
 	}
 }
 
