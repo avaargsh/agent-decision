@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // A separate, non-owner login must be able to verify the installed ledger
@@ -670,5 +672,112 @@ func TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL(t *testing
 			t.Errorf("final restored read-only attestation: %v", err)
 		}
 		t.Logf("stress completed: trigger restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
+	}
+}
+
+
+func TestCatalogAttestationQueryFailureRedactsPostgresDiagnostics(t *testing.T) {
+	pgErr := &pgconn.PgError{
+		Code: "XX000",
+		Message: "private tenant payload must not be logged",
+		Detail: "password=private-value",
+		Hint: "sensitive operator hint",
+		Where: "private function context",
+	}
+	err := catalogAttestationQueryFailure(
+		"tenant LOGIN mapping constraints",
+		fmt.Errorf("wrapped catalog query: %w", pgErr),
+	)
+	if !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("query failure must preserve ErrCatalogDrift: %v", err)
+	}
+	const want = "tenant LOGIN mapping constraints query failed (SQLSTATE XX000)"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("query failure must identify its check and SQLSTATE: got %v, want %q", err, want)
+	}
+	for _, secret := range []string{
+		pgErr.Message, pgErr.Detail, pgErr.Hint, pgErr.Where,
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("catalog diagnostic leaked PostgreSQL detail %q: %v", secret, err)
+		}
+	}
+}
+
+func TestCatalogAttestationMismatchDoesNotMasqueradeAsQueryFailure(t *testing.T) {
+	err := catalogAttestationMismatch("tenant LOGIN mapping identity CHECK")
+	if !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("catalog mismatch must preserve ErrCatalogDrift: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tenant LOGIN mapping identity CHECK mismatch") {
+		t.Fatalf("catalog mismatch must identify the failed predicate: %v", err)
+	}
+	if strings.Contains(err.Error(), "query failed") || strings.Contains(err.Error(), "SQLSTATE") {
+		t.Fatalf("predicate mismatch must not be classified as a query failure: %v", err)
+	}
+}
+
+func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured; PostgreSQL integration test skipped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(8)
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		ddl string
+		want string
+	}{
+		{
+			name: "missing trigger",
+			ddl: "ALTER TABLE %s.decision_records DROP TRIGGER decision_records_no_update",
+			want: "trigger decision_records.decision_records_no_update missing mismatch",
+		},
+		{
+			name: "missing critical check",
+			ddl: "ALTER TABLE %s.decision_records DROP CONSTRAINT decision_records_json_identity_ck",
+			want: "critical CHECK decision_records.decision_records_json_identity_ck missing mismatch",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := fmt.Sprintf("catalog_diag_%d_%d", time.Now().UnixNano(), i)
+			if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+					t.Errorf("drop diagnostic schema: %v", err)
+				}
+			}()
+			if err := MigrateInSchema(ctx, db, schema); err != nil {
+				t.Fatalf("install schema: %v", err)
+			}
+			if _, err := db.ExecContext(ctx, fmt.Sprintf(tc.ddl, schema)); err != nil {
+				t.Fatalf("inject missing catalog object: %v", err)
+			}
+			err := VerifyInstalledCatalogInSchema(ctx, db, schema)
+			if !errors.Is(err, ErrCatalogDrift) {
+				t.Fatalf("missing catalog object must fail closed: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("missing catalog object must be classified precisely: got %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "query failed") || strings.Contains(err.Error(), "SQLSTATE") {
+				t.Fatalf("missing catalog object is a predicate mismatch, not a query failure: %v", err)
+			}
+		})
 	}
 }
