@@ -121,11 +121,27 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			opened = append(opened, db)
 			return db, nil
 		}
-		registry, err := newTenantPoolRegistry(ctx, logins, schema, 2, 4, factory)
+		publicFactory := func(ctx context.Context, p PostgresLoginIdentity) (*sql.DB, error) {
+			return factory(ctx, runtimeLoginBinding{Database: p.Database, RoleName: p.RoleName, RoleOID: p.RoleOID})
+		}
+		poolStore, err := NewTenantPoolStore(ctx, TenantPoolStoreConfig{
+			Schema: schema,
+			Dispatcher: PostgresLoginIdentity{Database: dispatcher.Database, RoleName: dispatcher.RoleName, RoleOID: dispatcher.RoleOID},
+			Tenants: []TenantPostgresLogin{
+				{TenantID: "tenant-a", Login: PostgresLoginIdentity{Database: a.Database, RoleName: a.RoleName, RoleOID: a.RoleOID}},
+				{TenantID: "tenant-b", Login: PostgresLoginIdentity{Database: b.Database, RoleName: b.RoleName, RoleOID: b.RoleOID}},
+			},
+			MaxOpenPerTenant: 2,
+			MaxOpenTotal: 4,
+		}, publicFactory)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer registry.close()
+		registry, ok := poolStore.(*tenantPoolRegistry)
+		if !ok {
+			t.Fatal("production tenant store did not return the owned registry implementation")
+		}
+		defer poolStore.Close()
 		first, err := registry.resolve(principal)
 		if err != nil || first != opened[0] {
 			t.Fatalf("tenant-a pool: %v", err)
@@ -212,10 +228,10 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		if db, err := registry.resolve(principal); db != nil || !errors.Is(err, ErrAuthorityRejected) {
 			t.Fatalf("unknown tenant got pool: %v", err)
 		}
-		if err := registry.close(); err != nil {
+		if err := poolStore.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := registry.close(); err != nil {
+		if err := poolStore.Close(); err != nil {
 			t.Fatal(err)
 		}
 		principal.TenantID = "tenant-a"
