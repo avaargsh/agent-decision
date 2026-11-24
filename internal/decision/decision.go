@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -512,6 +513,9 @@ func planHash(plan PlanCandidate) string {
 // requestFingerprint preserves the existing encoding for valid requests but
 // refuses serialization failures before a ledger lookup or write.
 func requestFingerprint(principal Principal, req Request) (string, error) {
+	if !requestUTF8Valid(principal, req) {
+		return "", fmt.Errorf("%w: request contains invalid UTF-8", ErrInvalidRequest)
+	}
 	b, err := json.Marshal(struct {
 		Principal Principal
 		Request   Request
@@ -521,6 +525,48 @@ func requestFingerprint(principal Principal, req Request) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// JSON encoding silently replaces invalid UTF-8 bytes. Check every string in
+// the typed request before hashing so distinct malformed inputs cannot alias.
+// Keep this in sync with Request and its nested contract types.
+func requestUTF8Valid(p Principal, r Request) bool {
+	if !validUTF8Strings(p.TenantID, p.SubjectID, p.AgentID, p.SessionID, p.CallerID,
+		r.SchemaVersion, r.Identity.AgentID, r.Identity.SessionID, r.Identity.RunID,
+		r.InvocationID, r.Input.Objective, r.Input.Service, r.Input.Signal,
+		r.Versions.CapabilityCatalogVersion, r.Versions.StrategyVersion,
+		r.Versions.PromptVersion, r.Versions.ModelProfile) {
+		return false
+	}
+	for _, s := range []SnapshotRef{r.ContextSnapshot, r.CapabilitySnapshot} {
+		if !validUTF8Strings(s.ID, s.Version, s.SHA256, s.Source, s.AttestationRef, s.TrustLevel) {
+			return false
+		}
+	}
+	for _, c := range r.Capabilities {
+		if !validUTF8Strings(c.ID, c.Version, c.ContractSHA256, c.InputSchemaRef,
+			c.OutputSchemaRef, c.EffectClass, c.Idempotency) {
+			return false
+		}
+	}
+	for _, e := range r.Evidence {
+		if !validUTF8Strings(e.Ref, e.EvidenceType, e.SchemaVersion, e.TenantID,
+			e.AgentID, e.RunID, e.Service, e.ResourceRef, e.SourceID, e.Source,
+			e.SourceVersion, e.SHA256, e.AttestationRef, e.TrustLevel, e.RevocationState) {
+			return false
+		}
+	}
+	return r.Replan == nil || validUTF8Strings(r.Replan.ParentDecisionID,
+		r.Replan.Trigger, r.Replan.PriorDisposition)
+}
+
+func validUTF8Strings(values ...string) bool {
+	for _, value := range values {
+		if !utf8.ValidString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func digest(value any) string {
