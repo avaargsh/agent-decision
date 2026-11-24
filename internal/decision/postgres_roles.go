@@ -238,9 +238,11 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	// PostgreSQL grants EXECUTE on new routines to PUBLIC by default. An
 	// unreviewed SECURITY DEFINER routine can read DecisionRecords under its
 	// owner's privileges even when the dispatcher has no table SELECT grant.
-	// Only migration-owned trigger callbacks (which cannot be called directly
-	// with SELECT) are excluded; their source is separately catalog-attested.
-	// Check routine signature and properties, not its name alone.
+	// Only migration-owned, invoker-security trigger callbacks are excluded.
+	// They cannot be called as ordinary SQL functions; external CREATE and
+	// relation privileges are denied separately. Their exact source in the
+	// bound Decision schema is checked by VerifyInstalledCatalogInSchema.
+	// Check the routine signature and execution properties, not its name alone.
 	var unreviewedExecutable bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -256,8 +258,11 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			    )
 			    AND fn.prokind = 'f'
 			    AND fn.pronargs = 0
+			    AND fn.prolang = (SELECT oid FROM pg_catalog.pg_language WHERE lanname = 'plpgsql')
 			    AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			    AND fn.provolatile = 'v'
 			    AND NOT fn.prosecdef
+			    AND fn.proconfig IS NULL
 			  )
 		)
 	`, schema).Scan(&unreviewedExecutable); err != nil || unreviewedExecutable {
@@ -298,6 +303,20 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			      SELECT 1 FROM pg_catalog.pg_proc AS fn
 			      WHERE fn.pronamespace = ns.oid
 			        AND pg_catalog.has_function_privilege(current_user, fn.oid, 'EXECUTE')
+			        AND NOT (
+			          fn.proname IN (
+			            'reject_decision_record_mutation',
+			            'reject_decision_outbox_identity_mutation',
+			            'reject_decision_outbox_delete'
+			          )
+			          AND fn.prokind = 'f'
+			          AND fn.pronargs = 0
+			          AND fn.prolang = (SELECT oid FROM pg_catalog.pg_language WHERE lanname = 'plpgsql')
+			          AND fn.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+			          AND fn.provolatile = 'v'
+			          AND NOT fn.prosecdef
+			          AND fn.proconfig IS NULL
+			        )
 			    ) OR EXISTS (
 			      SELECT 1 FROM pg_catalog.pg_class AS rel
 			      WHERE rel.relnamespace = ns.oid
