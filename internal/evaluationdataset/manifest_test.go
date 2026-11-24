@@ -29,6 +29,7 @@ func validTestManifest(now time.Time) Manifest {
 		Authorization: Authorization{
 			SourceOwner: "source-owner-01",
 			GrantRef: "grant-2026-001",
+			GrantSHA256: testDigest("grant-artifact"),
 			ApprovedAt: approved,
 			ExpiresAt: now.Add(30 * 24 * time.Hour),
 			ScopeSHA256: testDigest("approved-scope"),
@@ -190,6 +191,7 @@ func TestParseManifestRejectsDuplicateKeysUnknownFieldsAndTrailingJSON(t *testin
 		`"dataset_id":"first","dataset_id":"second"`, 1)
 	for _, tc := range []struct{name, raw string}{
 		{"duplicate_key", duplicate},
+		{"nested_duplicate_key", strings.Replace(string(encoded), `"source_owner":"source-owner-01"`, `"source_owner":"first","source_owner":"second"`, 1)},
 		{"unknown_field", withUnknown},
 		{"trailing_json", string(encoded) + `{}`},
 		{"invalid_json", `{"schema_version":`},
@@ -218,6 +220,35 @@ func TestParseManifestReturnsExactRawManifestDigest(t *testing.T) {
 	}
 	if report.ManifestSHA256 != testDigest(string(raw)) {
 		t.Fatalf("manifest digest mismatch: got %s", report.ManifestSHA256)
+	}
+}
+
+
+func TestValidateManifestAcceptsThirdReviewerResolution(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	manifest := validTestManifest(now)
+	adjudication := &manifest.Cases[0].Adjudication
+	adjudication.Consensus = false
+	adjudication.IndependentLabelSHA256[1] = testDigest("second-reviewer-label")
+	adjudication.AdjudicatorID = "reviewer-c"
+	adjudication.FinalLabelSHA256 = testDigest("adjudicated-final-label")
+	if _, err := ValidateManifest(manifest, now); err != nil {
+		t.Fatalf("valid third-reviewer resolution rejected: %v", err)
+	}
+}
+
+func TestVerifyAuthorizationArtifactsChecksExactBytes(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	manifest := validTestManifest(now)
+	grant := []byte("source-owner grant bytes")
+	deidentification := []byte("de-identification attestation bytes")
+	manifest.Authorization.GrantSHA256 = testDigest(string(grant))
+	manifest.Authorization.DeidentificationSHA256 = testDigest(string(deidentification))
+	if err := VerifyAuthorizationArtifacts(manifest, bytes.NewReader(grant), bytes.NewReader(deidentification)); err != nil {
+		t.Fatalf("valid authorization artifacts rejected: %v", err)
+	}
+	if err := VerifyAuthorizationArtifacts(manifest, bytes.NewReader([]byte("tampered")), bytes.NewReader(deidentification)); !errors.Is(err, ErrArtifactIntegrity) {
+		t.Fatalf("tampered grant must fail closed, got %v", err)
 	}
 }
 
