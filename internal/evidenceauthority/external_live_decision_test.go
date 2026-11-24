@@ -199,6 +199,11 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err:=decision.MigrateInSchema(ctx,admin,schema);err!=nil{t.Fatal(err)}
 	app:=login(schema,"decision_app",[]string{"SELECT ON "+schema+".decision_tenant_logins","SELECT, INSERT ON "+schema+".decision_records","INSERT ON "+schema+".outbox_events"})
 	att:=login(schema,"decision_attest",[]string{"SELECT ON "+schema+".schema_migrations"})
+	// Runtime LOGIN classification is a deployment-owned mapping, not implied by ACLs.
+	// Seed the isolated application role explicitly before exercising the live authority.
+	var appLogin string
+	if err:=app.QueryRowContext(ctx,"SELECT session_user").Scan(&appLogin);err!=nil{t.Fatalf("inspect application LOGIN: %v",err)}
+	if _,err:=admin.ExecContext(ctx,"INSERT INTO "+schema+".decision_tenant_logins (login_role,tenant_id,login_kind) VALUES ($1,$2,'application')",appLogin,tenant);err!=nil{t.Fatalf("provision application LOGIN mapping: %v",err)}
 	if err:=decision.VerifyRuntimeDatabaseRole(ctx,app,schema,decision.RuntimeRoleApplication);err!=nil{t.Fatal(err)}
 	authority,err:=decision.NewLiveAuthority(cfg);if err!=nil{t.Fatal(err)}
 	store:=decision.NewPostgresStore(app)
