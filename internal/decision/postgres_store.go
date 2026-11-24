@@ -21,6 +21,25 @@ func storeUnavailable(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %v", ErrStoreUnavailable, operation, err)
 }
 
+// beginTenantTx binds the authenticated application tenant for the lifetime of
+// one transaction. The GUC is a defense-in-depth SQL scope, not a trusted
+// identity against a database login capable of executing arbitrary SQL.
+// Dispatcher operations deliberately do not use this tenant-scoped helper.
+func (s *PostgresStore) beginTenantTx(ctx context.Context, tenantID string, readOnly bool) (*sql.Tx, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("%w: empty tenant context", ErrInvalidRequest)
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
+	if err != nil {
+		return nil, storeUnavailable("begin tenant transaction", err)
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, true)", tenantID); err != nil {
+		_ = tx.Rollback()
+		return nil, storeUnavailable("bind transaction tenant context", err)
+	}
+	return tx, nil
+}
+
 // Read the immutable JSON only after proving that its identity and creation
 // timestamp match the independently indexed PostgreSQL columns. Ledger
 // pagination is ordered by the indexed timestamp, so accepting a conflicting
@@ -46,7 +65,12 @@ func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocatio
 	var decisionID, fingerprint string
 	var createdAt time.Time
 	var payload []byte
-	err := s.db.QueryRowContext(ctx,
+	tx, err := s.beginTenantTx(ctx, tenantID, true)
+	if err != nil {
+		return Record{}, err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx,
 		"SELECT decision_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND invocation_id = $2",
 		tenantID, invocationID).Scan(&decisionID, &fingerprint, &createdAt, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -55,7 +79,14 @@ func (s *PostgresStore) GetByInvocation(ctx context.Context, tenantID, invocatio
 	if err != nil {
 		return Record{}, storeUnavailable("lookup Decision invocation", err)
 	}
-	return decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
+	record, err := decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, storeUnavailable("commit tenant invocation read", err)
+	}
+	return record, nil
 }
 
 func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
@@ -81,9 +112,9 @@ func (s *PostgresStore) SaveOrGet(ctx context.Context, record Record) (Record, b
 		return Record{}, false, fmt.Errorf("marshal decision record: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.beginTenantTx(ctx, record.TenantID, false)
 	if err != nil {
-		return Record{}, false, storeUnavailable("begin DecisionRecord transaction", err)
+		return Record{}, false, err
 	}
 	defer tx.Rollback()
 
@@ -149,7 +180,12 @@ func (s *PostgresStore) GetByDecisionID(ctx context.Context, tenantID, agentID, 
 	var invocationID, fingerprint string
 	var createdAt time.Time
 	var payload []byte
-	err := s.db.QueryRowContext(ctx,
+	tx, err := s.beginTenantTx(ctx, tenantID, true)
+	if err != nil {
+		return Record{}, err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx,
 		"SELECT invocation_id, request_sha256, created_at, record FROM decision_records WHERE tenant_id = $1 AND decision_id = $2 AND record->>'agent_id' = $3 AND record->>'session_id' = $4",
 		tenantID, decisionID, agentID, sessionID).Scan(&invocationID, &fingerprint, &createdAt, &payload)
 	if err != nil {
@@ -158,7 +194,14 @@ func (s *PostgresStore) GetByDecisionID(ctx context.Context, tenantID, agentID, 
 		}
 		return Record{}, storeUnavailable("load DecisionRecord", err)
 	}
-	return decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
+	record, err := decodeIndexedDecisionRecord(payload, tenantID, invocationID, decisionID, fingerprint, createdAt)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, storeUnavailable("commit tenant decision read", err)
+	}
+	return record, nil
 }
 
 func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessionID, runID string, before *DecisionCursor, limit int) ([]Record, error) {
@@ -177,7 +220,12 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 	args = append(args, limit)
 	query += fmt.Sprintf(" ORDER BY created_at DESC, decision_id DESC LIMIT $%d", len(args))
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	tx, err := s.beginTenantTx(ctx, tenantID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, storeUnavailable("list DecisionRecords", err)
 	}
@@ -198,6 +246,12 @@ func (s *PostgresStore) ListByRun(ctx context.Context, tenantID, agentID, sessio
 	}
 	if err := rows.Err(); err != nil {
 		return nil, storeUnavailable("iterate DecisionRecords", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, storeUnavailable("close DecisionRecords", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, storeUnavailable("commit tenant ledger read", err)
 	}
 	return records, nil
 }
