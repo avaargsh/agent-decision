@@ -742,7 +742,7 @@ func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 	}{
 		{
 			name: "missing trigger",
-			ddl: "ALTER TABLE %s.decision_records DROP TRIGGER decision_records_no_update",
+			ddl: "DROP TRIGGER decision_records_no_update ON %s.decision_records",
 			want: "trigger decision_records.decision_records_no_update missing mismatch",
 		},
 		{
