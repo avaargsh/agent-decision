@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/avaargsh/agent-decision/blob/main/api/schemas/guard-plan-step-receipt.schema.json",
+  "$id": "urn:avaargsh:agent-decision:guard-plan-step-receipt:v1",
   "title": "Decision Guard Plan Step Receipt v1",
   "description": "Fresh read-only Decision provenance result. Runtime Attempt and Turn fields are selectors for an independent Runtime authority read, never authorization or a Permit.",
   "type": "object",
@@ -23,7 +23,7 @@
     "run_id": { "type": "string", "minLength": 36, "maxLength": 36, "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
     "run_attempt_id": { "type": "string", "minLength": 36, "maxLength": 36, "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
     "turn_id": { "type": "string", "minLength": 36, "maxLength": 36, "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-    "decision_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "decision_id": { "type": "string", "pattern": "^dec_[a-f0-9]{64}$" },
     "plan_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "step_id": { "type": "string", "minLength": 1, "maxLength": 255 },
     "record_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
