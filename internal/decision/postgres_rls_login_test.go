@@ -53,7 +53,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger, events := schema+".decision_records", schema+".outbox_events"
-	for i, role := range []string{roleA, roleB} {
+	for _, role := range []string{roleA, roleB} {
 		exec("GRANT USAGE ON SCHEMA " + schema + " TO " + role)
 		exec("GRANT SELECT, INSERT ON " + ledger + " TO " + role)
 		exec("GRANT INSERT ON " + events + " TO " + role)
