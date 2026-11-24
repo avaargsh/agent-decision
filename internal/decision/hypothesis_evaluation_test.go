@@ -32,6 +32,15 @@ func evaluationReportCases(t *testing.T) []hypothesisEvaluationCase {
 	conflictingRequest.Evidence = append(append([]EvidenceRef{}, fixture.request.Evidence...), conflictingRef)
 	conflictingPublications := append(append([]signedHypothesisPublication{}, fixture.publications...), conflicting)
 
+	noDeploymentBase := requestFixtureEvidence(2)
+	noDeploymentBase.SourceID = "change-no-deployment"
+	noDeploymentBase.Source = "change-no-deployment"
+	noDeploymentBase.Ref = "change-no-deployment-sample"
+	noDeploymentBase.ResourceRef = "resource://payment-api/change-no-deployment"
+	noDeployment, noDeploymentRef := makeOfflinePublication(t, noDeploymentBase, "NO_DEPLOYMENT_IN_WINDOW", fixture.from, fixture.to, fixture.now, 6)
+	noDeploymentRequest := fixture.request
+	noDeploymentRequest.Evidence = append(append([]EvidenceRef{}, fixture.request.Evidence...), noDeploymentRef)
+
 	unboundBase := requestFixtureEvidence(0)
 	unboundBase.SourceID = "unbound-source"
 	unboundBase.Source = "unbound-source"
@@ -56,31 +65,38 @@ func evaluationReportCases(t *testing.T) []hypothesisEvaluationCase {
 			ExpectedStatus: hypothesisInsufficient, ExpectedBindingsBound: true,
 		},
 		{
-			ID: "03-unrelated-only", Split: hypothesisEvaluationHoldoutFixture,
+			ID: "03-no-deployment", Split: hypothesisEvaluationGoldFixture,
+			Principal: fixture.principal, Request: noDeploymentRequest,
+			Publications: []signedHypothesisPublication{fixture.publications[0], noDeployment},
+			From: fixture.from, To: fixture.to, Now: fixture.now,
+			ExpectedStatus: hypothesisContradicted, ExpectedBindingsBound: true,
+		},
+		{
+			ID: "04-unrelated-only", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: unrelatedRequest, Publications: []signedHypothesisPublication{unrelated},
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: true,
 		},
 		{
-			ID: "04-conflicting", Split: hypothesisEvaluationHoldoutFixture,
+			ID: "05-conflicting", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: conflictingRequest, Publications: conflictingPublications,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisConflicting, ExpectedBindingsBound: true,
 		},
 		{
-			ID: "05-no-observations", Split: hypothesisEvaluationHoldoutFixture,
+			ID: "06-no-observations", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: fixture.request,
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisUntested, ExpectedBindingsBound: false,
 		},
 		{
-			ID: "06-unbound-reference", Split: hypothesisEvaluationHoldoutFixture,
+			ID: "07-unbound-reference", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: fixture.request, Publications: []signedHypothesisPublication{unbound},
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedError: ErrInvalidRequest, ExpectedBindingsBound: false,
 		},
 		{
-			ID: "07-wrong-signer", Split: hypothesisEvaluationHoldoutFixture,
+			ID: "08-wrong-signer", Split: hypothesisEvaluationHoldoutFixture,
 			Principal: fixture.principal, Request: fixture.request, Publications: []signedHypothesisPublication{wrongSigner},
 			From: fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedError: ErrAuthorityRejected, ExpectedBindingsBound: true,
@@ -94,15 +110,15 @@ func TestHypothesisEvaluationReportIsDeterministicAndSeparatesMetrics(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.DatasetKind != hypothesisEvaluationFixtureOnly || report.ScenarioCount != 7 ||
-		report.PassedCount != 7 || report.FailedCount != 0 || report.AcceptedCount != 5 ||
-		report.AbstentionCount != 4 || report.EvidenceBindingCaseCount != 6 ||
-		report.EvidenceBindingCaseMatches != 6 || report.EvidenceBindingAccuracyBasisPoints != 10000 ||
-		report.ScenarioPassRateBasisPoints != 10000 || report.AbstentionRateBasisPoints != 8000 {
+	if report.DatasetKind != hypothesisEvaluationFixtureOnly || report.ScenarioCount != 8 ||
+		report.PassedCount != 8 || report.FailedCount != 0 || report.AcceptedCount != 6 ||
+		report.AbstentionCount != 4 || report.EvidenceBindingCaseCount != 7 ||
+		report.EvidenceBindingCaseMatches != 7 || report.EvidenceBindingAccuracyBasisPoints != 10000 ||
+		report.ScenarioPassRateBasisPoints != 10000 || report.AbstentionRateBasisPoints != 6666 {
 		t.Fatalf("unexpected evaluation report: %+v", report)
 	}
 	if len(report.Cases) != len(cases) || report.Cases[0].ID != "01-supported" ||
-		report.Cases[len(report.Cases)-1].ID != "07-wrong-signer" {
+		report.Cases[len(report.Cases)-1].ID != "08-wrong-signer" {
 		t.Fatalf("report cases are not in stable ID order: %+v", report.Cases)
 	}
 
@@ -118,13 +134,13 @@ func TestHypothesisEvaluationReportIsDeterministicAndSeparatesMetrics(t *testing
 
 func TestHypothesisEvaluationReportDetectsIncorrectBindingExpectation(t *testing.T) {
 	cases := evaluationReportCases(t)
-	cases[5].ExpectedBindingsBound = true
+	cases[6].ExpectedBindingsBound = true
 	report, err := buildHypothesisEvaluationReport("sre-deployment-correlation-v1", cases)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.PassedCount != 6 || report.FailedCount != 1 ||
-		report.EvidenceBindingCaseMatches != 5 || report.EvidenceBindingAccuracyBasisPoints != 8333 {
+	if report.PassedCount != 7 || report.FailedCount != 1 ||
+		report.EvidenceBindingCaseMatches != 6 || report.EvidenceBindingAccuracyBasisPoints != 8571 {
 		t.Fatalf("binding expectation mismatch was not reported: %+v", report)
 	}
 }
@@ -132,7 +148,7 @@ func TestHypothesisEvaluationReportDetectsIncorrectBindingExpectation(t *testing
 
 func TestHypothesisEvaluationReportMarksUnmeasuredBindingAndSerializesFalse(t *testing.T) {
 	cases := evaluationReportCases(t)
-	cases = cases[4:5]
+	cases = cases[5:6]
 	report, err := buildHypothesisEvaluationReport("empty-binding-fixture", cases)
 	if err != nil {
 		t.Fatal(err)
