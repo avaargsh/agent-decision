@@ -21,9 +21,9 @@ const (
 // inspecting named GRANT statements. The caller must use the actual restricted
 // connection pool and a deployment-controlled, trusted schema identifier.
 //
-// This does NOT provide RLS or prove tenant isolation. A successful role check
-// must be combined with catalog attestation, real TLS/identity, and tenant
-// authorization at the service/database boundary.
+// This verifies effective ACLs, not the installed RLS predicates or mapping
+// contents. Pair it with VerifyInstalledCatalogInSchema, per-transaction
+// LOGIN-to-tenant mapping checks, and authenticated service authorization.
 func VerifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole) error {
 	return verifyRuntimeDatabaseRole(ctx, db, schema, role, nil)
 }
@@ -42,6 +42,71 @@ func verifyBoundRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema stri
 		return fmt.Errorf("%w: incomplete runtime login binding", ErrCatalogDrift)
 	}
 	return verifyRuntimeDatabaseRole(ctx, db, schema, role, &binding)
+}
+
+// verifyRuntimeLoginKindTx requires every runtime LOGIN to have exactly the
+// deployment-provisioned database role class before it can pass the preflight.
+func verifyRuntimeLoginKindTx(ctx context.Context, tx *sql.Tx, kind string) error {
+	if tx == nil || (kind != "application" && kind != "dispatcher") {
+		return fmt.Errorf("%w: invalid runtime LOGIN kind", ErrCatalogDrift)
+	}
+	var mappingCount int
+	var tenant sql.NullString
+	var actualKind string
+	err := tx.QueryRowContext(ctx, `
+		SELECT count(*), max(tenant_id), max(login_kind)
+		FROM decision_tenant_logins
+		WHERE login_role = SESSION_USER
+	`).Scan(&mappingCount, &tenant, &actualKind)
+	if err != nil || mappingCount != 1 || actualKind != kind ||
+		(kind == "application" && (!tenant.Valid || tenant.String == "")) ||
+		(kind == "dispatcher" && tenant.Valid) {
+		return fmt.Errorf("%w: runtime LOGIN is not provisioned as %s", ErrCatalogDrift, kind)
+	}
+	return nil
+}
+
+// verifyTenantLoginMappingTx binds the configured tenant to the authenticated
+// PostgreSQL LOGIN on the same transaction that will read or write ledger data.
+// A caller-controlled GUC alone is never accepted as tenant authority.
+func verifyTenantLoginMappingTx(ctx context.Context, tx *sql.Tx, tenantID string, binding runtimeLoginBinding, kind string) error {
+	if tx == nil || tenantID == "" || binding.RoleName == "" || kind != "application" {
+		return fmt.Errorf("%w: incomplete tenant LOGIN mapping check", ErrCatalogDrift)
+	}
+	var mappingCount int
+	var loginRole, mappedTenant, loginKind string
+	err := tx.QueryRowContext(ctx, `
+		SELECT count(*), max(login_role::text), max(tenant_id), max(login_kind)
+		FROM decision_tenant_logins
+		WHERE login_role = SESSION_USER
+	`).Scan(&mappingCount, &loginRole, &mappedTenant, &loginKind)
+	if err != nil || mappingCount != 1 || loginRole != binding.RoleName || mappedTenant != tenantID || loginKind != kind {
+		return fmt.Errorf("%w: authenticated LOGIN is not mapped to the requested tenant", ErrCatalogDrift)
+	}
+	return nil
+}
+
+// verifyTenantLoginMapping checks the immutable deployment mapping at pool
+// startup. Every actual bound transaction repeats the check before GUC binding.
+func verifyTenantLoginMapping(ctx context.Context, db *sql.DB, schema, tenantID string, binding runtimeLoginBinding) error {
+	if db == nil {
+		return ErrStoreUnavailable
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("%w: begin tenant LOGIN mapping check: %v", ErrCatalogDrift, err)
+	}
+	defer tx.Rollback()
+	if err := verifyRuntimeTransactionIdentity(ctx, tx, schema, &binding); err != nil {
+		return err
+	}
+	if err := verifyTenantLoginMappingTx(ctx, tx, tenantID, binding, "application"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: finish tenant LOGIN mapping check: %v", ErrCatalogDrift, err)
+	}
+	return nil
 }
 
 func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, role RuntimeDatabaseRole, binding *runtimeLoginBinding) error {
@@ -71,12 +136,14 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	if role == RuntimeRoleApplication {
 		policies = []policy{
 			{"schema_migrations", "", "", ""},
+			{"decision_tenant_logins", "all", "", ""},
 			{"decision_records", "all", "all", ""},
 			{"outbox_events", "", "all", ""},
 		}
 	} else {
 		policies = []policy{
 			{"schema_migrations", "", "", ""},
+			{"decision_tenant_logins", "all", "", ""},
 			{"decision_records", "", "", ""},
 			{"outbox_events", "all", "", "attempts,available_at,last_error_code,lease_owner,lease_until,published_at"},
 		}
@@ -137,7 +204,7 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			SELECT 1 FROM pg_catalog.pg_class AS rel
 			JOIN pg_catalog.pg_namespace AS ns ON ns.oid = rel.relnamespace
 			WHERE ns.nspname = $1
-			  AND rel.relname NOT IN ('schema_migrations', 'decision_records', 'outbox_events')
+			  AND rel.relname NOT IN ('schema_migrations', 'decision_tenant_logins', 'decision_records', 'outbox_events')
 			  AND CASE
 			    WHEN rel.relkind = 'S' THEN
 			      pg_catalog.has_sequence_privilege(current_user, rel.oid, 'USAGE')
@@ -265,6 +332,10 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: effective access to an unreviewed external schema object", ErrCatalogDrift)
 	}
 
+	if err := verifyRuntimeLoginKindTx(ctx, tx, string(role)); err != nil {
+		return err
+	}
+
 	// Explicitly reject schema owners via owner-membership check above.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)
@@ -313,6 +384,14 @@ func verifyRuntimeTransactionIdentity(ctx context.Context, tx *sql.Tx, schema st
 		       AND NOT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')
 		       AND NOT pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
 		       AND NOT pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')
+		       AND NOT EXISTS (
+		           SELECT 1
+		           FROM pg_catalog.pg_class AS protected
+		           WHERE protected.relnamespace = n.oid
+		             AND protected.relname IN ('decision_records', 'outbox_events', 'decision_tenant_logins', 'schema_migrations')
+		             AND (protected.relowner = r.oid
+		               OR pg_catalog.pg_has_role(r.oid, protected.relowner, 'MEMBER'))
+		       )
 		       AND NOT EXISTS (
 		           SELECT 1 FROM pg_catalog.pg_roles AS reachable
 		           WHERE reachable.rolname <> current_user

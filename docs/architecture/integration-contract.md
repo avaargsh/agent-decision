@@ -94,5 +94,5 @@ A future remediation proposal must remain a separate typed object. Runtime/Contr
 - Freeze separate versioned contracts for the Go Decision Core and any Python/TypeScript DecisionTurn adapter; define optional adapter invocation and provenance.
 - Implement the production AuthorityVerifier adapter against Control Plane identity/snapshot authority and the evidence store.
 - Align the versioned Evidence Envelope v1 with producers and Control Plane before implementing freshness scoring, coverage or hypotheses.
-- Add and verify PostgreSQL tenant row-level security, or document an independently reviewed equivalent isolation proof.
+- [x] Repository: apply and catalog-attest PostgreSQL v0004 tenant RLS, including distinct LOGIN mapping, dual-tenant negative tests, GUC-spoof denial and dispatcher-only Outbox access. [ ] Production: provision distinct tenant LOGINs and dispatcher mapping, wire trusted pools/attestor, and record role/TLS/restore receipts.
 - Freeze a generated/client-consumable contract only after these upstream owners agree on the identity and reference semantics.

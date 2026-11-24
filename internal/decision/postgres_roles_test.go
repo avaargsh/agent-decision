@@ -48,7 +48,12 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		_, _ = admin.ExecContext(context.Background(), "DROP ROLE "+dispatcherRole)
 	}()
 	if err := MigrateInSchema(ctx, admin, schema); err != nil { t.Fatal(err) }
+	tenantID := "roles-tenant-" + seed
 	exec("GRANT USAGE ON SCHEMA "+schema+" TO "+appRole+", "+dispatcherRole)
+	exec("GRANT SELECT ON "+schema+".decision_tenant_logins TO "+appRole+", "+dispatcherRole)
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ($1, $2, 'application'), ($3, NULL, 'dispatcher')", appRole, tenantID, dispatcherRole); err != nil {
+		t.Fatalf("seed trusted LOGIN mapping: %v", err)
+	}
 	exec("GRANT SELECT, INSERT ON "+schema+".decision_records TO "+appRole)
 	exec("GRANT INSERT ON "+schema+".outbox_events TO "+appRole)
 	exec("GRANT SELECT ON "+schema+".outbox_events TO "+dispatcherRole)
@@ -288,7 +293,7 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// Exercise actual runtime SQL under the effective role rather than
 	// assuming the GRANT matrix is sufficient for SaveOrGet/Claim/Ack.
 	record := Record{
-		TenantID: "roles-tenant-"+seed,
+		TenantID: tenantID,
 		InvocationID: "roles-invocation",
 		DecisionID: "dec_"+strings.Repeat("a", 64),
 		AgentID: "roles-agent",

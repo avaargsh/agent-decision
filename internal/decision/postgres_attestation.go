@@ -42,13 +42,14 @@ func VerifyInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema stri
 		return fmt.Errorf("%w: inaccessible or mismatched attestation schema %q", ErrCatalogDrift, schema)
 	}
 
-	// All three approved migration versions must exist in a contiguous,
+	// All four approved migration versions must exist in a contiguous,
 	// exact-name, exact-SHA256 history. A missing or future version fails
 	// closed; this path never creates/repairs schema_migrations.
 	approved := []string{
 		"0001_create_decision_records.sql",
 		"0002_decision_outbox.sql",
 		"0003_append_only_truncate_guards.sql",
+		"0004_tenant_row_level_security.sql",
 	}
 	expectedDigests := make([]string, len(approved))
 	for i, name := range approved {

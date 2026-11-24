@@ -1,23 +1,24 @@
 # PostgreSQL Operations Runbook — Agent Decision
 
-**Status:** operational design baseline; deployment-specific credentials and restore evidence are not yet configured.  
-**Applies to:** PostgreSQL 16 and checksummed Decision migrations v0001–v0003.
+**Status:** repository-level v0004 RLS implementation; deployment-specific credentials, TLS identity and restore evidence are not yet configured.  
+**Applies to:** PostgreSQL 16 and checksummed Decision migrations v0001–v0004.
 
 ## 1. Role separation
 
-Use a dedicated database and schema for Agent Decision. Keep migration ownership separate from the application login.
+Use a dedicated database and schema for Agent Decision. Keep migration ownership separate from all runtime identities.
 
-- `agent_decision_migrator`: schema owner; used only by the migration job, never mounted in API/dispatcher/attestor pods.
-- `agent_decision_app`: Decision HTTP/API runtime; `SELECT/INSERT` DecisionRecord and `INSERT` Outbox only, **no Outbox lease/ACK UPDATE or SELECT**.
+- `agent_decision_migrator`: schema/table owner; used only by the migration job, never mounted in API/dispatcher/attestor pods.
+- `agent_decision_app_<tenant>`: one distinct LOGIN per provisioned tenant; `SELECT/INSERT` DecisionRecord and `INSERT` Outbox only, **no Outbox lease/ACK UPDATE or SELECT**. Never share one LOGIN across tenants.
 - `agent_decision_dispatcher`: claims and ACKs/retries Outbox events with `SELECT` plus narrowly scoped column `UPDATE`; **no DecisionRecord SELECT/INSERT or Outbox INSERT**.
 - `agent_decision_attestor`: isolated read-only catalog verification; schema `USAGE` and `SELECT` on `schema_migrations`, never DDL or runtime DML.
 - Human/automation backup role: only the backup access required by the selected backup method; secrets must not be mounted into API/dispatcher processes.
 
-Example bootstrap (run as the database administrator; replace database/schema and secret provisioning for the target environment):
+Example bootstrap (run as the database administrator; replace database/schema, tenant IDs and secret provisioning for the target environment):
 
 ```sql
 CREATE ROLE agent_decision_migrator LOGIN;
-CREATE ROLE agent_decision_app LOGIN;
+CREATE ROLE agent_decision_app_tenant_a LOGIN;
+CREATE ROLE agent_decision_app_tenant_b LOGIN;
 CREATE ROLE agent_decision_dispatcher LOGIN;
 CREATE ROLE agent_decision_attestor LOGIN;
 
@@ -27,16 +28,32 @@ CREATE DATABASE agent_decision OWNER agent_decision_migrator;
 
 REVOKE ALL ON DATABASE agent_decision FROM PUBLIC;
 GRANT CONNECT ON DATABASE agent_decision TO
-  agent_decision_app, agent_decision_dispatcher, agent_decision_attestor;
+  agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+  agent_decision_dispatcher, agent_decision_attestor;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO
-  agent_decision_app, agent_decision_dispatcher, agent_decision_attestor;
+  agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+  agent_decision_dispatcher, agent_decision_attestor;
 
--- Apply migrations 0001-0003 first as agent_decision_migrator.
--- API: immutable Decision + atomic Outbox INSERT only.
-GRANT SELECT, INSERT ON TABLE public.decision_records TO agent_decision_app;
-GRANT INSERT ON TABLE public.outbox_events TO agent_decision_app;
+-- Run migration and mapping provisioning as the sole schema owner.
+-- In production, the migration job connects directly as this LOGIN.
+SET ROLE agent_decision_migrator;
+-- Apply migrations 0001-0004.
+-- API: one authenticated LOGIN per tenant; atomic Decision + Outbox INSERT.
+GRANT SELECT, INSERT ON TABLE public.decision_records
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b;
+GRANT INSERT ON TABLE public.outbox_events
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b;
+
+-- RLS policies read this migrator-owned map. Runtime logins are read-only.
+GRANT SELECT ON TABLE public.decision_tenant_logins
+  TO agent_decision_app_tenant_a, agent_decision_app_tenant_b,
+     agent_decision_dispatcher;
+INSERT INTO public.decision_tenant_logins (login_role, tenant_id, login_kind) VALUES
+  ('agent_decision_app_tenant_a', 'tenant-a', 'application'),
+  ('agent_decision_app_tenant_b', 'tenant-b', 'application'),
+  ('agent_decision_dispatcher', NULL, 'dispatcher');
 
 -- Dispatcher: bounded SKIP LOCKED Claim, fenced Ack/Retry; cannot forge events.
 GRANT SELECT ON TABLE public.outbox_events TO agent_decision_dispatcher;
@@ -46,39 +63,28 @@ GRANT UPDATE (lease_owner, lease_until, attempts, available_at,
 
 -- Independent read-only deployment/startup attestor.
 GRANT SELECT ON TABLE public.schema_migrations TO agent_decision_attestor;
+RESET ROLE;
 
 -- Validate ALL effective privileges, including inherited/column grants,
 -- with VerifyRuntimeDatabaseRole against actual API/dispatcher credentials.
--- Also deny effective access to unreviewed tables/views/sequences in the
--- approved schema (including column-only grants and rights via PUBLIC).
--- Deny EXECUTE (including default PUBLIC grants) on all non-allowlisted
--- functions/procedures within the approved schema. Only the three exact
--- zero-argument, non-SECURITY-DEFINER migration trigger handlers are exempt,
--- and their definitions must pass independent catalog attestation.
--- After creating any additional routine, REVOKE EXECUTE ... FROM PUBLIC
--- and review all effective runtime/inherited grants before enabling traffic.
--- Beyond the approved schema, deny effective rights on objects in any
--- accessible non-system schema: qualified SECURITY DEFINER functions can
--- bypass direct table ACLs even with search_path pinned. The role audit
--- checks effective EXECUTE and relation/column/sequence privileges.
--- The default public schema may remain USAGE-accessible only if it exposes
--- no effective object rights to the application/dispatcher identities.
--- A successful check is point-in-time; it is NOT tenant RLS or proof of
--- application credential compromise resistance.
--- These GRANTs assume new roles in a dedicated DB: check and revoke any
--- preexisting PUBLIC/role memberships before production.
+-- Runtime roles need SELECT only on decision_tenant_logins; never grant mapping
+-- INSERT/UPDATE/DELETE. Only the migrator may provision or revoke mappings.
+-- Deny effective access to unreviewed tables/views/sequences and EXECUTE on
+-- unreviewed routines, including default PUBLIC and inherited grants.
 -- No API/dispatcher role may own tables, use DDL/TRUNCATE/DELETE, bypass RLS,
 -- be a member of the migrator or inherit schema/database CREATE privileges.
 ```
 
-The Decision API uses scoped SQL for tenant/idempotency lookup, while a separate dispatcher owns Outbox Claim/Ack/Retry. The append-only trigger is defense in depth, not a replacement for least-privilege role grants. Database row-level security is **not yet wired**: a future production deployment must either add RLS with a transaction-bound tenant context or demonstrate equivalent isolation at a trusted data-access boundary. Do not grant broad read access to other schemas or tables.
+Migration v0004 enables row-level security on `decision_records` and `outbox_events`. Tenant policies require both the transaction-local `decision.tenant_id` and a matching row in the migrator-owned `decision_tenant_logins` for the authenticated PostgreSQL `session_user`; setting the GUC alone cannot impersonate another tenant. The dispatcher mapping grants global Outbox Claim/Ack/Retry visibility but no DecisionRecord access. The mapping table and `schema_migrations` have no RLS policies; runtime roles receive SELECT-only access to the mapping table.
+
+RLS is enabled but not forced: PostgreSQL table owners bypass RLS unless FORCE is set. The migrator remains the owner and is never a runtime identity; `VerifyRuntimeDatabaseRole` rejects runtime owners, owner membership and BYPASSRLS. The mapping table's unique NULLS NOT DISTINCT tenant key permits only one application LOGIN per tenant and one dispatcher LOGIN. Do not grant broad read access to other schemas or tables.
 
 ## 2. Secret and connection handling
 
 - Provision passwords or workload identity through the environment's secret manager; never commit credentials or place them in image layers.
 - Require TLS for non-local database connections; validate the server certificate.
 - Set connection pool limits, connection lifetime, statement/query deadlines and startup readiness checks according to deployment capacity.
-- Pin **every** API and dispatcher PostgreSQL connection to exactly `approved_schema, pg_catalog, pg_temp` via connection configuration before use; do not include `public`, `$user`, or alternate schemas. `decision-role-audit` now checks the actual session's pre-audit `search_path` rather than trusting its own temporary schema override. A successful role audit is point-in-time proof for the audited connection only; use the same pinned configuration for the deployed pools and re-audit after reconfiguration or rotation. This is not RLS or cross-tenant isolation evidence.
+- Pin **every** API and dispatcher PostgreSQL connection to exactly `approved_schema, pg_catalog, pg_temp` via connection configuration before use; do not include `public`, `$user`, or alternate schemas. `decision-role-audit` now checks the actual session's pre-audit `search_path` rather than trusting its own temporary schema override. A successful role audit is point-in-time proof for the audited connection only; use the same pinned configuration for the deployed pools and re-audit after reconfiguration or rotation. RLS policy state and expressions are independently checked by the v0004 catalog attestor; the pool's startup and each bound transaction also verify the authenticated LOGIN-to-tenant mapping. This is still repository-level evidence, not proof of deployed credentials or TLS.
 - Rotate the application credential through the secret manager and restart/reload the API pool. Migration credentials must not be available to the API workload.
 - Keep audit logs for role changes, schema migrations, backup jobs and restore operations. Do not log connection strings or record payloads.
 
@@ -148,7 +154,7 @@ Migration v0003 introduces `decision_records_no_truncate` and `outbox_events_no_
 Before any production rollout, apply this procedure to a fresh **isolated restored copy**:
 
 1. Confirm the restored migration ledger has matching version/name/checksum for v0001 and v0002; reject unchecksummed, missing or unrecognized records. Record pre-upgrade Decision/Outbox row counts and a sample of immutable request hashes and pending event IDs.
-2. Run `decision.Migrate` as the migrator role. Verify exactly three ordered migration records and that v0003 was applied once. Confirm both TRUNCATE guards with `pg_trigger`: `tgtype=34`, `tgenabled='O'`, and the expected rejecting PL/pgSQL function.
+2. Run `decision.Migrate` as the migrator role. Verify four ordered migration records and that v0003/v0004 were applied once. Confirm both TRUNCATE guards and the five exact v0004 RLS policies with `pg_trigger`: `tgtype=34`, `tgenabled='O'`, and the expected rejecting PL/pgSQL function.
 3. In an isolated disposable database transaction, attempt `TRUNCATE outbox_events` and `TRUNCATE decision_records, outbox_events`; each must return an error. Roll back the transaction and confirm rows are still present.
 4. Confirm the same DecisionRecord/Outbox sample IDs and counts survived the upgrade and that running `Migrate` again is idempotent.
 5. Test a deployment with **application** credentials: verify unauthorized DDL/DELETE/TRUNCATE fail, normal scoped Decision insert/replay and Outbox lease/ACK still work, and a real backup/PITR restore meets the target RPO/RTO. Record exact image/head, PostgreSQL version, migration hashes, grants and test receipts.
@@ -188,16 +194,16 @@ Matching migration-history SHA-256, table names and constraint names are not suf
 
 The migration transaction pins the effective `search_path` to `<approved_schema>, pg_catalog, pg_temp` before executing any migration SQL or live catalog verification. The explicit `pg_temp` last entry prevents temporary-table shadowing of protected objects; `pg_catalog` setup functions are schema-qualified. The target must already exist, be accessible to the migrator, have a lowercase ASCII schema name of at most 63 characters, and not use PostgreSQL's reserved internal schema prefix. This local setting is rolled back on failure and does not authorize changing the API or dispatcher connection's own `search_path`.
 
-These guards **do not** make database owner/superuser DDL tamper-resistant, validate all role grants or RLS, or prove that every write-path process invokes a pre-write read-only schema attestation. A production-ready deployment must separately pin API/dispatcher schema identity; enforce least privilege, real tenant isolation and external audit; and require an independently operated **read-only** health gate before opening Decision write routes. Do not grant the API migrator privileges. The in-migration four-field behavioral probe performs rollback-only INSERT attempts as the privileged migrator and is **not** a read-only API startup probe.
+These guards and v0004 RLS **do not** make database owner/superuser DDL tamper-resistant, prove deployed role grants or TLS identity, or prove that every write-path process invokes a pre-write read-only schema attestation. The catalog verifier now checks the v0004 RLS flags and policy surface, but deployment wiring remains separate. A production-ready deployment must separately pin API/dispatcher schema identity; enforce least privilege, real tenant isolation and external audit; and require an independently operated **read-only** health gate before opening Decision write routes. Do not grant the API migrator privileges. The in-migration four-field behavioral probe performs rollback-only INSERT attempts as the privileged migrator and is **not** a read-only API startup probe.
 
 PostgreSQL 16 repository regression tests cover ambient shadow-`search_path` misdirection and migration on explicitly named isolated schemas. This is CI evidence only; record migration identity, deployment role grants, schema OIDs, backup/restore and G02/G05 receipts separately.
 
 
 ## 11. Read-only catalog attestation and HTTP fail-closed boundary (Issue #15)
 
-**Repository API, not production deployment evidence.** After a migration-capable job completes v0001–v0003, the separate `decision.VerifyInstalledCatalogInSchema(ctx, restrictedDB, configuredSchema)` validates the installed PostgreSQL 16 schema using a `ReadOnly: true` transaction. It never performs CREATE/ALTER/INSERT, never applies migrations, and does **not** call the migration-only four-field SAVEPOINT/INSERT behavior probe. The schema is explicitly pinned for that one transaction; the verifier checks the exact contiguous migration version/name/SHA-256 ledger, the tenant FK, six protection triggers, five critical CHECK predicate expressions, and expected PL/pgSQL function definitions/attributes. Missing objects or unreviewed catalog drift fail closed with `ErrCatalogDrift`.
+**Repository API, not production deployment evidence.** After a migration-capable job completes v0001–v0004, the separate `decision.VerifyInstalledCatalogInSchema(ctx, restrictedDB, configuredSchema)` validates the installed PostgreSQL 16 schema using a `ReadOnly: true` transaction. It never performs CREATE/ALTER/INSERT, never applies migrations, and does **not** call the migration-only four-field SAVEPOINT/INSERT behavior probe. The schema is explicitly pinned for that one transaction; the verifier checks the exact contiguous migration version/name/SHA-256 ledger, the tenant FK, six protection triggers, five critical CHECK predicate expressions, expected PL/pgSQL function definitions/attributes, the login-map table constraints, and the exact five-policy RLS surface and flags. Missing objects or unreviewed catalog drift fail closed with `ErrCatalogDrift`.
 
-The attestation role requires `USAGE` on the trusted schema and `SELECT` on its `schema_migrations` table, plus normal PostgreSQL system-catalog visibility. It must **not** own the schema or have CREATE/ALTER/TRIGGER privileges; no application or dispatcher should inherit the migrator role. In CI, a disposable non-owner `SET ROLE` test proves the verifier accepts a valid schema without CREATE permissions and fails for a disabled immutable trigger, a tampered migration name, and missing target schema. Those are test-role receipts, not audited production role grants or a cross-tenant RLS proof.
+The attestation role requires `USAGE` on the trusted schema and `SELECT` on its `schema_migrations` table, plus normal PostgreSQL system-catalog visibility. It must **not** own the schema or have CREATE/ALTER/TRIGGER privileges; no application or dispatcher should inherit the migrator role. In CI, a disposable non-owner `SET ROLE` test proves the verifier accepts a valid schema without CREATE permissions and fails for a disabled immutable trigger, a tampered migration name, and missing target schema. The verifier rejects policy removal, permissive policy injection, disabled RLS, unexpected FORCE flags, and RLS on the mapping/history tables. Separate PostgreSQL 16 LOGIN tests exercise real cross-tenant denial. Those are repository CI receipts, not audited production role grants or deployed credential evidence.
 
 `api.NewCatalogGuardedHandler(service, resolver, attest)` implements `GET /readyz` and verifies the callback before **every** `POST /v1/decisions`; a nil or failing callback returns HTTP 503 / `STORE_UNAVAILABLE` without leaking catalog details. `GET /healthz` remains a separate liveness check. The concrete wiring must call `decision.VerifyInstalledCatalogInSchema` on the **same trusted schema/database** as the durable DecisionStore and use an application connection pool whose own `search_path` is safely pinned independently. The verifier's transaction-local `search_path` does not change the Store's other pool connections. A disabled trigger after a healthy request therefore blocks the next write **when this guarded handler is actually used**.
 
@@ -214,7 +220,7 @@ export DECISION_ATTEST_SCHEMA="public"  # or the approved dedicated schema
 go run ./cmd/decision-catalog-attest
 ```
 
-The command fails with a nonzero exit code if required configuration is absent, migration-history checksums are missing/tampered, or critical installed catalog protection has drifted. It emits a generic failure message instead of a DSN or tenant payload. PostgreSQL permissions should be scoped to `USAGE` on the approved schema and `SELECT` on its `schema_migrations`; test this with actual deployed credentials. The CI test of this CLI creates a disposable schema, verifies success, disables the Outbox TRUNCATE guard, and verifies that the command refuses the altered schema.
+The command fails with a nonzero exit code if required configuration is absent, migration-history checksums are missing/tampered, or critical installed catalog protection has drifted. It emits a generic failure message instead of a DSN or tenant payload. PostgreSQL permissions should be scoped to `USAGE` on the approved schema and `SELECT` on its `schema_migrations`; test this with actual deployed credentials. The CI test of this CLI creates a disposable schema, verifies success, disables the Outbox TRUNCATE guard, and verifies that the command refuses the altered schema; the catalog verifier also rejects v0004 RLS policy/flag drift.
 
 **Integration contract:** the deployer must treat a failed CLI check as a hard block *before* enabling the application Deployment; the application must also compose `NewCatalogGuardedHandler` with `VerifyInstalledCatalogInSchema` and a trusted schema-pinned DecisionStore pool. The repository supplies the building blocks and tests, **not** a deployed Kubernetes initContainer, real restricted secrets, authenticated ingress or independent production approval.
 
@@ -223,7 +229,7 @@ The command fails with a nonzero exit code if required configuration is absent, 
 
 After executing the approved GRANTs above, call `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleApplication)` on the **actual API connection identity**, and `decision.VerifyRuntimeDatabaseRole(ctx, db, schema, decision.RuntimeRoleDispatcher)` on the **actual dispatcher identity**. This read-only gate checks the role's superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS flags, schema/database CREATE, schema owner membership, and exact effective per-column SELECT/INSERT/UPDATE permissions plus DELETE/TRUNCATE/REFERENCES/TRIGGER bans. It rejects overprivileged sessions, including table-wide or inherited grants. The read-only `VerifyInstalledCatalogInSchema` uses separate attestor credentials, not either of these runtime credentials.
 
-Repository PostgreSQL 16 tests use disposable NOLOGIN roles under `SET ROLE`; they are effective-privilege checks but do not prove separate production logins or workload identities. The API role's SELECT on all DecisionRecord rows still has a **cross-tenant exposure risk** without RLS or a trusted, independently verified tenant-isolation layer. The role check is not RLS, not a security audit of every object in the database, and not authorization to release.
+Repository PostgreSQL 16 tests use disposable NOLOGIN roles under `SET ROLE`; they are effective-privilege checks but do not prove separate production logins or workload identities. Migration v0004 now supplies repository-level RLS enforcement. The role check itself is not RLS and does not attest policy definitions; use the independent catalog attestor and the per-transaction LOGIN mapping check together. This still does not prove production role provisioning, trusted TLS/cluster identity, restore readiness or authorization to release.
 
 
 ### Standalone runtime-role preflight (CI capability; deployment not integrated)
@@ -240,6 +246,6 @@ DECISION_ROLE_DATABASE_URL="$DECISION_DISPATCHER_DSN" \
   DECISION_ROLE_KIND=dispatcher go run ./cmd/decision-role-audit
 ```
 
-Each check must exit successfully before that workload starts. The command rejects absent/unknown role kind and overly privileged effective credentials, returns a nonzero exit status, and prints only a generic pass/fail result. The existing read-only `cmd/decision-catalog-attest` must run separately under the attestor identity after migrations. Tests also authenticate through three distinct disposable PostgreSQL 16 LOGIN passwords (rather than only `SET ROLE`) and exercise app SaveOrGet/replay, dispatcher Claim/Ack, attestor catalog reads, and unauthorized cross-role operations. These tests do **not** validate RLS, K8s workload identities, production credential custody, actual TLS or a real deployment.
+Each check must exit successfully before that workload starts. The command rejects absent/unknown role kind and overly privileged effective credentials, returns a nonzero exit status, and prints only a generic pass/fail result. The existing read-only `cmd/decision-catalog-attest` must run separately under the attestor identity after migrations. Tests also authenticate through three distinct disposable PostgreSQL 16 LOGIN passwords (rather than only `SET ROLE`) and exercise app SaveOrGet/replay, dispatcher Claim/Ack, attestor catalog reads, and unauthorized cross-role operations. These tests validate the repository's PostgreSQL RLS policy behavior, but do **not** validate K8s workload identities, production credential custody, actual TLS or a real deployment.
 
-Do not use a successful role audit to claim complete tenant isolation: the current application role has broad table-level `SELECT` on DecisionRecord and requires trusted caller authorization; PostgreSQL row-level enforcement or independently reviewed equivalent isolation remains a **P0 production blocker**. Role grants are also point-in-time, not an effective substitute for DDL audit, independent security review and actual restart/restore evidence.
+Do not use a successful role audit alone to claim complete tenant isolation. Repository v0004 now provides database RLS keyed to authenticated PostgreSQL `session_user` and the migrator-owned LOGIN map, while the bound store verifies the mapping in each transaction. Production role provisioning, trusted TLS/cluster identity, independent security review, fail-closed deployment wiring and actual restart/restore evidence remain **P0 release blockers**. Role grants and catalog checks are point-in-time, not substitutes for continuous DDL audit.

@@ -45,7 +45,7 @@
 - [ ] Scenario-scoped autonomy profiles.
 - [ ] Control Plane policy and approval integration.
 - [ ] Runtime execution receipt and post-condition evidence references.
-- [ ] Production persistence, retention, tenant isolation, and disaster recovery verification.
+- [ ] Production persistence and retention; provision v0004 tenant LOGIN mappings, verify deployed RLS/role/TLS identities, and complete isolated restore/restart evidence.
 
 ## Release invariants
 

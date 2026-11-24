@@ -63,7 +63,7 @@ func TestPostgresStoreRejectsIndexedCreatedAtDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This insert is accepted by v0001-v0003: identity CHECKs cover the
+	// This insert is accepted by v0001-v0004: identity CHECKs cover the
 	// tenant/invocation/decision/digest but not the index timestamp.
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO decision_records

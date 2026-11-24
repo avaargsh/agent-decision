@@ -15,9 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// TestPostgresTenantLoginBoundRLS is a disposable policy prototype, not the
-// production migration or catalog attestation. Each tenant has a distinct
-// authenticated login; the custom GUC is not the authority.
+// TestPostgresTenantLoginBoundRLS exercises the installed v0004 RLS migration
+// with distinct authenticated tenant LOGINs. The migrator-owned login map,
+// not the custom GUC, is the database authority.
 func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -53,27 +53,29 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger, events := schema+".decision_records", schema+".outbox_events"
-	exec("ALTER TABLE " + ledger + " ENABLE ROW LEVEL SECURITY")
-	exec("ALTER TABLE " + events + " ENABLE ROW LEVEL SECURITY")
-	for i, role := range []string{roleA, roleB} {
-		tenant := []string{"tenant-a", "tenant-b"}[i]
-		suffix := []string{"a", "b"}[i]
+	for _, role := range []string{roleA, roleB} {
 		exec("GRANT USAGE ON SCHEMA " + schema + " TO " + role)
 		exec("GRANT SELECT, INSERT ON " + ledger + " TO " + role)
 		exec("GRANT INSERT ON " + events + " TO " + role)
-		// All identifiers and literals here are generated/fixed test values.
-		predicate := "session_user = '" + role + "' AND tenant_id = '" + tenant +
-			"' AND tenant_id = nullif(pg_catalog.current_setting('decision.tenant_id', true), '')"
-		exec("CREATE POLICY ledger_read_" + suffix + " ON " + ledger + " FOR SELECT TO " + role + " USING (" + predicate + ")")
-		exec("CREATE POLICY ledger_write_" + suffix + " ON " + ledger + " FOR INSERT TO " + role + " WITH CHECK (" + predicate + ")")
-		exec("CREATE POLICY outbox_write_" + suffix + " ON " + events + " FOR INSERT TO " + role + " WITH CHECK (" + predicate + ")")
 	}
 	exec("GRANT USAGE ON SCHEMA " + schema + " TO " + workerRole)
 	exec("GRANT SELECT ON " + events + " TO " + workerRole)
 	exec("GRANT UPDATE (lease_owner, lease_until, attempts, available_at, published_at, last_error_code) ON " + events + " TO " + workerRole)
-	workerPredicate := "session_user = '" + workerRole + "'"
-	exec("CREATE POLICY worker_read ON " + events + " FOR SELECT TO " + workerRole + " USING (" + workerPredicate + ")")
-	exec("CREATE POLICY worker_update ON " + events + " FOR UPDATE TO " + workerRole + " USING (" + workerPredicate + ") WITH CHECK (" + workerPredicate + ")")
+	// The v0004 mapping is migrator-owned. Runtime logins may read it for
+	// policy evaluation, but cannot insert, update, or delete mappings.
+	exec("GRANT SELECT ON " + schema + ".decision_tenant_logins TO " + roleA + ", " + roleB + ", " + workerRole)
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ($1, $2, 'application'), ($3, $4, 'application'), ($5, NULL, 'dispatcher')", roleA, "tenant-a", roleB, "tenant-b", workerRole); err != nil {
+		t.Fatalf("seed trusted tenant LOGIN mappings: %v", err)
+	}
+	if err := VerifyInstalledCatalogInSchema(ctx, admin, schema); err != nil {
+		t.Fatalf("v0004 RLS migration catalog attestation: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ('duplicate-tenant-login', 'tenant-a', 'application')"); err == nil {
+		t.Fatal("mapping table accepted a second application LOGIN for the same tenant")
+	}
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ('duplicate-dispatcher-login', NULL, 'dispatcher')"); err == nil {
+		t.Fatal("mapping table accepted a second global dispatcher LOGIN")
+	}
 	open := func(role string) *sql.DB {
 		t.Helper()
 		cfg, err := pgx.ParseConfig(dsn)
@@ -182,6 +184,23 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			if got, err := routedStore.ListByRun(ctx, rec.TenantID, rec.AgentID, rec.SessionID, rec.RunID, nil, 10); err != nil || len(got) != 1 || got[0].DecisionID != rec.DecisionID {
 				t.Fatalf("routed run listing tenant=%s rows=%d err=%v", rec.TenantID, len(got), err)
 			}
+		}
+		// The custom GUC cannot override the authenticated LOGIN mapping.
+		spoofed := routedRecord("tenant-b", "spoofed", "e")
+		if _, created, err := NewPostgresStore(first).SaveOrGet(ctx, spoofed); err == nil || created {
+			t.Fatalf("tenant-a LOGIN spoofed tenant-b through transaction GUC: created=%t err=%v", created, err)
+		}
+		// Mapping drift after startup is rechecked in the same transaction
+		// before tenant context binding and before any ledger/Outbox side effect.
+		if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".decision_tenant_logins SET tenant_id=$1 WHERE login_role=$2", "tenant-wrong", roleA); err != nil {
+			t.Fatal(err)
+		}
+		mappingDrift := routedRecord("tenant-a", "mapping-drift", "f")
+		if _, created, err := routedStore.SaveOrGet(ctx, mappingDrift); created || !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("stale tenant LOGIN mapping accepted: created=%t err=%v", created, err)
+		}
+		if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".decision_tenant_logins SET tenant_id=$1 WHERE login_role=$2", "tenant-a", roleA); err != nil {
+			t.Fatal(err)
 		}
 		if _, err := routedStore.GetByInvocation(ctx, "tenant-a", routeB.InvocationID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("cross-tenant routed read exposed foreign record: %v", err)

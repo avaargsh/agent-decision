@@ -15,8 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// Distinct PostgreSQL LOGIN identities exercise real password authentication.
-// This is CI infrastructure, not a production IAM/mTLS or tenant RLS audit.
+// Distinct PostgreSQL LOGIN identities exercise password authentication and
+// the installed v0004 tenant RLS mapping. This is CI infrastructure, not a
+// production IAM/mTLS or deployment credential audit.
 func TestDatabaseRolesUseDistinctLoginCredentials(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -61,6 +62,11 @@ func TestDatabaseRolesUseDistinctLoginCredentials(t *testing.T) {
 	run("GRANT SELECT ON "+schema+".outbox_events TO "+workerName)
 	run("GRANT UPDATE (lease_owner,lease_until,attempts,available_at,published_at,last_error_code) ON "+schema+".outbox_events TO "+workerName)
 	run("GRANT SELECT ON "+schema+".schema_migrations TO "+attestName)
+	tenantID := "login-tenant-" + seed
+	run("GRANT SELECT ON "+schema+".decision_tenant_logins TO "+appName+", "+workerName)
+	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ($1, $2, 'application'), ($3, NULL, 'dispatcher')", appName, tenantID, workerName); err != nil {
+		t.Fatalf("seed trusted LOGIN mapping: %v", err)
+	}
 
 	open := func(l login) *sql.DB {
 		t.Helper()
@@ -97,7 +103,7 @@ func TestDatabaseRolesUseDistinctLoginCredentials(t *testing.T) {
 	if _, err := worker.ExecContext(ctx, "SELECT record FROM decision_records LIMIT 1"); err == nil { t.Fatal("dispatcher LOGIN can read DecisionRecord payload") }
 
 	record := Record{
-		TenantID: "login-tenant-"+seed, InvocationID: "login-invocation",
+		TenantID: tenantID, InvocationID: "login-invocation",
 		DecisionID: "dec_"+strings.Repeat("c", 64),
 		AgentID: "login-agent", SessionID: "login-session", RunID: "login-run",
 		RequestSHA256: strings.Repeat("d", 64), CreatedAt: time.Now().UTC(),

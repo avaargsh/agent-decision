@@ -75,6 +75,10 @@ func (s *PostgresStore) beginTenantTx(ctx context.Context, tenantID string, read
 			_ = tx.Rollback()
 			return nil, err
 		}
+		if err := verifyTenantLoginMappingTx(ctx, tx, tenantID, s.bound.login, "application"); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, true)", tenantID); err != nil {
 		_ = tx.Rollback()

@@ -341,8 +341,8 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	}
 
 	// Simulate an existing v2 installation with a committed Decision and
-	// Outbox event. Upgrading to v3 must preserve both while creating the
-	// new statement-level TRUNCATE guards in the same migration transaction.
+	// Outbox event. Upgrading to v4 must preserve both while applying the
+	// append-only TRUNCATE guards and tenant RLS policies in order.
 	for _, tableTrigger := range []struct{ table, trigger string }{
 		{"decision_records", "decision_records_no_truncate"},
 		{"outbox_events", "outbox_events_no_truncate"},
@@ -353,11 +353,32 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 			t.Fatalf("simulate v2 trigger state: %v", err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 3"); err != nil {
+	// Remove the v0004 policies and mapping table as well, then rewind the
+	// checksummed ledger to v2. The real upgrade must recreate both versions.
+	for _, policy := range []struct{ table, name string }{
+		{"decision_records", "decision_records_tenant_select"},
+		{"decision_records", "decision_records_tenant_insert"},
+		{"outbox_events", "outbox_events_tenant_insert"},
+		{"outbox_events", "outbox_events_dispatcher_select"},
+		{"outbox_events", "outbox_events_dispatcher_update"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("DROP POLICY %s ON %s", policy.name, policy.table)); err != nil {
+			t.Fatalf("remove v0004 policy: %v", err)
+		}
+	}
+	for _, table := range []string{"decision_records", "outbox_events"} {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE "+table+" DISABLE ROW LEVEL SECURITY"); err != nil {
+			t.Fatalf("remove v0004 RLS flag: %v", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE decision_tenant_logins"); err != nil {
+		t.Fatalf("remove v0004 mapping table: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version >= 3"); err != nil {
 		t.Fatalf("simulate v2 migration ledger: %v", err)
 	}
 	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
-		t.Fatalf("v2-to-v3 in-place migration: %v", err)
+		t.Fatalf("v2-to-v4 in-place migration: %v", err)
 	}
 	var appliedVersions, preservedDecisions, preservedEvents int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&appliedVersions); err != nil {
@@ -375,12 +396,12 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	).Scan(&preservedEvents); err != nil {
 		t.Fatal(err)
 	}
-	if appliedVersions != 3 || preservedDecisions != 1 || preservedEvents != 1 {
-		t.Fatalf("v2-to-v3 migration lost data/history: versions=%d records=%d events=%d",
+	if appliedVersions != 4 || preservedDecisions != 1 || preservedEvents != 1 {
+		t.Fatalf("v2-to-v4 migration lost data/history: versions=%d records=%d events=%d",
 			appliedVersions, preservedDecisions, preservedEvents)
 	}
 	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
-		t.Fatalf("v3 upgrade idempotent replay: %v", err)
+		t.Fatalf("v4 upgrade idempotent replay: %v", err)
 	}
 
 	claimed, err := store.Claim(ctx, "worker-a", 10, 25*time.Millisecond)
