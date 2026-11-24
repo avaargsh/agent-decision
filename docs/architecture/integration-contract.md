@@ -74,6 +74,8 @@ Freshness thresholds, evidence weights and conflict policies must be defined per
 
 ## 5. EngageGuard boundary
 
+The authenticated Decision Guard Plan Step receipt includes the Runtime-verified `run_attempt_id` and `turn_id` alongside its DecisionRecord/Plan/Step digest and breaker fence. These two fields are correlation selectors only: EngageGuard must submit the exact Run/Turn pair to Runtime's dedicated Guard execution-authority API and compare the returned canonical Attempt/Turn. The receipt itself is not a Permit, authorization result or permission to execute a protected effect.
+
 The v0.1 plan contains only read-only investigation steps. Agent Decision never creates an EngageGuard permit and never reports a write action as authorized.
 
 A future remediation proposal must remain a separate typed object. Runtime/Control Plane sends the normalized candidate to EngageGuard, where action hash binding, policy evaluation, risk checks, approval, one-time permit and trusted execution are enforced. Operation outcome and post-condition evidence return through the Runtime/Control Plane evidence path. Unknown side-effect outcomes must be reconciled before any retry or replanning.

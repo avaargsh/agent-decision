@@ -66,3 +66,37 @@ func TestGuardPlanStepRejectsForgedOrUnsafeSubmission(t *testing.T) {
 		t.Fatal("mutating a read-only step and recomputing plan hash bypassed guard provenance")
 	}
 }
+
+func TestGuardPlanStepReceiptCarriesRuntimeIdentitySelectorsOnly(t *testing.T) {
+	receipt := GuardPlanStepReceipt{
+		SchemaVersion: GuardPlanStepSchema,
+		RunID: "11111111-1111-4111-8111-111111111111",
+		RunAttemptID: "22222222-2222-4222-8222-222222222222",
+		TurnID: "33333333-3333-4333-8333-333333333333",
+		DecisionID: "dec_" + strings.Repeat("a", 64),
+		PlanHash: strings.Repeat("b", 64),
+		StepID: "step-1",
+		RecordSHA256: strings.Repeat("c", 64),
+		BreakerEpoch: 1,
+		BreakerVersion: 1,
+		Status: "VERIFIED",
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"run_id", "run_attempt_id", "turn_id", "decision_id", "plan_hash", "step_id", "breaker_epoch", "breaker_version"} {
+		if len(fields[key]) == 0 {
+			t.Fatalf("Guard receipt omitted %s: %s", key, raw)
+		}
+	}
+	for _, forbidden := range []string{"permit", "approval", "risk", "authorization", "token", "credential"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("Guard receipt leaked %s: %s", forbidden, raw)
+		}
+	}
+}
