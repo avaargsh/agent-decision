@@ -285,10 +285,13 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 			   AND c.conname = 'decision_tenant_logins_identity_ck'
 			   AND c.contype = 'c' AND c.convalidated)
 			AND
-			(SELECT count(*) = 1 FROM pg_catalog.pg_constraint AS c
+			(SELECT count(*) = 1
+			 FROM pg_catalog.pg_constraint AS c
+			 JOIN pg_catalog.pg_index AS i ON i.indexrelid = c.conindid
 			 WHERE c.conrelid = pg_catalog.to_regclass('decision_tenant_logins')
 			   AND c.conname = 'decision_tenant_logins_tenant_uq'
-			   AND c.contype = 'u' AND c.convalidated AND c.connullsnotdistinct)
+			   AND c.contype = 'u' AND c.convalidated
+			   AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready)
 	`).Scan(&mappingConstraintsOK); err != nil || !mappingConstraintsOK {
 		return fmt.Errorf("%w: tenant LOGIN mapping constraints drift", ErrCatalogDrift)
 	}
