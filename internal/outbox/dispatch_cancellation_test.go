@@ -12,10 +12,14 @@ type cancellationStore struct {
 	claims int
 	acks []string
 	retries []string
+	onClaim func()
 }
 
 func (s *cancellationStore) Claim(context.Context, string, int, time.Duration) ([]Event, error) {
 	s.claims++
+	if s.onClaim != nil {
+		s.onClaim()
+	}
 	return s.events, nil
 }
 func (s *cancellationStore) Ack(_ context.Context, id, _ string, _ int) error {
@@ -84,5 +88,26 @@ func TestDispatchOnceStopsBeforeNextPublishWhenCanceled(t *testing.T) {
 				t.Fatalf("completed first event not preserved: count=%d err=%v ack=%v retry=%v", count, err, store.acks, store.retries)
 			}
 		})
+	}
+}
+
+func TestDispatchOnceDoesNotPublishClaimsReturnedAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancellationStore{
+		events: []Event{{ID: "leased", Attempts: 1}},
+		onClaim: cancel,
+	}
+	calls := 0
+	publisher := cancellationPublisher(func(context.Context, Event) error {
+		calls++
+		return nil
+	})
+	count, err := DispatchOnce(ctx, store, publisher, "worker", 1, time.Minute, time.Second)
+	if !errors.Is(err, context.Canceled) || count != 0 || calls != 0 || store.claims != 1 {
+		t.Fatalf("claim cancellation: count=%d calls=%d claims=%d err=%v", count, calls, store.claims, err)
+	}
+	if len(store.acks) != 0 || len(store.retries) != 0 {
+		t.Fatalf("unpublished claim must remain leased until expiry: ack=%v retry=%v", store.acks, store.retries)
 	}
 }
