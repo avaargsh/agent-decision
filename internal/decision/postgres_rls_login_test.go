@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -30,7 +31,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	defer admin.Close()
 	seed := fmt.Sprintf("%d", time.Now().UnixNano())
 	schema, roleA, roleB, workerRole := "rls_login_"+seed, "rls_a_"+seed, "rls_b_"+seed, "rls_worker_"+seed
-	password := "ephemeral_login_" + seed
+	passwordFor := func(role string) string { return "ephemeral_login_" + role }
 	exec := func(stmt string) {
 		t.Helper()
 		if _, err := admin.ExecContext(ctx, stmt); err != nil {
@@ -46,7 +47,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}()
 	for _, role := range []string{roleA, roleB, workerRole} {
-		exec("CREATE ROLE " + role + " LOGIN PASSWORD '" + password + "'")
+		exec("CREATE ROLE " + role + " LOGIN PASSWORD '" + passwordFor(role) + "'")
 	}
 	if err := MigrateInSchema(ctx, admin, schema); err != nil {
 		t.Fatal(err)
@@ -79,7 +80,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.User, cfg.Password = role, password
+		cfg.User, cfg.Password = role, passwordFor(role)
 		cfg.RuntimeParams["search_path"] = schema + ", pg_catalog, pg_temp"
 		db := stdlib.OpenDB(*cfg)
 		db.SetMaxOpenConns(1)
@@ -106,6 +107,30 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	a, b := makeRecord("tenant-a", "a"), makeRecord("tenant-b", "b")
+	// A direct foreign Outbox INSERT must fail at its own policy, not at
+	// Ledger INSERT or an existing unique key. The referenced foreign ledger
+	// exists and the probe uses a distinct event ID/type. Roll back even if a
+	// broken policy unexpectedly permits the INSERT.
+	requireDeniedOutbox := func(db *sql.DB, rec Record) {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('decision.tenant_id', $1, true)", rec.TenantID); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO outbox_events
+			(event_id, tenant_id, aggregate_type, aggregate_id, aggregate_version,
+			 event_type, schema_version, payload)
+			VALUES ($1, $2, 'decision_record', $3, 1, 'decision.rls-probe.v1', 1, '{}'::jsonb)`,
+			"rls-probe-"+rec.TenantID, rec.TenantID, rec.DecisionID)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Fatalf("expected Outbox permission/policy denial for %s, got %v", rec.TenantID, err)
+		}
+	}
 	for _, tc := range []struct {
 		db *sql.DB
 		own, other Record
@@ -145,6 +170,10 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		if _, created, err := store.SaveOrGet(ctx, foreign); err == nil || created {
 			t.Fatalf("wrong-login write accepted: created=%t err=%v", created, err)
 		}
+		requireDeniedOutbox(tc.db, tc.other)
+		if _, err := tc.db.ExecContext(ctx, "SELECT event_id FROM outbox_events"); err == nil {
+			t.Fatal("application can directly read Outbox")
+		}
 		if _, err := tc.db.ExecContext(ctx, "SET ROLE "+tc.otherRole); err == nil {
 			t.Fatal("tenant login can switch to another tenant role")
 		}
@@ -183,6 +212,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	if _, err := worker.ExecContext(ctx, "SELECT record FROM decision_records"); err == nil {
 		t.Fatal("dispatcher can read ledger")
 	}
+	requireDeniedOutbox(worker, a)
 	dispatcher := NewPostgresStore(worker)
 	claimed, err := dispatcher.Claim(ctx, "rls-worker", 10, time.Minute)
 	if err != nil || len(claimed) != 2 {
