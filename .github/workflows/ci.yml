@@ -67,6 +67,9 @@ jobs:
       # Reproduce the historical TRUNCATE-guard restore point under same-schema catalog churn.
       - name: Repeat Outbox TRUNCATE guard restore and same-schema DDL stress regression
         run: go test -race -count=3 -run '^TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL$' ./internal/outbox
+      # Reproduce the original Outbox handler rewrite/restore failure under same-schema catalog churn.
+      - name: Repeat Outbox handler restore and same-schema DDL stress regression
+        run: go test -race -count=3 -run '^TestPostgresOutboxHandlerRestoreUnderSameSchemaDDL$' ./internal/outbox
       # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
       - name: Repeat same-schema trigger restore and catalog DDL stress regression
         run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
