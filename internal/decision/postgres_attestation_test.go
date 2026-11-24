@@ -830,12 +830,12 @@ func TestCatalogAttestationDistinguishesMissingFromInvalidMetadata(t *testing.T)
 
 	t.Run("unvalidated critical CHECK is a mismatch", func(t *testing.T) {
 		var approvedDefinition string
-		if err := db.QueryRowContext(ctx, \`
+		if err := db.QueryRowContext(ctx, `
 			SELECT pg_catalog.pg_get_constraintdef(c.oid)
 			FROM pg_catalog.pg_constraint AS c
 			WHERE c.conrelid = pg_catalog.to_regclass($1)
 			  AND c.conname = $2 AND c.contype = 'c'
-		\`, schema+".outbox_events", "outbox_lease_pair_ck").Scan(&approvedDefinition); err != nil {
+		`, schema+".outbox_events", "outbox_lease_pair_ck").Scan(&approvedDefinition); err != nil {
 			t.Fatalf("read approved CHECK definition: %v", err)
 		}
 		if _, err := db.ExecContext(ctx,
