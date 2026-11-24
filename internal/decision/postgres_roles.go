@@ -44,6 +44,27 @@ func verifyBoundRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema stri
 	return verifyRuntimeDatabaseRole(ctx, db, schema, role, &binding)
 }
 
+// verifyRuntimeLoginKindTx requires every runtime LOGIN to have exactly the
+// deployment-provisioned database role class before it can pass the preflight.
+func verifyRuntimeLoginKindTx(ctx context.Context, tx *sql.Tx, kind string) error {
+	if tx == nil || (kind != "application" && kind != "dispatcher") {
+		return fmt.Errorf("%w: invalid runtime LOGIN kind", ErrCatalogDrift)
+	}
+	var tenant sql.NullString
+	var actualKind string
+	err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, login_kind
+		FROM decision_tenant_logins
+		WHERE login_role = SESSION_USER
+	`).Scan(&tenant, &actualKind)
+	if err != nil || actualKind != kind ||
+		(kind == "application" && (!tenant.Valid || tenant.String == "")) ||
+		(kind == "dispatcher" && tenant.Valid) {
+		return fmt.Errorf("%w: runtime LOGIN is not provisioned as %s", ErrCatalogDrift, kind)
+	}
+	return nil
+}
+
 // verifyTenantLoginMappingTx binds the configured tenant to the authenticated
 // PostgreSQL LOGIN on the same transaction that will read or write ledger data.
 // A caller-controlled GUC alone is never accepted as tenant authority.
@@ -307,6 +328,10 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		)
 	`, schema).Scan(&externalAccess); err != nil || externalAccess {
 		return fmt.Errorf("%w: effective access to an unreviewed external schema object", ErrCatalogDrift)
+	}
+
+	if err := verifyRuntimeLoginKindTx(ctx, tx, string(role)); err != nil {
+		return err
 	}
 
 	// Explicitly reject schema owners via owner-membership check above.
