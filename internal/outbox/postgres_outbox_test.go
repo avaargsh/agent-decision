@@ -404,7 +404,11 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		t.Fatalf("v4 upgrade idempotent replay: %v", err)
 	}
 
-	claimed, err := store.Claim(ctx, "worker-a", 10, 25*time.Millisecond)
+	// Use a long active lease for the negative Claim assertion. A 25ms lease
+	// can expire under CI scheduling or database load before the second query,
+	// turning a valid reclaim into a misleading test failure.
+	const activeLease = 5 * time.Minute
+	claimed, err := store.Claim(ctx, "worker-a", 10, activeLease)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("first claim: events=%d err=%v", len(claimed), err)
 	}
@@ -417,8 +421,25 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		t.Fatalf("leased event claimed by another worker: events=%d err=%v", len(unavailable), err)
 	}
 
-	time.Sleep(40 * time.Millisecond)
-	reclaimed, err := store.Claim(ctx, "worker-b", 10, 25*time.Millisecond)
+	// Expire leases by moving the database timestamp, not by sleeping. This
+	// keeps the test deterministic while still exercising Claim's <= now()
+	// boundary against PostgreSQL's own clock.
+	expireLease := func(eventID, owner string, attempt int) {
+		t.Helper()
+		result, err := db.ExecContext(ctx, `UPDATE outbox_events
+			SET lease_until = now() - interval '1 millisecond'
+			WHERE event_id = $1 AND lease_owner = $2 AND attempts = $3
+			  AND published_at IS NULL`, eventID, owner, attempt)
+		if err != nil {
+			t.Fatalf("expire lease for worker %s attempt %d: %v", owner, attempt, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil || rows != 1 {
+			t.Fatalf("expire lease affected rows=%d err=%v, want exactly one", rows, err)
+		}
+	}
+	expireLease(claimed[0].ID, "worker-a", claimed[0].Attempts)
+	reclaimed, err := store.Claim(ctx, "worker-b", 10, activeLease)
 	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID || reclaimed[0].Attempts != 2 {
 		t.Fatalf("expired lease reclaim: events=%+v err=%v", reclaimed, err)
 	}
@@ -430,8 +451,8 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	}
 	// A stable worker identity can be reused after a lease expires. The
 	// prior attempt must not be able to ACK or Retry its successor's lease.
-	time.Sleep(40 * time.Millisecond)
-	sameWorkerReclaim, err := store.Claim(ctx, "worker-b", 10, time.Second)
+	expireLease(reclaimed[0].ID, "worker-b", reclaimed[0].Attempts)
+	sameWorkerReclaim, err := store.Claim(ctx, "worker-b", 10, activeLease)
 	if err != nil || len(sameWorkerReclaim) != 1 || sameWorkerReclaim[0].Attempts != 3 {
 		t.Fatalf("same-worker next attempt claim: events=%+v err=%v", sameWorkerReclaim, err)
 	}
