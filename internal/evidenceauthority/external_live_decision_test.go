@@ -497,6 +497,8 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	if err := json.Unmarshal(guardCall(guardClient, guardReq, http.StatusOK), &guardVerified); err != nil ||
 		guardVerified.Status != "VERIFIED" || guardVerified.RecordSHA256 != verified.RecordSHA256 ||
 		guardVerified.DecisionID != record.DecisionID || guardVerified.StepID != guardReq.StepID ||
+		guardVerified.RunAttemptID != verified.Authority.AttemptID ||
+		guardVerified.TurnID != verified.Authority.InvocationID ||
 		guardVerified.BreakerVersion != verified.Authority.BreakerVersion {
 		t.Fatalf("mTLS Guard did not verify the committed Plan/Step: %+v %v", guardVerified, err)
 	}
