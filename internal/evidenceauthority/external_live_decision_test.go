@@ -197,7 +197,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	}
 	schema:=newSchema("live_decision")
 	if err:=decision.MigrateInSchema(ctx,admin,schema);err!=nil{t.Fatal(err)}
-	app:=login(schema,"decision_app",[]string{"SELECT, INSERT ON "+schema+".decision_records","INSERT ON "+schema+".outbox_events"})
+	app:=login(schema,"decision_app",[]string{"SELECT ON "+schema+".decision_tenant_logins","SELECT, INSERT ON "+schema+".decision_records","INSERT ON "+schema+".outbox_events"})
 	att:=login(schema,"decision_attest",[]string{"SELECT ON "+schema+".schema_migrations"})
 	if err:=decision.VerifyRuntimeDatabaseRole(ctx,app,schema,decision.RuntimeRoleApplication);err!=nil{t.Fatal(err)}
 	authority,err:=decision.NewLiveAuthority(cfg);if err!=nil{t.Fatal(err)}
