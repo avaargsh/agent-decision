@@ -167,6 +167,8 @@ type LiveAuthority struct {
 	runtime, acp *authorityClient
 	acpKey ed25519.PublicKey
 	sources map[string]pinnedEvidenceSource
+	// Private clock seam for deterministic freshness-boundary tests.
+	now func() time.Time
 }
 
 func NewLiveAuthority(c LiveAuthorityConfig) (*LiveAuthority,error) {
@@ -211,6 +213,13 @@ func (a *LiveAuthority) currentRuntime(ctx context.Context,runID,invocation stri
 	return out,nil
 }
 
+func (a *LiveAuthority) currentTime() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evidence []EvidenceRef)(Principal,Request,error){
 	fail:=func(err error)(Principal,Request,error){return Principal{},Request{},err}
 	if len(evidence)>32 || evidence==nil{return fail(ErrAuthorityRejected)}
@@ -219,7 +228,7 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 	query:=url.Values{"run_id":{r.RunID},"request_digest":{r.RequestDigest}}
 	raw,err:=a.acp.read(ctx,http.MethodGet,"/internal/v1/decision-publication/"+r.RunIntentID+"?"+query.Encode(),nil,maxACPPublicationWire)
 	if err!=nil{return fail(err)}
-	now:=time.Now().UTC()
+	now:=a.currentTime()
 	p,err:=VerifyACPPublication(raw,a.acpKey,r.acpBinding(),now)
 	if err!=nil{return fail(ErrAuthorityRejected)}
 	input,err:=json.Marshal(p.Input)
@@ -234,7 +243,7 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 		if err!=nil{return fail(ErrAuthorityRejected)}
 		proof,err:=source.client.read(ctx,http.MethodPost,"/internal/v1/evidence:read",b,maxEvidenceWire)
 		if err!=nil{return fail(err)}
-		if VerifyEvidencePublication(proof,source.key,source.scope,e,time.Now().UTC())!=nil{
+		if VerifyEvidencePublication(proof,source.key,source.scope,e,a.currentTime())!=nil{
 			return fail(ErrAuthorityRejected)
 		}
 	}
