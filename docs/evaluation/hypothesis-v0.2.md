@@ -29,6 +29,7 @@ The current tests cover:
 |---|---|
 | Supporting symptom and preceding deployment | `SUPPORTED` |
 | Missing deployment observation | `INSUFFICIENT` |
+| Symptom with no deployment in the investigation window | `CONTRADICTED` |
 | Unrelated evidence only | `UNTESTED` |
 | Conflicting symptom observations | `CONFLICTING` |
 | No observations | `UNTESTED` |
