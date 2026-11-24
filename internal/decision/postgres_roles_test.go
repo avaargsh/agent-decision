@@ -38,6 +38,17 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("CREATE SCHEMA "+schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	// A separate Decision schema may coexist with legacy/default-schema
+	// trigger callbacks. Their safe, non-SECURITY-DEFINER trigger functions
+	// must not make an otherwise least-privilege runtime login fail its
+	// external-schema audit merely because PUBLIC can see the namespace.
+	externalSchema := "decision_external_triggers_" + seed
+	exec("CREATE SCHEMA " + externalSchema)
+	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+externalSchema+" CASCADE") }()
+	if err := MigrateInSchema(ctx, admin, externalSchema); err != nil {
+		t.Fatal(err)
+	}
+	exec("GRANT USAGE ON SCHEMA " + externalSchema + " TO PUBLIC")
 	password := "ephemeral_role_gate_" + seed
 	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
 	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
@@ -162,6 +173,18 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		}
 	})
 	check(app, RuntimeRoleApplication)
+
+	// The exception for known trigger callbacks must remain exact and narrow:
+	// an unrelated SECURITY DEFINER routine in the same external schema is
+	// still an effective external execution capability and must be rejected.
+	t.Run("external_security_definer_function_denied", func(t *testing.T) {
+		exec("CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'")
+		if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("external SECURITY DEFINER function passed role audit: %v", err)
+		}
+		exec("DROP FUNCTION " + externalSchema + ".unreviewed_definer()")
+		check(app, RuntimeRoleApplication)
+	})
 
 	// A role must not be able to create persistent objects outside the
 	// approved schema, even when the foreign namespace has no objects or
