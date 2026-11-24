@@ -15,9 +15,12 @@ import (
 // samples one connection per pool; it does not prove later session identity.
 type tenantPoolRegistry struct {
 	logins *tenantLoginRegistry
+	schema string
 	mu     sync.RWMutex
 	pools  map[string]*sql.DB
 }
+
+var _ Store = (*tenantPoolRegistry)(nil)
 
 // newTenantPoolRegistry uses bounded eager startup, never caller-triggered
 // pool creation. A nonnil pool returned by the factory transfers ownership
@@ -28,7 +31,11 @@ func newTenantPoolRegistry(ctx context.Context, logins *tenantLoginRegistry, sch
 		perTenant <= 0 || total <= 0 || len(logins.byTenant) > total/perTenant || open == nil {
 		return nil, fmt.Errorf("%w: invalid tenant pool registry configuration or budget", ErrCatalogDrift)
 	}
-	r := &tenantPoolRegistry{logins: logins, pools: make(map[string]*sql.DB, len(logins.byTenant))}
+	r := &tenantPoolRegistry{
+		logins: logins,
+		schema: schema,
+		pools:  make(map[string]*sql.DB, len(logins.byTenant)),
+	}
 	owned := make(map[*sql.DB]struct{}, len(logins.byTenant))
 	ready := false
 	defer func() {
@@ -73,10 +80,10 @@ func newTenantPoolRegistry(ctx context.Context, logins *tenantLoginRegistry, sch
 	return r, nil
 }
 
-// resolve borrows a pool for a gateway-authenticated Principal. The caller
-// must not close it, reconfigure it, or use a different tenant's arguments.
-// A future transaction-scoped adapter must enforce these preconditions
-// before this internal prototype can serve live requests.
+// resolve is a low-level pool inspection helper for tests and startup
+// diagnostics. Business ledger operations must use the Store methods below,
+// which create a tenant-bound PostgresStore and hold the registry read lock
+// through the complete transaction.
 func (r *tenantPoolRegistry) resolve(principal Principal) (*sql.DB, error) {
 	if err := principal.Validate(); err != nil {
 		return nil, err
@@ -99,9 +106,83 @@ func (r *tenantPoolRegistry) resolve(principal Principal) (*sql.DB, error) {
 	return db, nil
 }
 
-// close is idempotent and excludes new resolutions while shutting down.
-// Already borrowed handles are closed by database/sql; callers must drain
-// live work before shutdown. No live caller exists in this slice.
+// storeForTenantLocked returns a bound store while the caller holds r.mu.RLock.
+// The returned store must not outlive the lock-protected operation.
+func (r *tenantPoolRegistry) storeForTenantLocked(tenantID string) (*PostgresStore, error) {
+	if r.pools == nil || r.logins == nil || r.logins.byTenant == nil {
+		return nil, ErrStoreUnavailable
+	}
+	pin, ok := r.logins.byTenant[tenantID]
+	if !ok {
+		return nil, fmt.Errorf("%w: tenant login not provisioned", ErrAuthorityRejected)
+	}
+	db := r.pools[tenantID]
+	if db == nil {
+		return nil, ErrStoreUnavailable
+	}
+	return newBoundPostgresStore(db, r.schema, tenantID, pin)
+}
+
+// Each Store method holds the registry read lock until the underlying
+// PostgresStore transaction has finished. close therefore drains active
+// operations before closing pools and prevents a resolve/close race.
+
+func (r *tenantPoolRegistry) GetByInvocation(ctx context.Context, tenantID, invocationID string) (Record, error) {
+	if r == nil {
+		return Record{}, ErrStoreUnavailable
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	store, err := r.storeForTenantLocked(tenantID)
+	if err != nil {
+		return Record{}, err
+	}
+	return store.GetByInvocation(ctx, tenantID, invocationID)
+}
+
+func (r *tenantPoolRegistry) SaveOrGet(ctx context.Context, record Record) (Record, bool, error) {
+	if r == nil {
+		return Record{}, false, ErrStoreUnavailable
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	store, err := r.storeForTenantLocked(record.TenantID)
+	if err != nil {
+		return Record{}, false, err
+	}
+	return store.SaveOrGet(ctx, record)
+}
+
+func (r *tenantPoolRegistry) GetByDecisionID(ctx context.Context, tenantID, agentID, sessionID, decisionID string) (Record, error) {
+	if r == nil {
+		return Record{}, ErrStoreUnavailable
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	store, err := r.storeForTenantLocked(tenantID)
+	if err != nil {
+		return Record{}, err
+	}
+	return store.GetByDecisionID(ctx, tenantID, agentID, sessionID, decisionID)
+}
+
+func (r *tenantPoolRegistry) ListByRun(ctx context.Context, tenantID, agentID, sessionID, runID string, before *DecisionCursor, limit int) ([]Record, error) {
+	if r == nil {
+		return nil, ErrStoreUnavailable
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	store, err := r.storeForTenantLocked(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return store.ListByRun(ctx, tenantID, agentID, sessionID, runID, before, limit)
+}
+
+// close is idempotent, excludes new Store operations, and waits for in-flight
+// Store operations because they retain r.mu.RLock through transaction completion.
+// Raw handles returned by resolve are diagnostic only and must not be used
+// concurrently with close.
 func (r *tenantPoolRegistry) close() error {
 	if r == nil {
 		return nil
