@@ -31,12 +31,13 @@ type hypothesisObservation struct {
 }
 
 type hypothesisResult struct {
-	ID            string
-	Status        hypothesisStatus
-	Assumptions   []string
-	Supporting    []hypothesisObservation
-	Contradicting []hypothesisObservation
-	Missing       []string
+	ID               string
+	Status           hypothesisStatus
+	Assumptions      []string
+	Supporting       []hypothesisObservation
+	Contradicting    []hypothesisObservation
+	Missing          []string
+	AbstentionReasons []hypothesisAbstentionReason
 }
 
 // evaluateDeploymentHypothesis is an internal, offline evaluator. The caller
@@ -74,7 +75,8 @@ func evaluateDeploymentHypothesis(p Principal, req Request, observations []hypot
 		},
 		Supporting:    []hypothesisObservation{},
 		Contradicting: []hypothesisObservation{},
-		Missing:       []string{},
+		Missing:           []string{},
+		AbstentionReasons: []hypothesisAbstentionReason{},
 	}
 	seen := make(map[EvidenceBinding]struct{}, len(observations))
 	var symptomYes, symptomNo, changeYes, changeNo bool
@@ -123,9 +125,20 @@ func evaluateDeploymentHypothesis(p Principal, req Request, observations []hypot
 	}
 	if !symptomYes && !symptomNo {
 		result.Missing = append(result.Missing, "SYMPTOM_OBSERVATION")
+		result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionMissingSymptomObservation)
 	}
 	if !changeYes && !changeNo {
 		result.Missing = append(result.Missing, "DEPLOYMENT_OBSERVATION")
+		result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionMissingDeploymentObservation)
+	}
+	if symptomYes && symptomNo {
+		result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionConflictingSymptomObservations)
+	}
+	if changeYes && changeNo {
+		result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionConflictingDeploymentObservations)
+	}
+	if len(observations) > 0 && len(result.Supporting)+len(result.Contradicting) == 0 {
+		result.AbstentionReasons = append(result.AbstentionReasons, hypothesisAbstentionNoRelevantEvidence)
 	}
 	switch {
 	case (symptomYes && symptomNo) || (changeYes && changeNo):
