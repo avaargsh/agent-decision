@@ -453,7 +453,8 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, fmt.Errorf("%w: %v", ErrAuthorityRejected, err)
 	}
 
-	if digest(verificationInput) != digest(req) {
+	verifiedFingerprint, err := requestFingerprint(principal, verificationInput)
+	if err != nil || verifiedFingerprint != fingerprint {
 		return Record{}, false, fmt.Errorf("%w: verifier modified decision inputs", ErrAuthorityRejected)
 	}
 
