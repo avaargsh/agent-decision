@@ -717,6 +717,20 @@ func TestCatalogAttestationMismatchDoesNotMasqueradeAsQueryFailure(t *testing.T)
 	}
 }
 
+func TestCatalogAttestationMissingObjectHasDistinctDiagnostic(t *testing.T) {
+	err := catalogAttestationMissing("critical CHECK outbox_events.outbox_lease_pair_ck")
+	if !errors.Is(err, ErrCatalogDrift) {
+		t.Fatalf("missing catalog object must preserve ErrCatalogDrift: %v", err)
+	}
+	if !strings.Contains(err.Error(), "critical CHECK outbox_events.outbox_lease_pair_ck missing") {
+		t.Fatalf("missing catalog object must identify its exact check: %v", err)
+	}
+	if strings.Contains(err.Error(), "mismatch") || strings.Contains(err.Error(), "query failed") ||
+		strings.Contains(err.Error(), "SQLSTATE") {
+		t.Fatalf("missing catalog object must have its own diagnostic class: %v", err)
+	}
+}
+
 func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -743,12 +757,12 @@ func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 		{
 			name: "missing trigger",
 			ddl: "DROP TRIGGER decision_records_no_update ON %s.decision_records",
-			want: "trigger decision_records.decision_records_no_update missing mismatch",
+			want: "trigger decision_records.decision_records_no_update missing",
 		},
 		{
 			name: "missing critical check",
 			ddl: "ALTER TABLE %s.outbox_events DROP CONSTRAINT outbox_lease_pair_ck",
-			want: "critical CHECK outbox_events.outbox_lease_pair_ck missing mismatch",
+			want: "critical CHECK outbox_events.outbox_lease_pair_ck missing",
 		},
 	}
 	for i, tc := range cases {
