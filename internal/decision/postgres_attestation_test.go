@@ -444,8 +444,9 @@ func TestCatalogAttestationPinsSchemaAcrossPooledConnections(t *testing.T) {
 	if err := MigrateInSchema(ctx, db, firstSchema); err != nil {
 		t.Fatalf("migration re-entry rejected valid schema A: %v", err)
 	}
-	if err := MigrateInSchema(ctx, db, secondSchema); !errors.Is(err, ErrCatalogDrift) {
-		t.Fatalf("migration re-entry accepted schema B's corrupted checksum after schema A: %v", err)
+	if err := MigrateInSchema(ctx, db, secondSchema); err == nil ||
+		!strings.Contains(err.Error(), "migration history integrity mismatch") {
+		t.Fatalf("migration re-entry did not reject schema B's corrupted checksum after schema A: %v", err)
 	}
 
 	if _, err := db.ExecContext(ctx,
