@@ -261,6 +261,21 @@ func (a *LiveAuthority) build(ctx context.Context, runID, invocation string, evi
 		Evidence:append([]EvidenceRef{},evidence...),
 	}
 	if principal.Validate()!=nil || req.Validate()!=nil{return fail(ErrAuthorityRejected)}
+	// Network reads are sequential. All signed inputs must still be fresh
+	// at the final observation, not merely at their individual read times.
+	// This is a point-in-time check, not an atomic distributed revocation fence.
+	finalNow:=a.currentTime()
+	for _, snapshot:=range []SnapshotRef{req.ContextSnapshot,req.CapabilitySnapshot}{
+		if finalNow.Before(snapshot.IssuedAt) || !finalNow.Before(snapshot.ExpiresAt){
+			return fail(ErrAuthorityRejected)
+		}
+	}
+	for _, e:=range req.Evidence{
+		source,ok:=a.sources[e.SourceID]
+		if !ok || !evidenceScopeMatches(source.scope,e,finalNow){
+			return fail(ErrAuthorityRejected)
+		}
+	}
 	return principal,req,nil
 }
 
