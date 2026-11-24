@@ -114,7 +114,17 @@ func PublishEvidence(scope EvidenceSourceScope, observation EvidenceObservation,
 // cannot determine revocation from old signed bytes; the caller must obtain a
 // fresh current proof from the independent source registry on every new turn.
 func VerifyEvidencePublication(wire []byte, key ed25519.PublicKey, scope EvidenceSourceScope, expected EvidenceRef, now time.Time) error {
-	fail := func() error { return fmt.Errorf("%w: invalid source evidence publication", ErrAuthorityRejected) }
+	_, err := verifyEvidencePublicationContent(wire, key, scope, expected, now)
+	return err
+}
+
+// verifyEvidencePublicationContent returns owned exact bytes only after the
+// complete publication verification succeeds. Offline proof verification is
+// not a substitute for a fresh live source-registry revocation observation.
+func verifyEvidencePublicationContent(wire []byte, key ed25519.PublicKey, scope EvidenceSourceScope, expected EvidenceRef, now time.Time) ([]byte, error) {
+	fail := func() ([]byte, error) {
+		return nil, fmt.Errorf("%w: invalid source evidence publication", ErrAuthorityRejected)
+	}
 	if len(key) != ed25519.PublicKeySize || !evidenceScopeMatches(scope, expected, now) {
 		return fail()
 	}
@@ -142,5 +152,5 @@ func VerifyEvidencePublication(wire []byte, key ed25519.PublicKey, scope Evidenc
 	if err != nil || !bytes.Equal(want, got) {
 		return fail()
 	}
-	return nil
+	return bytes.Clone(proof.Content), nil
 }
