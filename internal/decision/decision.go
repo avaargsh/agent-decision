@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -165,7 +166,8 @@ type EvidenceBinding struct {
 }
 
 func evidenceBindingKey(binding EvidenceBinding) string {
-	return binding.SourceID + "\\x00" + binding.Ref
+	// validOpaque rejects NUL in both components, so this separator cannot alias another pair.
+	return binding.SourceID + "\x00" + binding.Ref
 }
 
 type PlanStep struct {
@@ -295,7 +297,7 @@ func (r Request) Validate() error {
 		}
 		// A source reference identifies one immutable observation. Repeating it
 		// must not inflate evidence coverage or create ambiguous provenance.
-		evidenceKey := evidence.SourceID + "\x00" + evidence.Ref
+		evidenceKey := evidenceBindingKey(EvidenceBinding{SourceID: evidence.SourceID, Ref: evidence.Ref})
 		if _, exists := seenEvidence[evidenceKey]; exists {
 			return fmt.Errorf("%w: duplicate evidence reference", ErrInvalidRequest)
 		}
@@ -407,10 +409,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, ErrStoreUnavailable
 	}
 
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
+	fingerprint, err := requestFingerprint(principal, req)
+	if err != nil {
+		return Record{}, false, err
+	}
 
 	// An exact retry of a completed invocation returns its immutable historical
 	// result before current evidence freshness/attestation is re-evaluated.
@@ -466,10 +468,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 // initial persistence and read-only revalidation. Callers must verify all
 // authority and validate the request first.
 func recordFromVerifiedRequest(principal Principal, req Request, strategy Strategy, createdAt time.Time) (Record, error) {
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
+	fingerprint, err := requestFingerprint(principal, req)
+	if err != nil {
+		return Record{}, err
+	}
 	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
@@ -491,13 +493,14 @@ func recordFromVerifiedRequest(principal Principal, req Request, strategy Strate
 	// mutate already-verified evidence or capabilities before output validation.
 	result := strategy.Plan(cloneRequest(req), decisionID)
 	result.ReasonCodes = append([]string{}, result.ReasonCodes...)
-	result.Steps = append([]PlanStep{}, result.Steps...)
+	// Detach nested evidence bindings before validating or hashing the plan.
+	result.Steps = clonePlanSteps(result.Steps)
 	if err := validateStrategyResult(req, result); err != nil {
 		return Record{}, fmt.Errorf("%w: unsafe strategy output", ErrInvalidRequest)
 	}
 	record.Status = result.Status
 	record.ReasonCodes = append([]string{}, result.ReasonCodes...)
-	record.Plan.Steps = append([]PlanStep{}, result.Steps...)
+	record.Plan.Steps = result.Steps
 	record.Plan.PlanHash = planHash(record.Plan)
 	return record, nil
 }
@@ -516,6 +519,65 @@ func planHash(plan PlanCandidate) string {
 	return digest(plan)
 }
 
+// requestFingerprint preserves the existing encoding for valid requests but
+// refuses serialization failures before a ledger lookup or write.
+func requestFingerprint(principal Principal, req Request) (string, error) {
+	if !requestUTF8Valid(principal, req) {
+		return "", fmt.Errorf("%w: request contains invalid UTF-8", ErrInvalidRequest)
+	}
+	b, err := json.Marshal(struct {
+		Principal Principal
+		Request   Request
+	}{principal, req})
+	if err != nil {
+		return "", fmt.Errorf("%w: request cannot be serialized", ErrInvalidRequest)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// JSON encoding silently replaces invalid UTF-8 bytes. Check every string in
+// the typed request before hashing so distinct malformed inputs cannot alias.
+// Keep this in sync with Request and its nested contract types.
+func requestUTF8Valid(p Principal, r Request) bool {
+	if !validUTF8Strings(p.TenantID, p.SubjectID, p.AgentID, p.SessionID, p.CallerID,
+		r.SchemaVersion, r.Identity.AgentID, r.Identity.SessionID, r.Identity.RunID,
+		r.InvocationID, r.Input.Objective, r.Input.Service, r.Input.Signal,
+		r.Versions.CapabilityCatalogVersion, r.Versions.StrategyVersion,
+		r.Versions.PromptVersion, r.Versions.ModelProfile) {
+		return false
+	}
+	for _, s := range []SnapshotRef{r.ContextSnapshot, r.CapabilitySnapshot} {
+		if !validUTF8Strings(s.ID, s.Version, s.SHA256, s.Source, s.AttestationRef, s.TrustLevel) {
+			return false
+		}
+	}
+	for _, c := range r.Capabilities {
+		if !validUTF8Strings(c.ID, c.Version, c.ContractSHA256, c.InputSchemaRef,
+			c.OutputSchemaRef, c.EffectClass, c.Idempotency) {
+			return false
+		}
+	}
+	for _, e := range r.Evidence {
+		if !validUTF8Strings(e.Ref, e.EvidenceType, e.SchemaVersion, e.TenantID,
+			e.AgentID, e.RunID, e.Service, e.ResourceRef, e.SourceID, e.Source,
+			e.SourceVersion, e.SHA256, e.AttestationRef, e.TrustLevel, e.RevocationState) {
+			return false
+		}
+	}
+	return r.Replan == nil || validUTF8Strings(r.Replan.ParentDecisionID,
+		r.Replan.Trigger, r.Replan.PriorDisposition)
+}
+
+func validUTF8Strings(values ...string) bool {
+	for _, value := range values {
+		if !utf8.ValidString(value) {
+			return false
+		}
+	}
+	return true
+}
+
 func digest(value any) string {
 	b, _ := json.Marshal(value)
 	sum := sha256.Sum256(b)
@@ -532,12 +594,18 @@ func cloneRequest(req Request) Request {
 	return req
 }
 
+// clonePlanSteps transfers ownership of every mutable step buffer.
+func clonePlanSteps(steps []PlanStep) []PlanStep {
+	copied := append([]PlanStep{}, steps...)
+	for i := range copied {
+		copied[i].EvidenceRefs = append([]EvidenceBinding{}, copied[i].EvidenceRefs...)
+	}
+	return copied
+}
+
 func clone(record Record) Record {
 	record.ReasonCodes = append([]string{}, record.ReasonCodes...)
 	record.Evidence = append([]EvidenceRef{}, record.Evidence...)
-	record.Plan.Steps = append([]PlanStep{}, record.Plan.Steps...)
-	for i := range record.Plan.Steps {
-		record.Plan.Steps[i].EvidenceRefs = append([]EvidenceBinding{}, record.Plan.Steps[i].EvidenceRefs...)
-	}
+	record.Plan.Steps = clonePlanSteps(record.Plan.Steps)
 	return record
 }
