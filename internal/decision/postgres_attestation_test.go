@@ -180,17 +180,6 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='0002_decision_outbox.sql' WHERE version=2"); err != nil { t.Fatal(err) }
 	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil { t.Fatalf("restored history: %v", err) }
 
-	var loginKindDefinition string
-	if err := admin.QueryRowContext(ctx, `
-		SELECT pg_catalog.pg_get_constraintdef(c.oid)
-		FROM pg_catalog.pg_constraint AS c
-		WHERE c.conrelid = pg_catalog.to_regclass($1)
-		  AND c.conname = 'decision_tenant_logins_login_kind_check'
-	`, schema+".decision_tenant_logins").Scan(&loginKindDefinition); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("original mapping login_kind CHECK: %s", loginKindDefinition)
-
 	// A same-name CHECK can retain every expected keyword while adding an
 	// unconditional TRUE branch. The read-only attestor must compare the
 	// complete predicate, not merely search for required substrings.
@@ -205,7 +194,6 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		`, target).Scan(&before); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("original mapping identity CHECK: %s", before)
 		if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DROP CONSTRAINT decision_tenant_logins_identity_ck"); err != nil {
 			t.Fatal(err)
 		}
@@ -219,16 +207,6 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 		)`); err != nil {
 			t.Fatal(err)
 		}
-		var weakened string
-		if err := admin.QueryRowContext(ctx, `
-			SELECT pg_catalog.pg_get_constraintdef(c.oid)
-			FROM pg_catalog.pg_constraint AS c
-			WHERE c.conrelid = pg_catalog.to_regclass($1)
-			  AND c.conname = 'decision_tenant_logins_identity_ck'
-		`, target).Scan(&weakened); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("weakened mapping identity CHECK: %s", weakened)
 		login := fmt.Sprintf("attest_bypass_%d", time.Now().UnixNano())
 		if _, err := admin.ExecContext(ctx, "INSERT INTO "+target+" (login_role, tenant_id, login_kind) VALUES ($1::name, NULL, 'application')", login); err != nil {
 			t.Fatalf("weakened CHECK did not demonstrate the expected bypass: %v", err)
