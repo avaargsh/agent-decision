@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	hypothesisEvaluationReportSchema = "sre.hypothesis-evaluation-report.v1"
+	hypothesisEvaluationReportSchema = "sre.hypothesis-evaluation-report.v2"
 	hypothesisEvaluationFixtureOnly = "SYNTHETIC_CONTRACT_FIXTURES_ONLY"
 )
 
@@ -28,6 +28,7 @@ type hypothesisEvaluationCase struct {
 	ExpectedStatus hypothesisStatus
 	ExpectedError error
 	ExpectedBindingsBound bool
+	ExpectedAbstentionReasons []hypothesisAbstentionReason
 }
 
 type hypothesisEvaluationCaseResult struct {
@@ -37,6 +38,7 @@ type hypothesisEvaluationCaseResult struct {
 	ActualStatus string `json:"actual_status"`
 	ExpectedErrorClass string `json:"expected_error_class,omitempty"`
 	ActualErrorClass string `json:"actual_error_class,omitempty"`
+	AbstentionReasons []hypothesisAbstentionReason `json:"abstention_reasons"`
 	Passed bool `json:"passed"`
 	EvidenceBindingChecked bool `json:"evidence_binding_checked"`
 	ExpectedBindingsBound bool `json:"expected_bindings_bound"`
@@ -56,6 +58,10 @@ type hypothesisEvaluationSplitSummary struct {
 	AcceptedCount int `json:"accepted_count"`
 	RejectedCount int `json:"rejected_count"`
 	AbstentionCount int `json:"abstention_count"`
+	AbstentionReasonCaseCount int `json:"abstention_reason_case_count"`
+	AbstentionReasonCaseMatches int `json:"abstention_reason_case_matches"`
+	AbstentionReasonAccuracyMeasured bool `json:"abstention_reason_accuracy_measured"`
+	AbstentionReasonAccuracyBasisPoints int `json:"abstention_reason_accuracy_basis_points"`
 }
 
 type hypothesisEvaluationReport struct {
@@ -97,6 +103,10 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 		}
 		seen[item.ID] = struct{}{}
 		if item.Split != hypothesisEvaluationGoldFixture && item.Split != hypothesisEvaluationHoldoutFixture {
+			return hypothesisEvaluationReport{}, ErrInvalidRequest
+		}
+		if !validHypothesisAbstentionReasons(item.ExpectedAbstentionReasons) ||
+			(item.ExpectedError != nil && len(item.ExpectedAbstentionReasons) != 0) {
 			return hypothesisEvaluationReport{}, ErrInvalidRequest
 		}
 		if len(item.Publications) == 0 && item.ExpectedBindingsBound {
@@ -145,8 +155,10 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 			item.Principal, item.Request, item.Publications, item.From, item.To, item.Now,
 		)
 		actualStatus := "REJECTED"
+		actualReasons := []hypothesisAbstentionReason{}
 		if evalErr == nil {
 			actualStatus = string(actual.Status)
+			actualReasons = append(actualReasons, actual.AbstentionReasons...)
 			report.AcceptedCount++
 		} else {
 			report.RejectedCount++
@@ -156,7 +168,16 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 		if item.ExpectedError != nil {
 			passed = errors.Is(evalErr, item.ExpectedError)
 		} else {
-			passed = evalErr == nil && actual.Status == item.ExpectedStatus
+			passed = evalErr == nil && actual.Status == item.ExpectedStatus &&
+				sameHypothesisAbstentionReasons(actualReasons, item.ExpectedAbstentionReasons)
+		}
+		if evalErr == nil {
+			report.AbstentionReasonCaseCount++
+			if sameHypothesisAbstentionReasons(actualReasons, item.ExpectedAbstentionReasons) {
+				report.AbstentionReasonCaseMatches++
+			} else {
+				passed = false
+			}
 		}
 
 		bindingChecked := len(item.Publications) > 0
@@ -200,6 +221,7 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 			ActualStatus: actualStatus,
 			ExpectedErrorClass: hypothesisEvaluationErrorClass(item.ExpectedError),
 			ActualErrorClass: hypothesisEvaluationErrorClass(evalErr),
+			AbstentionReasons: actualReasons,
 			Passed: passed,
 			EvidenceBindingChecked: bindingChecked,
 			ExpectedBindingsBound: item.ExpectedBindingsBound,
@@ -217,6 +239,10 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 	if report.EvidenceBindingCaseCount > 0 {
 		report.EvidenceBindingAccuracyMeasured = true
 		report.EvidenceBindingAccuracyBasisPoints = report.EvidenceBindingCaseMatches * 10000 / report.EvidenceBindingCaseCount
+	}
+	if report.AbstentionReasonCaseCount > 0 {
+		report.AbstentionReasonAccuracyMeasured = true
+		report.AbstentionReasonAccuracyBasisPoints = report.AbstentionReasonCaseMatches * 10000 / report.AbstentionReasonCaseCount
 	}
 	sort.Slice(report.Cases, func(i, j int) bool { return report.Cases[i].ID < report.Cases[j].ID })
 	return report, nil
