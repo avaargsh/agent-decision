@@ -459,7 +459,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 	requireDeniedOutbox(worker, a)
 	dispatcher := NewPostgresStore(worker)
 	claimed, err := dispatcher.Claim(ctx, "rls-worker", 10, time.Minute)
-	if err != nil || len(claimed) != 2 {
+	if err != nil || len(claimed) != 4 {
 		t.Fatalf("explicit cross-tenant dispatch: events=%d err=%v", len(claimed), err)
 	}
 	for _, event := range claimed {
