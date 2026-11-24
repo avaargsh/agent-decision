@@ -60,6 +60,13 @@ jobs:
           grep -Fq -- '--- PASS: TestIndependentEvidencePublicationBindsActualBytesAndSource ' "$RUNNER_TEMP/evidence-signature.log"
           go test -race -count=1 -v -run '^TestIndependentSourceRegistryLiveObservationAndRevocation$' ./internal/evidenceauthority | tee "$RUNNER_TEMP/evidence-source.log"
           grep -Fq -- '--- PASS: TestIndependentSourceRegistryLiveObservationAndRevocation ' "$RUNNER_TEMP/evidence-source.log"
+      # The Outbox catalog-restoration regression was historically intermittent.
+      # Repeat this PostgreSQL 16 integration scenario in CI; production code does not retry attestation.
+      - name: Repeat PostgreSQL Outbox catalog restoration regression
+        run: go test -race -count=20 -run '^TestPostgresOutboxClaimLeaseRetryAndAck        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+ ./internal/outbox
       - name: Test
         run: go test -race ./...
       - name: Vet
