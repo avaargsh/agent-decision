@@ -25,14 +25,14 @@ func validTenantPoolStoreConfig() TenantPoolStoreConfig {
 func TestNewTenantPoolStoreRejectsInvalidConfigurationBeforeOpeningPools(t *testing.T) {
 	open := func(calls *int) TenantPoolOpener {
 		return func(context.Context, PostgresLoginIdentity) (*sql.DB, error) {
-			*calls++
+			(*calls)++
 			return nil, nil
 		}
 	}
 	type testCase struct {
-		name   string
-		ctx    context.Context
-		config TenantPoolStoreConfig
+		name    string
+		ctx     context.Context
+		config  TenantPoolStoreConfig
 		nilOpen bool
 	}
 	cases := []testCase{

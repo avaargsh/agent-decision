@@ -78,7 +78,7 @@ func NewTenantPoolStore(ctx context.Context, config TenantPoolStoreConfig, open 
 	if err != nil {
 		return nil, err
 	}
-	return newTenantPoolRegistry(
+	registry, err := newTenantPoolRegistry(
 		ctx,
 		logins,
 		config.Schema,
@@ -92,6 +92,10 @@ func NewTenantPoolStore(ctx context.Context, config TenantPoolStoreConfig, open 
 			})
 		},
 	)
+	if err != nil {
+		return nil, err
+	}
+	return registry, nil
 }
 
 var _ TenantPoolStore = (*tenantPoolRegistry)(nil)
