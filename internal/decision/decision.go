@@ -407,10 +407,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 		return Record{}, false, ErrStoreUnavailable
 	}
 
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
+	fingerprint, err := requestFingerprint(principal, req)
+	if err != nil {
+		return Record{}, false, err
+	}
 
 	// An exact retry of a completed invocation returns its immutable historical
 	// result before current evidence freshness/attestation is re-evaluated.
@@ -459,10 +459,10 @@ func (s *Service) Decide(ctx context.Context, principal Principal, req Request) 
 // initial persistence and read-only revalidation. Callers must verify all
 // authority and validate the request first.
 func recordFromVerifiedRequest(principal Principal, req Request, strategy Strategy, createdAt time.Time) (Record, error) {
-	fingerprint := digest(struct {
-		Principal Principal
-		Request Request
-	}{principal, req})
+	fingerprint, err := requestFingerprint(principal, req)
+	if err != nil {
+		return Record{}, err
+	}
 	decisionID := "dec_" + digest(struct{ TenantID, InvocationID string }{principal.TenantID, req.InvocationID})
 	record := Record{
 		DecisionID: decisionID, TenantID: principal.TenantID, SubjectID: principal.SubjectID,
@@ -507,6 +507,20 @@ func findCapability(capabilities []CapabilityRef, id string) (CapabilityRef, boo
 func planHash(plan PlanCandidate) string {
 	plan.PlanHash = ""
 	return digest(plan)
+}
+
+// requestFingerprint preserves the existing encoding for valid requests but
+// refuses serialization failures before a ledger lookup or write.
+func requestFingerprint(principal Principal, req Request) (string, error) {
+	b, err := json.Marshal(struct {
+		Principal Principal
+		Request   Request
+	}{principal, req})
+	if err != nil {
+		return "", fmt.Errorf("%w: request cannot be serialized", ErrInvalidRequest)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func digest(value any) string {
