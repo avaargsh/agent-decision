@@ -72,7 +72,22 @@ jobs:
         run: go test -race -count=3 -run '^TestPostgresOutboxHandlerRestoreUnderSameSchemaDDL$' ./internal/outbox
       # Exercise the historical trigger restore path while unrelated same-schema DDL is active.
       - name: Repeat same-schema trigger restore and catalog DDL stress regression
-        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL$' ./internal/decision
+        run: go test -race -count=3 -run '^TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL      - name: Repeat PostgreSQL Decision and Outbox package suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+ ./internal/decision
+      # Reuse a warmed pgx backend after dropping/recreating the same schema name.
+      - name: Repeat catalog attestation after schema recreation
+        run: go test -race -count=3 -run '^TestCatalogAttestationRebindsAfterSchemaRecreation      - name: Repeat PostgreSQL Decision and Outbox package suites
+        run: go test -race -count=3 ./internal/decision ./internal/outbox
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+ ./internal/decision
       - name: Repeat PostgreSQL Decision and Outbox package suites
         run: go test -race -count=3 ./internal/decision ./internal/outbox
       - name: Test
