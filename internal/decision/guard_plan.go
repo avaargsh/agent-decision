@@ -37,6 +37,8 @@ type GuardPlanStepRequest struct {
 type GuardPlanStepReceipt struct {
 	SchemaVersion string `json:"schema_version"`
 	RunID         string `json:"run_id"`
+	RunAttemptID  string `json:"run_attempt_id"`
+	TurnID        string `json:"turn_id"`
 	DecisionID    string `json:"decision_id"`
 	PlanHash      string `json:"plan_hash"`
 	StepID        string `json:"step_id"`
@@ -113,6 +115,7 @@ func (a *LiveAuthority) VerifyGuardPlanStep(
 	s := fresh.Authority
 	if s.TenantID != tenant || s.RunID != request.RunID || s.AgentID != request.AgentID ||
 		s.AgentReleaseID != request.AgentReleaseID || s.SessionID != request.SessionID ||
+		s.AttemptID == "" || s.InvocationID == "" ||
 		s.BreakerState != "CLOSED" || s.Status != "RUNNING" ||
 		s.BreakerEpoch != request.BreakerEpoch || s.BreakerVersion != request.BreakerVersion ||
 		fresh.DecisionID != record.DecisionID || fresh.RecordSHA256 != digest(record) ||
@@ -121,6 +124,7 @@ func (a *LiveAuthority) VerifyGuardPlanStep(
 	}
 	return GuardPlanStepReceipt{
 		SchemaVersion: GuardPlanStepSchema, RunID: s.RunID,
+		RunAttemptID: s.AttemptID, TurnID: s.InvocationID,
 		DecisionID: record.DecisionID, PlanHash: record.Plan.PlanHash,
 		StepID: request.StepID, RecordSHA256: fresh.RecordSHA256,
 		BreakerEpoch: s.BreakerEpoch, BreakerVersion: s.BreakerVersion,
