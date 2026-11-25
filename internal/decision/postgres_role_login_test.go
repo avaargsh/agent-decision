@@ -115,7 +115,8 @@ func TestDatabaseRolesUseDistinctLoginCredentials(t *testing.T) {
 		pin PostgresLoginIdentity
 	}{
 		{"wrong database", attestor, PostgresLoginIdentity{Database: "wrong_database", RoleName: attestName, RoleOID: attestorOID}},
-		{"wrong OID", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: 0}},
+		{"missing OID", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: 0}},
+		{"wrong OID", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: attestorOID + 1}},
 		{"wrong name", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: appName, RoleOID: attestorOID}},
 		{"application pool", app, attestorPin},
 		{"dispatcher pool", worker, attestorPin},
