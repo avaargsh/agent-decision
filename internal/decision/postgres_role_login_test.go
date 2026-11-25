@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -97,6 +98,47 @@ func TestDatabaseRolesUseDistinctLoginCredentials(t *testing.T) {
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); err != nil { t.Fatal(err) }
 	if err := VerifyRuntimeDatabaseRole(ctx, worker, schema, RuntimeRoleDispatcher); err != nil { t.Fatal(err) }
 	if err := VerifyInstalledCatalogInSchema(ctx, attestor, schema); err != nil { t.Fatal(err) }
+
+	// The production-facing attestation boundary must prove the actual
+	// independent backend LOGIN and least privilege on the same transaction.
+	var attestorOID uint32
+	if err := admin.QueryRowContext(ctx, "SELECT oid FROM pg_catalog.pg_roles WHERE rolname = $1", attestName).Scan(&attestorOID); err != nil {
+		t.Fatal(err)
+	}
+	attestorPin := PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: attestorOID}
+	if err := VerifyBoundInstalledCatalogInSchema(ctx, attestor, schema, attestorPin); err != nil {
+		t.Fatalf("independent attestor rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		db *sql.DB
+		pin PostgresLoginIdentity
+	}{
+		{"wrong database", attestor, PostgresLoginIdentity{Database: "wrong_database", RoleName: attestName, RoleOID: attestorOID}},
+		{"missing OID", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: 0}},
+		{"wrong OID", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: attestName, RoleOID: attestorOID + 1}},
+		{"wrong name", attestor, PostgresLoginIdentity{Database: cfg.Database, RoleName: appName, RoleOID: attestorOID}},
+		{"application pool", app, attestorPin},
+		{"dispatcher pool", worker, attestorPin},
+		{"migration owner pool", admin, attestorPin},
+	} {
+		t.Run("bound attestor "+tc.name, func(t *testing.T) {
+			if err := VerifyBoundInstalledCatalogInSchema(ctx, tc.db, schema, tc.pin); !errors.Is(err, ErrCatalogDrift) {
+				t.Fatalf("unsafe attestation accepted or wrong error: %v", err)
+			}
+		})
+	}
+	t.Run("bound attestor effective grant drift", func(t *testing.T) {
+		run("GRANT SELECT (tenant_id) ON "+schema+".decision_records TO "+attestName)
+		defer run("REVOKE SELECT (tenant_id) ON "+schema+".decision_records FROM "+attestName)
+		if err := VerifyBoundInstalledCatalogInSchema(ctx, attestor, schema, attestorPin); !errors.Is(err, ErrCatalogDrift) {
+			t.Fatalf("overprivileged attestor accepted: %v", err)
+		}
+	})
+	if err := VerifyBoundInstalledCatalogInSchema(ctx, attestor, schema, attestorPin); err != nil {
+		t.Fatalf("attestor did not recover after grant removal: %v", err)
+	}
+
 	if err := MigrateInSchema(ctx, app, schema); err == nil { t.Fatal("application LOGIN unexpectedly has migrator DDL privileges") }
 	if err := VerifyInstalledCatalogInSchema(ctx, app, schema); err == nil { t.Fatal("app LOGIN unexpectedly has attestor migration history SELECT") }
 	if err := VerifyRuntimeDatabaseRole(ctx, attestor, schema, RuntimeRoleApplication); err == nil { t.Fatal("read-only attestor passed application role check") }
