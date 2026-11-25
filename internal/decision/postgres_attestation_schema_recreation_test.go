@@ -137,4 +137,38 @@ func TestCatalogAttestationRebindsAfterSchemaRecreation(t *testing.T) {
 	if err := VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
 		t.Fatalf("restored recreated schema rejected: %v", err)
 	}
+
+	// Repeat schema-name reuse on the same warmed backend to increase the
+	// chance of exposing stale relation OIDs across catalog invalidations.
+	for generation := 0; generation < 2; generation++ {
+		var previousOID uint32
+		if err := admin.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass($1)::oid", target).Scan(&previousOID); err != nil {
+			t.Fatalf("read mapping OID before recreation %d: %v", generation, err)
+		}
+		if _, err := admin.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Fatalf("drop schema generation %d: %v", generation, err)
+		}
+		if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+			t.Fatalf("recreate schema generation %d: %v", generation, err)
+		}
+		if err := MigrateInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("migrate schema generation %d on warmed connection: %v", generation, err)
+		}
+		var currentOID uint32
+		if err := admin.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass($1)::oid", target).Scan(&currentOID); err != nil {
+			t.Fatalf("read mapping OID after recreation %d: %v", generation, err)
+		}
+		if currentOID == previousOID {
+			t.Fatalf("schema generation %d retained relation OID %d", generation, currentOID)
+		}
+		if err := db.QueryRowContext(ctx, "SELECT pg_catalog.pg_backend_pid()").Scan(&reusedBackendPID); err != nil {
+			t.Fatal(err)
+		}
+		if reusedBackendPID != backendPID {
+			t.Fatalf("schema generation %d switched warmed backend: before=%d after=%d", generation, backendPID, reusedBackendPID)
+		}
+		if err := VerifyInstalledCatalogInSchema(ctx, db, schema); err != nil {
+			t.Fatalf("attest schema generation %d on warmed connection: %v", generation, err)
+		}
+	}
 }
