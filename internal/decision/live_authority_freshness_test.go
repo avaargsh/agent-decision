@@ -47,8 +47,16 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 		{"evidence expiry", 10 * time.Minute, time.Minute, 5 * time.Minute, time.Minute, true},
 		{"evidence max age", 10 * time.Minute, 10 * time.Minute, 2 * time.Minute, time.Minute + time.Second, true},
 		{"intermediate runtime drift", 10 * time.Minute, 10 * time.Minute, 5 * time.Minute, 0, true},
+		{"missing Runtime attempt", 10 * time.Minute, 10 * time.Minute, 5 * time.Minute, 0, true},
+		{"missing Runtime turn", 10 * time.Minute, 10 * time.Minute, 5 * time.Minute, 0, true},
+		{"mismatched Runtime turn", 10 * time.Minute, 10 * time.Minute, 5 * time.Minute, 0, true},
 	} {
 		drift := tc.name == "intermediate runtime drift"
+		missingRuntimeIdentity := tc.name == "missing Runtime attempt" ||
+			tc.name == "missing Runtime turn" || tc.name == "mismatched Runtime turn"
+		if missingRuntimeIdentity && !guard {
+			continue
+		}
 		if drift && !continuation {
 			continue
 		}
@@ -211,6 +219,27 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 				calls = 0
 				delayAt = 4 // before, build's two reads, after.
 				expectedCalls = 4
+				if missingRuntimeIdentity {
+					invalid := runtime
+					switch tc.name {
+					case "missing Runtime attempt":
+						invalid.AttemptID = ""
+					case "missing Runtime turn":
+						invalid.TurnID = ""
+					case "mismatched Runtime turn":
+						invalid.TurnID = "66666666-6666-4666-8666-666666666666"
+					}
+					transport := a.runtime.client.Transport
+					a.runtime.client.Transport = freshnessTransport(func(r *http.Request) (*http.Response, error) {
+						res, err := transport.RoundTrip(r)
+						if err == nil && calls == 1 {
+							_ = res.Body.Close()
+							res.Body = io.NopCloser(bytes.NewReader(marshal(invalid)))
+						}
+						return res, err
+					})
+					expectedCalls = 1
+				}
 				if drift {
 					// Simulate inconsistent authenticated Runtime observations:
 					// outer reads see version 1, both inner reads version 2.
@@ -246,6 +275,7 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 					}
 					if !tc.wantReject && err == nil &&
 						(receipt.Status != "VERIFIED" || receipt.DecisionID != record.DecisionID ||
+							receipt.RunAttemptID != runtime.AttemptID || receipt.TurnID != runtime.TurnID ||
 							receipt.StepID != step.StepID || receipt.PlanHash != record.Plan.PlanHash ||
 							receipt.RecordSHA256 != digest(record) ||
 							receipt.BreakerEpoch != runtime.BreakerEpoch ||
