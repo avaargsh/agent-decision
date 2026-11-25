@@ -126,6 +126,26 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return err
 	}
 
+	if err := verifyRuntimeRolePrivilegesTx(ctx, tx, schema, role); err != nil {
+		return err
+	}
+	if err := verifyRuntimeLoginKindTx(ctx, tx, string(role)); err != nil {
+		return err
+	}
+
+	// Explicitly reject schema owners via owner-membership check above.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)
+	}
+	return nil
+}
+
+
+// runtimeRoleAttestor is private: the independent read-only attestation path
+// audits its privileges within the catalog transaction, not as a runtime writer.
+const runtimeRoleAttestor RuntimeDatabaseRole = "attestor"
+
+func verifyRuntimeRolePrivilegesTx(ctx context.Context, tx *sql.Tx, schema string, role RuntimeDatabaseRole) error {
 	// Every table and column grant is checked. A table-wide UPDATE grant is
 	// detected because has_column_privilege covers its resulting effective
 	// column privileges. This also catches grants inherited from other roles.
@@ -140,13 +160,22 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 			{"decision_records", "all", "all", ""},
 			{"outbox_events", "", "all", ""},
 		}
-	} else {
+	} else if role == RuntimeRoleDispatcher {
 		policies = []policy{
 			{"schema_migrations", "", "", ""},
 			{"decision_tenant_logins", "all", "", ""},
 			{"decision_records", "", "", ""},
 			{"outbox_events", "all", "", "attempts,available_at,last_error_code,lease_owner,lease_until,published_at"},
 		}
+	} else if role == runtimeRoleAttestor {
+		policies = []policy{
+			{"schema_migrations", "all", "", ""},
+			{"decision_tenant_logins", "", "", ""},
+			{"decision_records", "", "", ""},
+			{"outbox_events", "", "", ""},
+		}
+	} else {
+		return fmt.Errorf("%w: unrecognized database role contract", ErrCatalogDrift)
 	}
 	for _, item := range policies {
 		var n int
@@ -346,17 +375,8 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: effective access to an unreviewed external schema object", ErrCatalogDrift)
 	}
 
-	if err := verifyRuntimeLoginKindTx(ctx, tx, string(role)); err != nil {
-		return err
-	}
-
-	// Explicitly reject schema owners via owner-membership check above.
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%w: complete runtime role privilege check: %v", ErrCatalogDrift, err)
-	}
 	return nil
 }
-
 
 // verifyRuntimeTransactionIdentity verifies the actual backend of tx, not
 // a separate pool checkout. The role/ownership checks are shared with the
