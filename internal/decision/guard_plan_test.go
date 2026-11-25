@@ -89,7 +89,7 @@ func TestGuardPlanStepReceiptCarriesRuntimeIdentitySelectorsOnly(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"run_id", "run_attempt_id", "turn_id", "decision_id", "plan_hash", "step_id", "breaker_epoch", "breaker_version"} {
+	for _, key := range []string{"schema_version", "run_id", "run_attempt_id", "turn_id", "decision_id", "plan_hash", "step_id", "record_sha256", "breaker_epoch", "breaker_version", "status"} {
 		if len(fields[key]) == 0 {
 			t.Fatalf("Guard receipt omitted %s: %s", key, raw)
 		}
