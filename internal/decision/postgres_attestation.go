@@ -19,6 +19,25 @@ import (
 // catalog after the check. Do not use as a substitute for restricted roles,
 // authenticated provenance or continuous audit.
 func VerifyInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema string) error {
+	return verifyInstalledCatalogInSchema(ctx, db, schema, nil)
+}
+
+// VerifyBoundInstalledCatalogInSchema is the deployment-facing read-only
+// attestation gate. The caller supplies an independently provisioned LOGIN
+// pin and a pool whose physical connections verify the intended PostgreSQL
+// server/cluster identity. Identity, effective ACLs and installed catalog
+// are checked on the same backend transaction. The legacy unbound function
+// remains available for catalog diagnostics, not production role evidence.
+func VerifyBoundInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema string, pin PostgresLoginIdentity) error {
+	if pin.Database == "" || pin.RoleName == "" || pin.RoleOID == 0 {
+		return fmt.Errorf("%w: incomplete attestor login binding", ErrCatalogDrift)
+	}
+	return verifyInstalledCatalogInSchema(ctx, db, schema, &runtimeLoginBinding{
+		Database: pin.Database, RoleName: pin.RoleName, RoleOID: pin.RoleOID,
+	})
+}
+
+func verifyInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema string, binding *runtimeLoginBinding) error {
 	if db == nil {
 		return ErrStoreUnavailable
 	}
@@ -31,15 +50,24 @@ func VerifyInstalledCatalogInSchema(ctx context.Context, db *sql.DB, schema stri
 	}
 	defer tx.Rollback()
 
-	// Set only transaction-local lookup behavior. Explicitly put pg_temp last
-	// to defeat temp-table shadowing; pg_catalog functions are qualified.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.set_config('search_path',
-		pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
-		return fmt.Errorf("%w: pin read-only attestation schema: %v", ErrCatalogDrift, err)
-	}
-	var selected string
-	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_schema()").Scan(&selected); err != nil || selected != schema {
-		return fmt.Errorf("%w: inaccessible or mismatched attestation schema %q", ErrCatalogDrift, schema)
+	if binding != nil {
+		if err := verifyRuntimeTransactionIdentity(ctx, tx, schema, binding); err != nil {
+			return err
+		}
+		if err := verifyRuntimeRolePrivilegesTx(ctx, tx, schema, runtimeRoleAttestor); err != nil {
+			return err
+		}
+	} else {
+		// Set only transaction-local lookup behavior. Explicitly put pg_temp last
+		// to defeat temp-table shadowing; pg_catalog functions are qualified.
+		if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.set_config('search_path',
+			pg_catalog.format('%I, pg_catalog, pg_temp', $1::text), true)`, schema); err != nil {
+			return fmt.Errorf("%w: pin read-only attestation schema: %v", ErrCatalogDrift, err)
+		}
+		var selected string
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_schema()").Scan(&selected); err != nil || selected != schema {
+			return fmt.Errorf("%w: inaccessible or mismatched attestation schema %q", ErrCatalogDrift, schema)
+		}
 	}
 
 	// All four approved migration versions must exist in a contiguous,
