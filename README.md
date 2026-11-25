@@ -41,6 +41,9 @@ go vet ./...
 go run ./cmd/agent-decision
 ```
 
+If port 8080 is occupied, run `go run ./cmd/agent-decision --port 8081`. Use
+`--port 0` to select a free port and read the loopback address from the startup log.
+
 PostgreSQL integration tests run when `DATABASE_URL` is set. The CI workflow provisions PostgreSQL 16 and exercises the migration, tenant-scoped idempotency, replay, conflict detection, and concurrent inserts.
 
 Ledger reads require a trusted principal and are scoped to the principal's tenant, agent, and session. Run listings use bounded cursor pagination with descending `(created_at, decision_id)` ordering.
