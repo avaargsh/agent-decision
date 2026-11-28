@@ -49,10 +49,10 @@ func TestTenantLoginRegistryRejectsAmbiguousConfiguration(t *testing.T) {
 	dispatcher := runtimeLoginBinding{Database: "decision", RoleName: "dispatcher", RoleOID: 103}
 	entry := tenantLoginEntry{TenantID: "tenant-a", Login: a}
 	for _, tc := range []struct {
-		name string
+		name       string
 		dispatcher runtimeLoginBinding
-		entries []tenantLoginEntry
-		limit int
+		entries    []tenantLoginEntry
+		limit      int
 	}{
 		{"empty", dispatcher, nil, 2},
 		{"zero_limit", dispatcher, []tenantLoginEntry{entry}, 0},

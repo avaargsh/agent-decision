@@ -26,11 +26,11 @@ type TenantPostgresLogin struct {
 // reserved to prevent an application tenant from reusing the dispatcher
 // identity; this constructor does not open or return a dispatcher pool.
 type TenantPoolStoreConfig struct {
-	Schema             string
-	DispatcherLogin    PostgresLoginIdentity
-	Tenants            []TenantPostgresLogin
-	MaxOpenPerTenant   int
-	MaxOpenTotal       int
+	Schema           string
+	DispatcherLogin  PostgresLoginIdentity
+	Tenants          []TenantPostgresLogin
+	MaxOpenPerTenant int
+	MaxOpenTotal     int
 }
 
 // TenantPoolOpener must return a fresh, exclusively owned *sql.DB for the

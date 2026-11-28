@@ -17,7 +17,7 @@ func TestVerifyCommittedProposalReconstructsFullRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		name string
+		name   string
 		mutate func(*Record)
 	}{
 		{"changed policy", func(r *Record) { r.StrategyVersion = "other" }},

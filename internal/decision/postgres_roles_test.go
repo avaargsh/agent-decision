@@ -24,7 +24,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	ctx := context.Background()
 	admin, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer admin.Close()
 	seed := fmt.Sprintf("%d", time.Now().UnixNano())
 	schema := "decision_roles_" + seed
@@ -36,7 +38,7 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 			t.Fatalf("%s: %v", sqlText, err)
 		}
 	}
-	exec("CREATE SCHEMA "+schema)
+	exec("CREATE SCHEMA " + schema)
 	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
 	// A separate schema may host unrelated, ordinary SECURITY INVOKER
 	// trigger callbacks. PUBLIC USAGE makes those routines visible to the
@@ -49,33 +51,37 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 	exec("GRANT USAGE ON SCHEMA " + externalSchema + " TO PUBLIC")
 	password := "ephemeral_role_gate_" + seed
-	exec("CREATE ROLE "+appRole+" LOGIN PASSWORD '"+password+"'")
-	exec("CREATE ROLE "+dispatcherRole+" LOGIN PASSWORD '"+password+"'")
+	exec("CREATE ROLE " + appRole + " LOGIN PASSWORD '" + password + "'")
+	exec("CREATE ROLE " + dispatcherRole + " LOGIN PASSWORD '" + password + "'")
 	defer func() {
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+appRole)
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+dispatcherRole)
 		_, _ = admin.ExecContext(context.Background(), "DROP ROLE "+appRole)
 		_, _ = admin.ExecContext(context.Background(), "DROP ROLE "+dispatcherRole)
 	}()
-	if err := MigrateInSchema(ctx, admin, schema); err != nil { t.Fatal(err) }
+	if err := MigrateInSchema(ctx, admin, schema); err != nil {
+		t.Fatal(err)
+	}
 	tenantID := "roles-tenant-" + seed
-	exec("GRANT USAGE ON SCHEMA "+schema+" TO "+appRole+", "+dispatcherRole)
-	exec("GRANT SELECT ON "+schema+".decision_tenant_logins TO "+appRole+", "+dispatcherRole)
+	exec("GRANT USAGE ON SCHEMA " + schema + " TO " + appRole + ", " + dispatcherRole)
+	exec("GRANT SELECT ON " + schema + ".decision_tenant_logins TO " + appRole + ", " + dispatcherRole)
 	if _, err := admin.ExecContext(ctx, "INSERT INTO "+schema+".decision_tenant_logins (login_role, tenant_id, login_kind) VALUES ($1, $2, 'application'), ($3, NULL, 'dispatcher')", appRole, tenantID, dispatcherRole); err != nil {
 		t.Fatalf("seed trusted LOGIN mapping: %v", err)
 	}
-	exec("GRANT SELECT, INSERT ON "+schema+".decision_records TO "+appRole)
-	exec("GRANT INSERT ON "+schema+".outbox_events TO "+appRole)
-	exec("GRANT SELECT ON "+schema+".outbox_events TO "+dispatcherRole)
-	exec("GRANT UPDATE (lease_owner, lease_until, attempts, available_at, published_at, last_error_code) ON "+
-		schema+".outbox_events TO "+dispatcherRole)
+	exec("GRANT SELECT, INSERT ON " + schema + ".decision_records TO " + appRole)
+	exec("GRANT INSERT ON " + schema + ".outbox_events TO " + appRole)
+	exec("GRANT SELECT ON " + schema + ".outbox_events TO " + dispatcherRole)
+	exec("GRANT UPDATE (lease_owner, lease_until, attempts, available_at, published_at, last_error_code) ON " +
+		schema + ".outbox_events TO " + dispatcherRole)
 
 	// Positive security acceptance must use actual PostgreSQL LOGIN roles,
 	// never a privileged session with SET SESSION AUTHORIZATION.
 	openRole := func(name string) *sql.DB {
 		t.Helper()
 		cfg, err := pgx.ParseConfig(dsn)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		cfg.User = name
 		cfg.Password = password
 		db := stdlib.OpenDB(*cfg)
@@ -95,7 +101,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// An elevated login that merely switches current_user is not a restricted
 	// login: SET ROLE NONE can restore its original privileges.
 	roleSwitched, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	roleSwitched.SetMaxOpenConns(1)
 	if _, err := roleSwitched.ExecContext(ctx, "SET ROLE "+appRole); err != nil {
 		roleSwitched.Close()
@@ -109,7 +117,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// A privileged originally authenticated login can reset session
 	// authorization even when current_user == session_user.
 	resettable, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	resettable.SetMaxOpenConns(1)
 	if _, err := resettable.ExecContext(ctx, "SET SESSION AUTHORIZATION "+appRole); err != nil {
 		resettable.Close()
@@ -126,7 +136,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	defer dispatcher.Close()
 	check := func(db *sql.DB, role RuntimeDatabaseRole) {
 		t.Helper()
-		if err := VerifyRuntimeDatabaseRole(ctx, db, schema, role); err != nil { t.Fatal(err) }
+		if err := VerifyRuntimeDatabaseRole(ctx, db, schema, role); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var publicTriggerCallbacks int
 	if err := admin.QueryRowContext(ctx, `
@@ -157,13 +169,13 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		name, ddl, signature string
 	}{
 		{
-			name: "external_invoker_routine",
-			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_invoker() RETURNS integer LANGUAGE sql SECURITY INVOKER AS 'SELECT 1'",
+			name:      "external_invoker_routine",
+			ddl:       "CREATE FUNCTION " + externalSchema + ".unreviewed_invoker() RETURNS integer LANGUAGE sql SECURITY INVOKER AS 'SELECT 1'",
 			signature: externalSchema + ".unreviewed_invoker()",
 		},
 		{
-			name: "external_definer_routine",
-			ddl: "CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
+			name:      "external_definer_routine",
+			ddl:       "CREATE FUNCTION " + externalSchema + ".unreviewed_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
 			signature: externalSchema + ".unreviewed_definer()",
 		},
 	} {
@@ -176,7 +188,7 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 			}
 			for _, identity := range []struct {
 				name string
-				db *sql.DB
+				db   *sql.DB
 				role RuntimeDatabaseRole
 			}{
 				{name: "application", db: app, role: RuntimeRoleApplication},
@@ -216,9 +228,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		}
 		for _, tc := range []struct {
 			name string
-			pin runtimeLoginBinding
+			pin  runtimeLoginBinding
 		}{
-			{"wrong_database", runtimeLoginBinding{Database: database+"_other", RoleName: appRole, RoleOID: appOID}},
+			{"wrong_database", runtimeLoginBinding{Database: database + "_other", RoleName: appRole, RoleOID: appOID}},
 			{"wrong_role_name", runtimeLoginBinding{Database: database, RoleName: dispatcherRole, RoleOID: appOID}},
 			{"wrong_role_oid", runtimeLoginBinding{Database: database, RoleName: appRole, RoleOID: dispatcherOID}},
 			{"wrong_identity", dispatcherPin},
@@ -232,8 +244,8 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 			})
 		}
 		// A valid pin must not bypass existing effective-ACL restrictions.
-		exec("GRANT SELECT ON "+schema+".outbox_events TO "+appRole)
-		defer exec("REVOKE SELECT ON "+schema+".outbox_events FROM "+appRole)
+		exec("GRANT SELECT ON " + schema + ".outbox_events TO " + appRole)
+		defer exec("REVOKE SELECT ON " + schema + ".outbox_events FROM " + appRole)
 		if err := verifyBoundRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication, pin); !errors.Is(err, ErrCatalogDrift) {
 			t.Fatalf("pinned login bypassed privilege check: %v", err)
 		}
@@ -245,13 +257,13 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// USAGE grant. This tests effective CREATE rather than existing ACLs.
 	t.Run("external_schema_create_denied", func(t *testing.T) {
 		external := "decision_create_" + seed
-		exec("CREATE SCHEMA "+external)
+		exec("CREATE SCHEMA " + external)
 		t.Cleanup(func() {
 			_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+external+" CASCADE")
 		})
 		for _, identity := range []struct {
 			name string
-			db *sql.DB
+			db   *sql.DB
 			role RuntimeDatabaseRole
 		}{
 			{appRole, app, RuntimeRoleApplication},
@@ -259,7 +271,7 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		} {
 			t.Run(string(identity.role), func(t *testing.T) {
 				check(identity.db, identity.role)
-				exec("GRANT CREATE ON SCHEMA "+external+" TO "+identity.name)
+				exec("GRANT CREATE ON SCHEMA " + external + " TO " + identity.name)
 				var create, usage bool
 				if err := identity.db.QueryRowContext(ctx,
 					"SELECT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE'), pg_catalog.has_schema_privilege(current_user, $1, 'USAGE')",
@@ -269,13 +281,13 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
 					t.Errorf("external CREATE without USAGE passed role audit: %v", err)
 				}
-				exec("GRANT USAGE ON SCHEMA "+external+" TO "+identity.name)
+				exec("GRANT USAGE ON SCHEMA " + external + " TO " + identity.name)
 				if err := VerifyRuntimeDatabaseRole(ctx, identity.db, schema, identity.role); !errors.Is(err, ErrCatalogDrift) {
 					t.Errorf("external CREATE with USAGE passed role audit: %v", err)
 				}
-				exec("REVOKE CREATE ON SCHEMA "+external+" FROM "+identity.name)
+				exec("REVOKE CREATE ON SCHEMA " + external + " FROM " + identity.name)
 				check(identity.db, identity.role)
-				exec("REVOKE USAGE ON SCHEMA "+external+" FROM "+identity.name)
+				exec("REVOKE USAGE ON SCHEMA " + external + " FROM " + identity.name)
 			})
 		}
 	})
@@ -296,7 +308,9 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 		} {
 			t.Run(string(identity.role)+"/"+unsafePath, func(t *testing.T) {
 				cfg, err := pgx.ParseConfig(dsn)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				cfg.User, cfg.Password = identity.name, password
 				cfg.RuntimeParams["search_path"] = unsafePath
 				wrongPool := stdlib.OpenDB(*cfg)
@@ -316,44 +330,44 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// Unknown objects must not grant runtime identities more data access
 	// than the exact three reviewed Decision tables, even when the normal
 	// table/column grant matrix still passes. Objects with no grants are OK.
-	exec("CREATE TABLE "+schema+".unreviewed_tenant_data (secret text)")
-	exec("CREATE VIEW "+schema+".unreviewed_tenant_view AS SELECT secret FROM "+schema+".unreviewed_tenant_data")
-	exec("CREATE SEQUENCE "+schema+".unreviewed_tenant_seq")
+	exec("CREATE TABLE " + schema + ".unreviewed_tenant_data (secret text)")
+	exec("CREATE VIEW " + schema + ".unreviewed_tenant_view AS SELECT secret FROM " + schema + ".unreviewed_tenant_data")
+	exec("CREATE SEQUENCE " + schema + ".unreviewed_tenant_seq")
 	check(app, RuntimeRoleApplication)
 	check(dispatcher, RuntimeRoleDispatcher)
 	for _, tc := range []struct {
 		name, grant, revoke string
-		db *sql.DB
-		role RuntimeDatabaseRole
+		db                  *sql.DB
+		role                RuntimeDatabaseRole
 	}{
 		{
 			"app reads extra table",
-			"GRANT SELECT ON "+schema+".unreviewed_tenant_data TO "+appRole,
-			"REVOKE SELECT ON "+schema+".unreviewed_tenant_data FROM "+appRole,
+			"GRANT SELECT ON " + schema + ".unreviewed_tenant_data TO " + appRole,
+			"REVOKE SELECT ON " + schema + ".unreviewed_tenant_data FROM " + appRole,
 			app, RuntimeRoleApplication,
 		},
 		{
 			"dispatcher inserts extra table",
-			"GRANT INSERT ON "+schema+".unreviewed_tenant_data TO "+dispatcherRole,
-			"REVOKE INSERT ON "+schema+".unreviewed_tenant_data FROM "+dispatcherRole,
+			"GRANT INSERT ON " + schema + ".unreviewed_tenant_data TO " + dispatcherRole,
+			"REVOKE INSERT ON " + schema + ".unreviewed_tenant_data FROM " + dispatcherRole,
 			dispatcher, RuntimeRoleDispatcher,
 		},
 		{
 			"app reads only extra table column",
-			"GRANT SELECT (secret) ON "+schema+".unreviewed_tenant_data TO "+appRole,
-			"REVOKE SELECT (secret) ON "+schema+".unreviewed_tenant_data FROM "+appRole,
+			"GRANT SELECT (secret) ON " + schema + ".unreviewed_tenant_data TO " + appRole,
+			"REVOKE SELECT (secret) ON " + schema + ".unreviewed_tenant_data FROM " + appRole,
 			app, RuntimeRoleApplication,
 		},
 		{
 			"dispatcher reads extra view",
-			"GRANT SELECT ON "+schema+".unreviewed_tenant_view TO "+dispatcherRole,
-			"REVOKE SELECT ON "+schema+".unreviewed_tenant_view FROM "+dispatcherRole,
+			"GRANT SELECT ON " + schema + ".unreviewed_tenant_view TO " + dispatcherRole,
+			"REVOKE SELECT ON " + schema + ".unreviewed_tenant_view FROM " + dispatcherRole,
 			dispatcher, RuntimeRoleDispatcher,
 		},
 		{
 			"app accesses extra sequence",
-			"GRANT USAGE ON SEQUENCE "+schema+".unreviewed_tenant_seq TO "+appRole,
-			"REVOKE USAGE ON SEQUENCE "+schema+".unreviewed_tenant_seq FROM "+appRole,
+			"GRANT USAGE ON SEQUENCE " + schema + ".unreviewed_tenant_seq TO " + appRole,
+			"REVOKE USAGE ON SEQUENCE " + schema + ".unreviewed_tenant_seq FROM " + appRole,
 			app, RuntimeRoleApplication,
 		},
 	} {
@@ -370,18 +384,18 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	// Exercise actual runtime SQL under the effective role rather than
 	// assuming the GRANT matrix is sufficient for SaveOrGet/Claim/Ack.
 	record := Record{
-		TenantID: tenantID,
-		InvocationID: "roles-invocation",
-		DecisionID: "dec_"+strings.Repeat("a", 64),
-		AgentID: "roles-agent",
-		SessionID: "roles-session",
-		RunID: "roles-run",
+		TenantID:      tenantID,
+		InvocationID:  "roles-invocation",
+		DecisionID:    "dec_" + strings.Repeat("a", 64),
+		AgentID:       "roles-agent",
+		SessionID:     "roles-session",
+		RunID:         "roles-run",
 		RequestSHA256: strings.Repeat("b", 64),
-		CreatedAt: time.Now().UTC(),
-		Status: StatusProposed,
-		ReasonCodes: []string{},
-		Evidence: []EvidenceRef{},
-		Plan: PlanCandidate{PlanID: "plan_roles", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		CreatedAt:     time.Now().UTC(),
+		Status:        StatusProposed,
+		ReasonCodes:   []string{},
+		Evidence:      []EvidenceRef{},
+		Plan:          PlanCandidate{PlanID: "plan_roles", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 	}
 	appStore := NewPostgresStore(app)
 	if _, created, err := appStore.SaveOrGet(ctx, record); err != nil || !created {
@@ -412,57 +426,57 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	}
 
 	// An application must not be allowed to steal/ack Outbox leases.
-	exec("GRANT UPDATE (lease_owner) ON "+schema+".outbox_events TO "+appRole)
+	exec("GRANT UPDATE (lease_owner) ON " + schema + ".outbox_events TO " + appRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("app accepted with Outbox lease UPDATE: %v", err)
 	}
-	exec("REVOKE UPDATE (lease_owner) ON "+schema+".outbox_events FROM "+appRole)
+	exec("REVOKE UPDATE (lease_owner) ON " + schema + ".outbox_events FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 
 	// The dispatcher must not be able to forge an Outbox event or read a
 	// DecisionRecord's immutable tenant payload.
-	exec("GRANT INSERT ON "+schema+".outbox_events TO "+dispatcherRole)
+	exec("GRANT INSERT ON " + schema + ".outbox_events TO " + dispatcherRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("dispatcher accepted with Outbox INSERT: %v", err)
 	}
-	exec("REVOKE INSERT ON "+schema+".outbox_events FROM "+dispatcherRole)
+	exec("REVOKE INSERT ON " + schema + ".outbox_events FROM " + dispatcherRole)
 	check(dispatcher, RuntimeRoleDispatcher)
-	exec("GRANT SELECT ON "+schema+".decision_records TO "+dispatcherRole)
+	exec("GRANT SELECT ON " + schema + ".decision_records TO " + dispatcherRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("dispatcher accepted with DecisionRecord SELECT: %v", err)
 	}
-	exec("REVOKE SELECT ON "+schema+".decision_records FROM "+dispatcherRole)
+	exec("REVOKE SELECT ON " + schema + ".decision_records FROM " + dispatcherRole)
 	check(dispatcher, RuntimeRoleDispatcher)
 
 	// Non-inheriting membership still allows SET ROLE and must fail closed.
-	exec("GRANT "+dispatcherRole+" TO "+appRole+" WITH INHERIT FALSE, SET TRUE")
+	exec("GRANT " + dispatcherRole + " TO " + appRole + " WITH INHERIT FALSE, SET TRUE")
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("application accepted SET ROLE access to dispatcher: %v", err)
 	}
-	exec("REVOKE "+dispatcherRole+" FROM "+appRole)
+	exec("REVOKE " + dispatcherRole + " FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 
 	// ADMIN TRUE can allow a role to re-grant itself SET TRUE later.
 	// The initial membership deliberately has no inherited/SET access.
-	exec("GRANT "+dispatcherRole+" TO "+appRole+" WITH INHERIT FALSE, SET FALSE, ADMIN TRUE")
+	exec("GRANT " + dispatcherRole + " TO " + appRole + " WITH INHERIT FALSE, SET FALSE, ADMIN TRUE")
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("application accepted ADMIN membership with SET FALSE: %v", err)
 	}
-	exec("REVOKE "+dispatcherRole+" FROM "+appRole)
+	exec("REVOKE " + dispatcherRole + " FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 
 	// REFERENCES may be granted on a single column without a table-wide ACL.
-	exec("GRANT REFERENCES (event_id) ON "+schema+".outbox_events TO "+appRole)
+	exec("GRANT REFERENCES (event_id) ON " + schema + ".outbox_events TO " + appRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("application accepted column REFERENCES grant: %v", err)
 	}
-	exec("REVOKE REFERENCES (event_id) ON "+schema+".outbox_events FROM "+appRole)
+	exec("REVOKE REFERENCES (event_id) ON " + schema + ".outbox_events FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 
 	// A SQL SECURITY DEFINER function owned by the migrator can expose rows
 	// even to the dispatcher, which has NO direct DecisionRecord SELECT grant.
 	// PostgreSQL grants EXECUTE to PUBLIC on new functions by default.
-	exec("CREATE FUNCTION "+schema+".unreviewed_tenant_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM "+schema+".decision_records'")
+	exec("CREATE FUNCTION " + schema + ".unreviewed_tenant_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM " + schema + ".decision_records'")
 	var leaked int64
 	if err := dispatcher.QueryRowContext(ctx, "SELECT "+schema+".unreviewed_tenant_count()").Scan(&leaked); err != nil || leaked < 1 {
 		t.Fatalf("test must demonstrate callable definer function leaking DecisionRecord row count: count=%d err=%v", leaked, err)
@@ -470,36 +484,36 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("dispatcher passed role audit while able to EXECUTE unreviewed SECURITY DEFINER function: %v", err)
 	}
-	exec("REVOKE EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() FROM PUBLIC")
+	exec("REVOKE EXECUTE ON FUNCTION " + schema + ".unreviewed_tenant_count() FROM PUBLIC")
 	check(dispatcher, RuntimeRoleDispatcher)
 
 	// Explicit direct EXECUTE grants must also be detected, not merely PUBLIC.
-	exec("GRANT EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() TO "+appRole)
+	exec("GRANT EXECUTE ON FUNCTION " + schema + ".unreviewed_tenant_count() TO " + appRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("app passed role audit with direct EXECUTE on unreviewed definer function: %v", err)
 	}
-	exec("REVOKE EXECUTE ON FUNCTION "+schema+".unreviewed_tenant_count() FROM "+appRole)
+	exec("REVOKE EXECUTE ON FUNCTION " + schema + ".unreviewed_tenant_count() FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 
 	// A same-name overload must not inherit the approved trigger-only
 	// function's exclusion from the effective privilege audit.
-	exec("CREATE FUNCTION "+schema+".reject_decision_record_mutation(integer) RETURNS integer LANGUAGE sql AS 'SELECT 1'")
+	exec("CREATE FUNCTION " + schema + ".reject_decision_record_mutation(integer) RETURNS integer LANGUAGE sql AS 'SELECT 1'")
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("app passed role audit with executable same-name overload: %v", err)
 	}
-	exec("REVOKE EXECUTE ON FUNCTION "+schema+".reject_decision_record_mutation(integer) FROM PUBLIC")
+	exec("REVOKE EXECUTE ON FUNCTION " + schema + ".reject_decision_record_mutation(integer) FROM PUBLIC")
 	check(app, RuntimeRoleApplication)
 
 	// A pinned search_path protects unqualified application SQL, but PostgreSQL
 	// also permits schema-qualified calls. A second accessible schema can carry
 	// a SECURITY DEFINER function callable by a restricted dispatcher identity.
 	foreign := "decision_foreign_" + seed
-	exec("CREATE SCHEMA "+foreign)
+	exec("CREATE SCHEMA " + foreign)
 	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+foreign+" CASCADE")
-	exec("CREATE FUNCTION "+foreign+".read_decision_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM "+schema+".decision_records'")
-	exec("CREATE TABLE "+foreign+".extra_rows (secret text)")
-	exec("CREATE SEQUENCE "+foreign+".extra_counter")
-	exec("GRANT USAGE ON SCHEMA "+foreign+" TO "+dispatcherRole)
+	exec("CREATE FUNCTION " + foreign + ".read_decision_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT count(*) FROM " + schema + ".decision_records'")
+	exec("CREATE TABLE " + foreign + ".extra_rows (secret text)")
+	exec("CREATE SEQUENCE " + foreign + ".extra_counter")
+	exec("GRANT USAGE ON SCHEMA " + foreign + " TO " + dispatcherRole)
 	var count int64
 	if err := dispatcher.QueryRowContext(ctx, "SELECT "+foreign+".read_decision_count()").Scan(&count); err != nil || count < 1 {
 		t.Fatalf("test must demonstrate qualified cross-schema SECURITY DEFINER read: count=%d err=%v", count, err)
@@ -507,26 +521,26 @@ func TestRuntimeDatabaseRolePrivileges(t *testing.T) {
 	if err := VerifyRuntimeDatabaseRole(ctx, dispatcher, schema, RuntimeRoleDispatcher); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("role audit accepted a cross-schema owner-privileged EXECUTE: %v", err)
 	}
-	exec("REVOKE USAGE ON SCHEMA "+foreign+" FROM "+dispatcherRole)
+	exec("REVOKE USAGE ON SCHEMA " + foreign + " FROM " + dispatcherRole)
 	check(dispatcher, RuntimeRoleDispatcher)
 	// Isolate subsequent relation/sequence cases from the default PUBLIC
 	// EXECUTE grant on the function created for the first negative case.
-	exec("REVOKE EXECUTE ON FUNCTION "+foreign+".read_decision_count() FROM PUBLIC")
+	exec("REVOKE EXECUTE ON FUNCTION " + foreign + ".read_decision_count() FROM PUBLIC")
 
 	// Direct SELECT on a foreign table is equally outside the reviewed ACL.
-	exec("GRANT USAGE ON SCHEMA "+foreign+" TO "+appRole)
-	exec("GRANT SELECT (secret) ON "+foreign+".extra_rows TO "+appRole)
+	exec("GRANT USAGE ON SCHEMA " + foreign + " TO " + appRole)
+	exec("GRANT SELECT (secret) ON " + foreign + ".extra_rows TO " + appRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("role audit accepted column-only SELECT in foreign schema: %v", err)
 	}
-	exec("REVOKE SELECT (secret) ON "+foreign+".extra_rows FROM "+appRole)
+	exec("REVOKE SELECT (secret) ON " + foreign + ".extra_rows FROM " + appRole)
 	check(app, RuntimeRoleApplication)
-	exec("GRANT USAGE ON SEQUENCE "+foreign+".extra_counter TO "+appRole)
+	exec("GRANT USAGE ON SEQUENCE " + foreign + ".extra_counter TO " + appRole)
 	if err := VerifyRuntimeDatabaseRole(ctx, app, schema, RuntimeRoleApplication); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("role audit accepted foreign sequence USAGE: %v", err)
 	}
-	exec("REVOKE USAGE ON SEQUENCE "+foreign+".extra_counter FROM "+appRole)
+	exec("REVOKE USAGE ON SEQUENCE " + foreign + ".extra_counter FROM " + appRole)
 	check(app, RuntimeRoleApplication)
-	exec("REVOKE USAGE ON SCHEMA "+foreign+" FROM "+appRole)
+	exec("REVOKE USAGE ON SCHEMA " + foreign + " FROM " + appRole)
 	check(app, RuntimeRoleApplication)
 }

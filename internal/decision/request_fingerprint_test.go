@@ -47,12 +47,11 @@ func TestDecisionRejectsUnencodableRequestFingerprint(t *testing.T) {
 	}
 }
 
-
 func TestDecisionRejectsLossyUTF8Fingerprint(t *testing.T) {
 	ctx := context.Background()
 	p := testPrincipal()
 	cases := []struct {
-		name string
+		name   string
 		mutate func(*Request, string)
 	}{
 		{"snapshot ref", func(r *Request, s string) { r.ContextSnapshot.ID = s }},

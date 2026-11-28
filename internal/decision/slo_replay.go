@@ -20,74 +20,74 @@ import (
 
 const (
 	maxSLOPolicyBytes = 64 * 1024
-	maxSLORawBytes = 2 * 1024 * 1024
+	maxSLORawBytes    = 2 * 1024 * 1024
 	maxSLOSampleCount = 1_000_000
-	maxSLOJSONDepth = 128
+	maxSLOJSONDepth   = 128
 )
 
 type SLOSampleClaim struct {
-	Phase string
-	SourceID string
-	QuerySHA256 string
-	WindowStart string
-	WindowEnd string
+	Phase         string
+	SourceID      string
+	QuerySHA256   string
+	WindowStart   string
+	WindowEnd     string
 	SamplesSHA256 string
-	SampleCount int
+	SampleCount   int
 }
 
 // SLOReplayInput carries externally supplied claims, not certified telemetry.
 // The owning AuthorityVerifier must separately authenticate the observer,
 // digest-bearing metadata and threshold policy before trusting their origin.
 type SLOReplayInput struct {
-	PolicyBytes []byte
+	PolicyBytes          []byte
 	ExpectedPolicySHA256 string
-	Claims []SLOSampleClaim
-	RawSamples [][]byte
+	Claims               []SLOSampleClaim
+	RawSamples           [][]byte
 }
 
 type SLOReplayPhaseReport struct {
-	Phase string `json:"phase"`
-	SampleCount int `json:"sample_count"`
-	MaxErrorRatio float64 `json:"max_error_ratio"`
+	Phase               string  `json:"phase"`
+	SampleCount         int     `json:"sample_count"`
+	MaxErrorRatio       float64 `json:"max_error_ratio"`
 	MaxSampleGapSeconds float64 `json:"max_sample_gap_seconds"`
 }
 
 type SLOReplayReport struct {
-	PolicySHA256 string `json:"policy_sha256"`
-	TotalSamples int `json:"total_samples"`
-	Phases []SLOReplayPhaseReport `json:"phases"`
-	HealthyClaimConsistent bool `json:"healthy_claim_consistent"`
-	SourceIndependentlyAuthenticated bool `json:"source_independently_authenticated"`
-	PolicyIndependentlyAuthenticated bool `json:"policy_independently_authenticated"`
-	ExternalExecutionVerified bool `json:"external_execution_verified"`
-	StagingAccepted bool `json:"staging_accepted"`
-	Authorized bool `json:"authorized"`
+	PolicySHA256                     string                 `json:"policy_sha256"`
+	TotalSamples                     int                    `json:"total_samples"`
+	Phases                           []SLOReplayPhaseReport `json:"phases"`
+	HealthyClaimConsistent           bool                   `json:"healthy_claim_consistent"`
+	SourceIndependentlyAuthenticated bool                   `json:"source_independently_authenticated"`
+	PolicyIndependentlyAuthenticated bool                   `json:"policy_independently_authenticated"`
+	ExternalExecutionVerified        bool                   `json:"external_execution_verified"`
+	StagingAccepted                  bool                   `json:"staging_accepted"`
+	Authorized                       bool                   `json:"authorized"`
 }
 
 type replayPolicy struct {
-	SchemaVersion string `json:"schema_version"`
-	Metric string `json:"metric"`
-	Aggregation string `json:"aggregation"`
-	SourceID string `json:"source_id"`
-	QuerySHA256 string `json:"query_sha256"`
-	MaxErrorRatio *float64 `json:"max_error_ratio"`
-	MaximumSampleGapSeconds *int `json:"maximum_sample_gap_seconds"`
-	MinimumSamplesPerPhase *int `json:"minimum_samples_per_phase"`
+	SchemaVersion           string   `json:"schema_version"`
+	Metric                  string   `json:"metric"`
+	Aggregation             string   `json:"aggregation"`
+	SourceID                string   `json:"source_id"`
+	QuerySHA256             string   `json:"query_sha256"`
+	MaxErrorRatio           *float64 `json:"max_error_ratio"`
+	MaximumSampleGapSeconds *int     `json:"maximum_sample_gap_seconds"`
+	MinimumSamplesPerPhase  *int     `json:"minimum_samples_per_phase"`
 }
 
 type replayRow struct {
-	At string `json:"at"`
+	At    string   `json:"at"`
 	Value *float64 `json:"value"`
 }
 
 type replayBundle struct {
-	SchemaVersion string `json:"schema_version"`
-	Phase string `json:"phase"`
-	SourceID string `json:"source_id"`
-	QuerySHA256 string `json:"query_sha256"`
-	WindowStart string `json:"window_start"`
-	WindowEnd string `json:"window_end"`
-	Samples []replayRow `json:"samples"`
+	SchemaVersion string      `json:"schema_version"`
+	Phase         string      `json:"phase"`
+	SourceID      string      `json:"source_id"`
+	QuerySHA256   string      `json:"query_sha256"`
+	WindowStart   string      `json:"window_start"`
+	WindowEnd     string      `json:"window_end"`
+	Samples       []replayRow `json:"samples"`
 }
 
 func replaySHA256(raw []byte) string {
@@ -96,9 +96,13 @@ func replaySHA256(raw []byte) string {
 }
 
 func replayDigestValid(s string) bool {
-	if len(s) != 64 { return false }
+	if len(s) != 64 {
+		return false
+	}
 	for _, b := range []byte(s) {
-		if (b < '0' || b > '9') && (b < 'a' || b > 'f') { return false }
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
+			return false
+		}
 	}
 	return true
 }
@@ -177,13 +181,14 @@ func decodeSLOStrict(raw []byte, output any) error {
 	}
 	typed := json.NewDecoder(bytes.NewReader(raw))
 	typed.DisallowUnknownFields()
-	if err := typed.Decode(output); err != nil { return fmt.Errorf("invalid SLO schema: %w", err) }
+	if err := typed.Decode(output); err != nil {
+		return fmt.Errorf("invalid SLO schema: %w", err)
+	}
 	if _, err := typed.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("invalid SLO JSON trailing token")
 	}
 	return nil
 }
-
 
 func verifySLOExactFieldNames(raw []byte, output any) error {
 	var object map[string]json.RawMessage
@@ -233,9 +238,13 @@ func verifySLOExactFieldNames(raw []byte, output any) error {
 }
 
 func replayTimestamp(s string) (time.Time, error) {
-	if s == "" { return time.Time{}, errors.New("missing SLO observation timestamp") }
+	if s == "" {
+		return time.Time{}, errors.New("missing SLO observation timestamp")
+	}
 	parsed, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil { return time.Time{}, fmt.Errorf("SLO timestamp must include timezone: %w", err) }
+	if err != nil {
+		return time.Time{}, fmt.Errorf("SLO timestamp must include timezone: %w", err)
+	}
 	return parsed.UTC(), nil
 }
 
@@ -291,7 +300,7 @@ func ReplaySLOHealth(input SLOReplayInput) (SLOReplayReport, error) {
 	}
 	report := SLOReplayReport{
 		PolicySHA256: input.ExpectedPolicySHA256,
-		Phases: make([]SLOReplayPhaseReport, 0, 2),
+		Phases:       make([]SLOReplayPhaseReport, 0, 2),
 	}
 	for i, phase := range []string{"observation_passed", "verified_recovered"} {
 		claim := claims[i]
@@ -319,10 +328,16 @@ func ReplaySLOHealth(input SLOReplayInput) (SLOReplayReport, error) {
 			return fail("sample count too small or mismatched")
 		}
 		from, err := replayTimestamp(claim.WindowStart)
-		if err != nil { return SLOReplayReport{}, err }
+		if err != nil {
+			return SLOReplayReport{}, err
+		}
 		to, err := replayTimestamp(claim.WindowEnd)
-		if err != nil { return SLOReplayReport{}, err }
-		if !to.After(from) { return fail("observation window must be positive") }
+		if err != nil {
+			return SLOReplayReport{}, err
+		}
+		if !to.After(from) {
+			return fail("observation window must be positive")
+		}
 		previous := time.Time{}
 		maxGap := 0.0
 		maxErrorRatio := 0.0
@@ -332,7 +347,9 @@ func ReplaySLOHealth(input SLOReplayInput) (SLOReplayReport, error) {
 				return fail("sample error ratio outside finite [0,1]")
 			}
 			t, err := replayTimestamp(row.At)
-			if err != nil { return SLOReplayReport{}, err }
+			if err != nil {
+				return SLOReplayReport{}, err
+			}
 			if t.Before(from) || t.After(to) || (j > 0 && !t.After(previous)) {
 				return fail("sample timestamps outside bound or not increasing")
 			}
@@ -341,9 +358,13 @@ func ReplaySLOHealth(input SLOReplayInput) (SLOReplayReport, error) {
 			}
 			if j > 0 {
 				gap := t.Sub(previous).Seconds()
-				if gap > maxGap { maxGap = gap }
+				if gap > maxGap {
+					maxGap = gap
+				}
 			}
-			if *row.Value > maxErrorRatio { maxErrorRatio = *row.Value }
+			if *row.Value > maxErrorRatio {
+				maxErrorRatio = *row.Value
+			}
 			previous = t
 		}
 		if !previous.Equal(to) || maxGap > float64(*policy.MaximumSampleGapSeconds) ||

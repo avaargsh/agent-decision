@@ -41,14 +41,14 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			},
 		},
 		{
-			name: "missing_deployment",
+			name:         "missing_deployment",
 			observations: []hypothesisObservation{symptom},
 			want: []hypothesisAbstentionReason{
 				hypothesisAbstentionMissingDeploymentObservation,
 			},
 		},
 		{
-			name: "unrelated_only",
+			name:         "unrelated_only",
 			observations: []hypothesisObservation{unrelated},
 			want: []hypothesisAbstentionReason{
 				hypothesisAbstentionMissingSymptomObservation,
@@ -57,7 +57,7 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			},
 		},
 		{
-			name: "conflicting_symptom",
+			name:         "conflicting_symptom",
 			observations: []hypothesisObservation{symptom, negativeSymptom},
 			want: []hypothesisAbstentionReason{
 				hypothesisAbstentionMissingDeploymentObservation,
@@ -65,7 +65,7 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			},
 		},
 		{
-			name: "conflicting_deployment",
+			name:         "conflicting_deployment",
 			observations: []hypothesisObservation{change, negativeChange},
 			want: []hypothesisAbstentionReason{
 				hypothesisAbstentionMissingSymptomObservation,
@@ -73,19 +73,19 @@ func TestDeploymentHypothesisAbstentionReasonTaxonomy(t *testing.T) {
 			},
 		},
 		{
-			name: "supported",
+			name:         "supported",
 			observations: []hypothesisObservation{symptom, change},
-			want: []hypothesisAbstentionReason{},
+			want:         []hypothesisAbstentionReason{},
 		},
 		{
-			name: "contradicted",
+			name:         "contradicted",
 			observations: []hypothesisObservation{symptom, noChange},
-			want: []hypothesisAbstentionReason{},
+			want:         []hypothesisAbstentionReason{},
 		},
 		{
-			name: "contradicted_with_missing_other_dimension",
+			name:         "contradicted_with_missing_other_dimension",
 			observations: []hypothesisObservation{negative},
-			want: []hypothesisAbstentionReason{},
+			want:         []hypothesisAbstentionReason{},
 		},
 	}
 

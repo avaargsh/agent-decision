@@ -7,7 +7,7 @@ import "testing"
 func TestCloneDeepCopiesPlanStepEvidenceBindings(t *testing.T) {
 	original := Record{
 		Plan: PlanCandidate{Steps: []PlanStep{{
-			StepID: "investigate",
+			StepID:       "investigate",
 			EvidenceRefs: []EvidenceBinding{{SourceID: "metrics-source", Ref: "sample-v1"}},
 		}}},
 	}

@@ -21,14 +21,14 @@ func TestCurrentRuntimeRejectsInvalidAuthoritySelectors(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	baseline := RuntimeDecisionAuthority{
 		SchemaVersion: "runtime.decision-authority.v1",
-		TenantID: "tenant-a",
-		RunID: run,
-		RunIntentID: "22222222-2222-4222-8222-222222222222",
-		ExecutionID: "33333333-3333-4333-8333-333333333333",
-		AttemptID: "44444444-4444-4444-8444-444444444444",
-		TurnID: turn, InvocationID: turn,
+		TenantID:      "tenant-a",
+		RunID:         run,
+		RunIntentID:   "22222222-2222-4222-8222-222222222222",
+		ExecutionID:   "33333333-3333-4333-8333-333333333333",
+		AttemptID:     "44444444-4444-4444-8444-444444444444",
+		TurnID:        turn, InvocationID: turn,
 		WorkflowID: "agent-run/v1/" + run,
-		AgentID: "agent-1", AgentReleaseID: "release-1",
+		AgentID:    "agent-1", AgentReleaseID: "release-1",
 		ProjectID: "project-1", SessionID: "session-1",
 		SubjectID: "runtime", ActorID: "runtime", PolicyRevision: "policy-1",
 		RequestDigest: digest, ConfigDigest: digest, InputDigest: digest,
@@ -36,7 +36,7 @@ func TestCurrentRuntimeRejectsInvalidAuthoritySelectors(t *testing.T) {
 		BreakerState: "CLOSED", BreakerEpoch: 1, BreakerVersion: 1,
 	}
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*RuntimeDecisionAuthority)
 	}{
 		{"canonical response", nil},

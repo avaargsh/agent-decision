@@ -16,11 +16,11 @@ func validTenantPoolStoreConfig() TenantPoolStoreConfig {
 		Tenants: []TenantPostgresLogin{
 			{
 				TenantID: "tenant-a",
-				Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_a", RoleOID: 101},
+				Login:    PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_a", RoleOID: 101},
 			},
 			{
 				TenantID: "tenant-b",
-				Login: PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_b", RoleOID: 102},
+				Login:    PostgresLoginIdentity{Database: "decision", RoleName: "decision_tenant_b", RoleOID: 102},
 			},
 		},
 		MaxOpenPerTenant: 2,

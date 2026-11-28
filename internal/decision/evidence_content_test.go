@@ -71,9 +71,9 @@ func TestVerifiedEvidencePublicationContent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		wire []byte
-		key ed25519.PublicKey
-		ref EvidenceRef
-		now time.Time
+		key  ed25519.PublicKey
+		ref  EvidenceRef
+		now  time.Time
 	}{
 		{"wrong_signer", wire, wrongKey, ref, now},
 		{"cross_run", wire, pub, wrongRef, now},

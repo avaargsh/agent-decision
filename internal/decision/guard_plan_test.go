@@ -20,19 +20,19 @@ func TestGuardPlanStepRejectsForgedOrUnsafeSubmission(t *testing.T) {
 	step := record.Plan.Steps[0]
 	good := GuardPlanStepRequest{
 		SchemaVersion: GuardPlanStepSchema,
-		RunID: record.RunID, AgentID: record.AgentID, AgentReleaseID: "release-1",
+		RunID:         record.RunID, AgentID: record.AgentID, AgentReleaseID: "release-1",
 		SessionID: record.SessionID, DecisionID: record.DecisionID,
 		PlanID: record.Plan.PlanID, PlanHash: record.Plan.PlanHash,
 		StepID: step.StepID, CapabilityID: step.Capability.ID,
 		CapabilityVersion: step.Capability.Version,
-		ResourceRef: step.TargetRef, Arguments: json.RawMessage("{}"),
+		ResourceRef:       step.TargetRef, Arguments: json.RawMessage("{}"),
 		BreakerEpoch: 1, BreakerVersion: 1,
 	}
 	if err := matchGuardPlanStep(record, good); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*GuardPlanStepRequest)
 	}{
 		{"different Run", func(r *GuardPlanStepRequest) { r.RunID = "other-run" }},

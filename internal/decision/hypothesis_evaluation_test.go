@@ -70,7 +70,7 @@ func evaluationReportCases(t *testing.T) []hypothesisEvaluationCase {
 			ID: "03-no-deployment", Split: hypothesisEvaluationGoldFixture,
 			Principal: fixture.principal, Request: noDeploymentRequest,
 			Publications: []signedHypothesisPublication{fixture.publications[0], noDeployment},
-			From: fixture.from, To: fixture.to, Now: fixture.now,
+			From:         fixture.from, To: fixture.to, Now: fixture.now,
 			ExpectedStatus: hypothesisContradicted, ExpectedBindingsBound: true, ExpectedAbstentionReasons: []hypothesisAbstentionReason{},
 		},
 		{
@@ -182,7 +182,6 @@ func TestHypothesisEvaluationReportDetectsIncorrectBindingExpectation(t *testing
 	}
 }
 
-
 func TestHypothesisEvaluationReportMarksUnmeasuredBindingAndSerializesFalse(t *testing.T) {
 	cases := evaluationReportCases(t)
 	cases = cases[5:6]
@@ -208,9 +207,9 @@ func TestHypothesisEvaluationReportMarksUnmeasuredBindingAndSerializesFalse(t *t
 func TestHypothesisEvaluationReportRejectsInvalidDataset(t *testing.T) {
 	valid := evaluationReportCases(t)
 	for _, tc := range []struct {
-		name string
+		name      string
 		datasetID string
-		cases []hypothesisEvaluationCase
+		cases     []hypothesisEvaluationCase
 	}{
 		{"empty_dataset_id", "", valid},
 		{"duplicate_case_id", "sre-deployment-correlation-v1", append(append([]hypothesisEvaluationCase{}, valid...), valid[0])},

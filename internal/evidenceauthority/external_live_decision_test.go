@@ -44,235 +44,386 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	required := func(name string) string {
 		t.Helper()
 		s := os.Getenv(name)
-		if s == "" { t.Fatalf("missing %s", name) }
+		if s == "" {
+			t.Fatalf("missing %s", name)
+		}
 		return s
 	}
 	read := func(name string) []byte {
 		t.Helper()
-		b,err:=os.ReadFile(required(name)); if err!=nil{t.Fatal(err)}; return b
+		b, err := os.ReadFile(required(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
 	}
-	ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	tenant,runID,invocation:=required("DECISION_LIVE_TENANT"),required("DECISION_LIVE_RUN"),required("DECISION_LIVE_INVOCATION")
-	agent:=required("DECISION_LIVE_AGENT")
-	pem:=read("DECISION_LIVE_ROOTS")
-	roots:=x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(pem){t.Fatal("missing trusted server roots")}
-	clientRoots:=x509.NewCertPool()
-	if !clientRoots.AppendCertsFromPEM(read("DECISION_LIVE_CLIENT_CA")){t.Fatal("missing Decision client CA")}
-	clientCert,err:=tls.LoadX509KeyPair(required("DECISION_LIVE_CLIENT_CERT"),required("DECISION_LIVE_CLIENT_KEY"))
-	if err!=nil{t.Fatal(err)}
-	acpKey:=ed25519.PublicKey(read("DECISION_LIVE_ACP_PUBLIC_KEY"))
+	tenant, runID, invocation := required("DECISION_LIVE_TENANT"), required("DECISION_LIVE_RUN"), required("DECISION_LIVE_INVOCATION")
+	agent := required("DECISION_LIVE_AGENT")
+	pem := read("DECISION_LIVE_ROOTS")
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		t.Fatal("missing trusted server roots")
+	}
+	clientRoots := x509.NewCertPool()
+	if !clientRoots.AppendCertsFromPEM(read("DECISION_LIVE_CLIENT_CA")) {
+		t.Fatal("missing Decision client CA")
+	}
+	clientCert, err := tls.LoadX509KeyPair(required("DECISION_LIVE_CLIENT_CERT"), required("DECISION_LIVE_CLIENT_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpKey := ed25519.PublicKey(read("DECISION_LIVE_ACP_PUBLIC_KEY"))
 	// A separate isolated CA issues the independent source server and
 	// Runtime-to-Decision test client certificates; it is not an ACP signer.
-	caPub,caKey,err:=ed25519.GenerateKey(rand.Reader)
-	if err!=nil{t.Fatal(err)}
-	now:=time.Now().UTC()
-	template:=&x509.Certificate{SerialNumber:big.NewInt(1),NotBefore:now.Add(-time.Hour),NotAfter:now.Add(time.Hour),
-		IsCA:true,BasicConstraintsValid:true,KeyUsage:x509.KeyUsageCertSign}
-	der,err:=x509.CreateCertificate(rand.Reader,template,template,caPub,caKey)
-	if err!=nil{t.Fatal(err)}
-	ca,err:=x509.ParseCertificate(der)
-	if err!=nil{t.Fatal(err)}
+	caPub, caKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, caPub, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
 	roots.AddCert(ca)
-	inboundRoots:=x509.NewCertPool()
+	inboundRoots := x509.NewCertPool()
 	inboundRoots.AddCert(ca)
-	serial:=int64(2)
-	issue:=func(id string,server bool)tls.Certificate{
+	serial := int64(2)
+	issue := func(id string, server bool) tls.Certificate {
 		t.Helper()
-		pub,key,err:=ed25519.GenerateKey(rand.Reader);if err!=nil{t.Fatal(err)}
-		uri,err:=url.Parse(id);if err!=nil{t.Fatal(err)}
-		leaf:=&x509.Certificate{SerialNumber:big.NewInt(serial),NotBefore:now.Add(-time.Hour),NotAfter:now.Add(time.Hour),
-			KeyUsage:x509.KeyUsageDigitalSignature,ExtKeyUsage:[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},URIs:[]*url.URL{uri}}
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uri, err := url.Parse(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf := &x509.Certificate{SerialNumber: big.NewInt(serial), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, URIs: []*url.URL{uri}}
 		serial++
-		if server{leaf.ExtKeyUsage=[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth};leaf.IPAddresses=[]net.IP{net.ParseIP("127.0.0.1")}}
-		b,err:=x509.CreateCertificate(rand.Reader,leaf,ca,pub,caKey);if err!=nil{t.Fatal(err)}
-		return tls.Certificate{Certificate:[][]byte{b,der},PrivateKey:key}
+		if server {
+			leaf.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+			leaf.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		}
+		b, err := x509.CreateCertificate(rand.Reader, leaf, ca, pub, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tls.Certificate{Certificate: [][]byte{b, der}, PrivateKey: key}
 	}
-	listen:=func(h http.Handler,id string,clients *x509.CertPool)*httptest.Server{
+	listen := func(h http.Handler, id string, clients *x509.CertPool) *httptest.Server {
 		t.Helper()
-		s:=httptest.NewUnstartedServer(h)
-		s.TLS=&tls.Config{MinVersion:tls.VersionTLS13,ClientAuth:tls.RequireAndVerifyClientCert,ClientCAs:clients,Certificates:[]tls.Certificate{issue(id,true)}}
-		s.StartTLS();t.Cleanup(s.Close);return s
+		s := httptest.NewUnstartedServer(h)
+		s.TLS = &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clients, Certificates: []tls.Certificate{issue(id, true)}}
+		s.StartTLS()
+		t.Cleanup(s.Close)
+		return s
 	}
-	dsn:=required("DECISION_LIVE_DATABASE_URL")
-	admin,err:=sql.Open("pgx",dsn);if err!=nil{t.Fatal(err)}
-	t.Cleanup(func(){_ = admin.Close()})
-	sqlRun:=func(q string){
+	dsn := required("DECISION_LIVE_DATABASE_URL")
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+	sqlRun := func(q string) {
 		t.Helper()
-		if _,err:=admin.ExecContext(ctx,q);err!=nil{t.Fatalf("isolated database provisioning: %v",err)}
+		if _, err := admin.ExecContext(ctx, q); err != nil {
+			t.Fatalf("isolated database provisioning: %v", err)
+		}
 	}
-	base,err:=pgx.ParseConfig(dsn);if err!=nil{t.Fatal(err)}
-	seed:=fmt.Sprintf("%d",time.Now().UnixNano())
-	newSchema:=func(prefix string)string{
-		schema:=prefix+"_"+seed;sqlRun("CREATE SCHEMA "+schema)
-		t.Cleanup(func(){if _,err:=admin.Exec("DROP SCHEMA "+schema+" CASCADE");err!=nil{t.Error("schema cleanup failed")}})
+	base, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := fmt.Sprintf("%d", time.Now().UnixNano())
+	newSchema := func(prefix string) string {
+		schema := prefix + "_" + seed
+		sqlRun("CREATE SCHEMA " + schema)
+		t.Cleanup(func() {
+			if _, err := admin.Exec("DROP SCHEMA " + schema + " CASCADE"); err != nil {
+				t.Error("schema cleanup failed")
+			}
+		})
 		return schema
 	}
-	login:=func(schema,kind string,grants []string)*sql.DB{
+	login := func(schema, kind string, grants []string) *sql.DB {
 		t.Helper()
 		var random [16]byte
-		if _,err:=rand.Read(random[:]);err!=nil{t.Fatal(err)}
-		password:=hex.EncodeToString(random[:]);name:="live_"+kind+"_"+password[:16]
-		sqlRun("CREATE ROLE "+name+" LOGIN PASSWORD '"+password+"'")
-		t.Cleanup(func(){
-			if _,err:=admin.Exec("DROP OWNED BY "+name);err!=nil{t.Error("role grant cleanup failed")}
-			if _,err:=admin.Exec("DROP ROLE "+name);err!=nil{t.Error("role cleanup failed")}
+		if _, err := rand.Read(random[:]); err != nil {
+			t.Fatal(err)
+		}
+		password := hex.EncodeToString(random[:])
+		name := "live_" + kind + "_" + password[:16]
+		sqlRun("CREATE ROLE " + name + " LOGIN PASSWORD '" + password + "'")
+		t.Cleanup(func() {
+			if _, err := admin.Exec("DROP OWNED BY " + name); err != nil {
+				t.Error("role grant cleanup failed")
+			}
+			if _, err := admin.Exec("DROP ROLE " + name); err != nil {
+				t.Error("role cleanup failed")
+			}
 		})
-		sqlRun("GRANT USAGE ON SCHEMA "+schema+" TO "+name)
-		for _,g:=range grants{sqlRun("GRANT "+g+" TO "+name)}
-		cfg:=base.Copy();cfg.User=name;cfg.Password=password;cfg.RuntimeParams["search_path"]=schema+", pg_catalog, pg_temp"
-		db:=stdlib.OpenDB(*cfg);t.Cleanup(func(){_ = db.Close()})
-		if err:=db.PingContext(ctx);err!=nil{t.Fatal("independent database LOGIN unavailable")}
+		sqlRun("GRANT USAGE ON SCHEMA " + schema + " TO " + name)
+		for _, g := range grants {
+			sqlRun("GRANT " + g + " TO " + name)
+		}
+		cfg := base.Copy()
+		cfg.User = name
+		cfg.Password = password
+		cfg.RuntimeParams["search_path"] = schema + ", pg_catalog, pg_temp"
+		db := stdlib.OpenDB(*cfg)
+		t.Cleanup(func() { _ = db.Close() })
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatal("independent database LOGIN unavailable")
+		}
 		return db
 	}
 	// Real HTTP faults plus an actual configuration change. The observed
 	// counter/log/config bytes come from network reads of this service.
 	var mu sync.Mutex
-	failures,version:=0,1
+	failures, version := 0, 1
 	var log bytes.Buffer
-	changed:=[]byte{}
-	mux:=http.NewServeMux()
-	mux.HandleFunc("/checkout",func(w http.ResponseWriter,_ *http.Request){
-		mu.Lock();failures++;fmt.Fprintf(&log,"checkout status=500 version=%d\n",version);mu.Unlock()
-		http.Error(w,"isolated failure",500)
+	changed := []byte{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/checkout", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		failures++
+		fmt.Fprintf(&log, "checkout status=500 version=%d\n", version)
+		mu.Unlock()
+		http.Error(w, "isolated failure", 500)
 	})
-	mux.HandleFunc("/change",func(w http.ResponseWriter,r *http.Request){
-		mu.Lock();defer mu.Unlock()
-		if r.Method==http.MethodPost{before:=version;version++;changed=[]byte(fmt.Sprintf("version %d -> %d\n",before,version))}
-		_,_=w.Write(changed)
+	mux.HandleFunc("/change", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost {
+			before := version
+			version++
+			changed = []byte(fmt.Sprintf("version %d -> %d\n", before, version))
+		}
+		_, _ = w.Write(changed)
 	})
-	mux.HandleFunc("/logs",func(w http.ResponseWriter,_ *http.Request){mu.Lock();defer mu.Unlock();_,_=w.Write(log.Bytes())})
-	mux.HandleFunc("/metrics",func(w http.ResponseWriter,_ *http.Request){mu.Lock();defer mu.Unlock();fmt.Fprintf(w,"http_requests_failed_total %d\n",failures)})
-	service:=httptest.NewServer(mux);defer service.Close()
-	started:=time.Now().UTC()
-	pulse:=func(method,path string,want int)[]byte{
+	mux.HandleFunc("/logs", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = w.Write(log.Bytes())
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintf(w, "http_requests_failed_total %d\n", failures)
+	})
+	service := httptest.NewServer(mux)
+	defer service.Close()
+	started := time.Now().UTC()
+	pulse := func(method, path string, want int) []byte {
 		t.Helper()
-		req,err:=http.NewRequestWithContext(ctx,method,service.URL+path,nil);if err!=nil{t.Fatal(err)}
-		res,err:=service.Client().Do(req);if err!=nil{t.Fatal(err)}
+		req, err := http.NewRequestWithContext(ctx, method, service.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := service.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer res.Body.Close()
-		b,err:=io.ReadAll(res.Body);if err!=nil||res.StatusCode!=want{t.Fatalf("source observation failed %v",err)}
+		b, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != want {
+			t.Fatalf("source observation failed %v", err)
+		}
 		return b
 	}
-	pulse("POST","/change",200)
-	for i:=0;i<3;i++{pulse("GET","/checkout",500)}
-	content:=map[string][]byte{"metrics":pulse("GET","/metrics",200),"logs":pulse("GET","/logs",200),"change":pulse("GET","/change",200)}
-	if string(content["metrics"])!="http_requests_failed_total 3\n" ||
-		strings.Count(string(content["logs"]),"checkout status=500 version=2")!=3 || string(content["change"])!="version 1 -> 2\n"{
+	pulse("POST", "/change", 200)
+	for i := 0; i < 3; i++ {
+		pulse("GET", "/checkout", 500)
+	}
+	content := map[string][]byte{"metrics": pulse("GET", "/metrics", 200), "logs": pulse("GET", "/logs", 200), "change": pulse("GET", "/change", 200)}
+	if string(content["metrics"]) != "http_requests_failed_total 3\n" ||
+		strings.Count(string(content["logs"]), "checkout status=500 version=2") != 3 || string(content["change"]) != "version 1 -> 2\n" {
 		t.Fatal("actual source controls did not observe the requested service behavior")
 	}
-	cfg:=decision.LiveAuthorityConfig{
-		TenantID:tenant,Runtime:decision.AuthorityEndpoint{Origin:required("DECISION_LIVE_RUNTIME_ORIGIN"),SPIFFEID:"spiffe://example.org/runtime-decision"},
-		ACP:decision.AuthorityEndpoint{Origin:required("DECISION_LIVE_ACP_ORIGIN"),SPIFFEID:"spiffe://example.org/acp"},
-		ACPKey:acpKey,TLS:decision.AuthorityTLS{Roots:roots,Certificate:clientCert},
+	cfg := decision.LiveAuthorityConfig{
+		TenantID: tenant, Runtime: decision.AuthorityEndpoint{Origin: required("DECISION_LIVE_RUNTIME_ORIGIN"), SPIFFEID: "spiffe://example.org/runtime-decision"},
+		ACP:    decision.AuthorityEndpoint{Origin: required("DECISION_LIVE_ACP_ORIGIN"), SPIFFEID: "spiffe://example.org/acp"},
+		ACPKey: acpKey, TLS: decision.AuthorityTLS{Roots: roots, Certificate: clientCert},
 	}
 	var refs []decision.EvidenceRef
 	var revoke func()
-	for _,kind:=range []string{"metrics","logs","change"}{
-		schema:=newSchema("source_"+kind)
-		if err:=Install(ctx,admin,schema);err!=nil{t.Fatal(err)}
-		readGrants:=[]string{"SELECT ON "+schema+".evidence_publications,"+schema+".evidence_revocations"}
-		readerDB:=login(schema,"source_reader",readGrants)
-		pubDB:=login(schema,"source_pub",append(append([]string{},readGrants...),"INSERT ON "+schema+".evidence_publications"))
-		revDB:=login(schema,"source_revoke",append(append([]string{},readGrants...),"INSERT ON "+schema+".evidence_revocations"))
-		pub,key,err:=ed25519.GenerateKey(rand.Reader);if err!=nil{t.Fatal(err)}
-		scope:=decision.EvidenceSourceScope{TenantID:tenant,AgentID:agent,RunID:runID,Service:"payments",ResourceRef:"service:payments",
-			SourceID:"live-"+kind,Source:"isolated-"+kind,SourceVersion:"1.0.0",EvidenceType:kind,SchemaVersion:"1.0.0",MaxAge:time.Hour,MaxLifetime:time.Hour}
-		collected:=time.Now().UTC()
-		ref,proof,err:=decision.PublishEvidence(scope,decision.EvidenceObservation{Ref:"actual-"+kind,ObservedFrom:started,ObservedTo:collected,
-			ObservedAt:collected,CollectedAt:collected,ExpiresAt:collected.Add(10*time.Minute)},content[kind],key,collected)
-		if err!=nil{t.Fatal(err)}
-		publisher,err:=New(pubDB,schema,scope,pub);if err!=nil{t.Fatal(err)}
-		if err:=publisher.Publish(ctx,ref,proof,collected);err!=nil{t.Fatal(err)}
-		reader,err:=New(readerDB,schema,scope,pub);if err!=nil{t.Fatal(err)}
-		h,err:=NewReadHandler(reader,"spiffe://example.org/decision");if err!=nil{t.Fatal(err)}
-		id:="spiffe://evidence.example/"+kind
-		source:=listen(h,id,clientRoots)
-		cfg.Evidence=append(cfg.Evidence,decision.EvidenceAuthorityPin{Endpoint:decision.AuthorityEndpoint{Origin:source.URL,SPIFFEID:id},Scope:scope,PublicKey:pub})
-		refs=append(refs,ref)
-		if kind=="metrics"{
-			revoker,err:=New(revDB,schema,scope,pub);if err!=nil{t.Fatal(err)}
-			revoke=func(){if err:=revoker.Revoke(ctx,ref,"SOURCE_REVOKED");err!=nil{t.Fatal(err)}}
+	for _, kind := range []string{"metrics", "logs", "change"} {
+		schema := newSchema("source_" + kind)
+		if err := Install(ctx, admin, schema); err != nil {
+			t.Fatal(err)
+		}
+		readGrants := []string{"SELECT ON " + schema + ".evidence_publications," + schema + ".evidence_revocations"}
+		readerDB := login(schema, "source_reader", readGrants)
+		pubDB := login(schema, "source_pub", append(append([]string{}, readGrants...), "INSERT ON "+schema+".evidence_publications"))
+		revDB := login(schema, "source_revoke", append(append([]string{}, readGrants...), "INSERT ON "+schema+".evidence_revocations"))
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := decision.EvidenceSourceScope{TenantID: tenant, AgentID: agent, RunID: runID, Service: "payments", ResourceRef: "service:payments",
+			SourceID: "live-" + kind, Source: "isolated-" + kind, SourceVersion: "1.0.0", EvidenceType: kind, SchemaVersion: "1.0.0", MaxAge: time.Hour, MaxLifetime: time.Hour}
+		collected := time.Now().UTC()
+		ref, proof, err := decision.PublishEvidence(scope, decision.EvidenceObservation{Ref: "actual-" + kind, ObservedFrom: started, ObservedTo: collected,
+			ObservedAt: collected, CollectedAt: collected, ExpiresAt: collected.Add(10 * time.Minute)}, content[kind], key, collected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publisher, err := New(pubDB, schema, scope, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := publisher.Publish(ctx, ref, proof, collected); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := New(readerDB, schema, scope, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := NewReadHandler(reader, "spiffe://example.org/decision")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := "spiffe://evidence.example/" + kind
+		source := listen(h, id, clientRoots)
+		cfg.Evidence = append(cfg.Evidence, decision.EvidenceAuthorityPin{Endpoint: decision.AuthorityEndpoint{Origin: source.URL, SPIFFEID: id}, Scope: scope, PublicKey: pub})
+		refs = append(refs, ref)
+		if kind == "metrics" {
+			revoker, err := New(revDB, schema, scope, pub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revoke = func() {
+				if err := revoker.Revoke(ctx, ref, "SOURCE_REVOKED"); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
-	schema:=newSchema("live_decision")
-	if err:=decision.MigrateInSchema(ctx,admin,schema);err!=nil{t.Fatal(err)}
-	app:=login(schema,"decision_app",[]string{"SELECT, INSERT ON "+schema+".decision_records","INSERT ON "+schema+".outbox_events"})
-	att:=login(schema,"decision_attest",[]string{"SELECT ON "+schema+".schema_migrations"})
-	if err:=decision.VerifyRuntimeDatabaseRole(ctx,app,schema,decision.RuntimeRoleApplication);err!=nil{t.Fatal(err)}
-	authority,err:=decision.NewLiveAuthority(cfg);if err!=nil{t.Fatal(err)}
-	store:=decision.NewPostgresStore(app)
-	const runtimeCaller="spiffe://example.org/runtime-worker"
-	handler,err:=api.NewTrustedTurnHandler(store,authority,runtimeCaller,func(ctx context.Context)error{
-		return decision.VerifyInstalledCatalogInSchema(ctx,att,schema)
-	})
-	if err!=nil{t.Fatal(err)}
-	server:=listen(handler,"spiffe://example.org/decision-api",inboundRoots)
-	makeClient:=func(id string)*http.Client{
-		h:=&http.Client{Timeout:40*time.Second,Transport:&http.Transport{TLSClientConfig:&tls.Config{MinVersion:tls.VersionTLS13,RootCAs:inboundRoots,
-			Certificates:[]tls.Certificate{issue(id,false)}}}}
-		t.Cleanup(h.CloseIdleConnections);return h
+	schema := newSchema("live_decision")
+	if err := decision.MigrateInSchema(ctx, admin, schema); err != nil {
+		t.Fatal(err)
 	}
-	runtime:=makeClient(runtimeCaller)
-	request:=api.TurnRequest{RunID:runID,InvocationID:invocation,Evidence:refs}
-	call:=func(client *http.Client,method,path string,value any,want int)[]byte{
+	app := login(schema, "decision_app", []string{"SELECT, INSERT ON " + schema + ".decision_records", "INSERT ON " + schema + ".outbox_events"})
+	att := login(schema, "decision_attest", []string{"SELECT ON " + schema + ".schema_migrations"})
+	if err := decision.VerifyRuntimeDatabaseRole(ctx, app, schema, decision.RuntimeRoleApplication); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := decision.NewLiveAuthority(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := decision.NewPostgresStore(app)
+	const runtimeCaller = "spiffe://example.org/runtime-worker"
+	handler, err := api.NewTrustedTurnHandler(store, authority, runtimeCaller, func(ctx context.Context) error {
+		return decision.VerifyInstalledCatalogInSchema(ctx, att, schema)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := listen(handler, "spiffe://example.org/decision-api", inboundRoots)
+	makeClient := func(id string) *http.Client {
+		h := &http.Client{Timeout: 40 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: inboundRoots,
+			Certificates: []tls.Certificate{issue(id, false)}}}}
+		t.Cleanup(h.CloseIdleConnections)
+		return h
+	}
+	runtime := makeClient(runtimeCaller)
+	request := api.TurnRequest{RunID: runID, InvocationID: invocation, Evidence: refs}
+	call := func(client *http.Client, method, path string, value any, want int) []byte {
 		t.Helper()
-		var b []byte;var err error
-		if value!=nil{b,err=json.Marshal(value);if err!=nil{t.Fatal(err)}}
-		req,err:=http.NewRequestWithContext(ctx,method,server.URL+path,bytes.NewReader(b));if err!=nil{t.Fatal(err)}
-		req.Header.Set("Content-Type","application/json")
-		req.Header.Set("X-Forwarded-Client-Cert",runtimeCaller)
-		res,err:=client.Do(req);if err!=nil{t.Fatal(err)}
+		var b []byte
+		var err error
+		if value != nil {
+			b, err = json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, method, server.URL+path, bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-Client-Cert", runtimeCaller)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer res.Body.Close()
-		raw,err:=io.ReadAll(res.Body);if err!=nil||res.StatusCode!=want{t.Fatalf("actual Decision endpoint %d want %d: %s %v",res.StatusCode,want,raw,err)}
+		raw, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != want {
+			t.Fatalf("actual Decision endpoint %d want %d: %s %v", res.StatusCode, want, raw, err)
+		}
 		return raw
 	}
-	inspectPath:=api.InspectTurnPrefix+runID+"/"+invocation
+	inspectPath := api.InspectTurnPrefix + runID + "/" + invocation
 	var inspection api.TurnInspection
-	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Status!="ABSENT_UNCERTAIN"||inspection.Record!=nil{t.Fatal("absence was overstated")}
+	if err := json.Unmarshal(call(runtime, "GET", inspectPath, nil, 200), &inspection); err != nil || inspection.Status != "ABSENT_UNCERTAIN" || inspection.Record != nil {
+		t.Fatal("absence was overstated")
+	}
 	// Revalidation is read-only and must never create a DecisionRecord.
 	verifyPath := inspectPath + "/verify"
 	call(runtime, "GET", verifyPath, nil, 404)
 	call(makeClient("spiffe://example.org/agent"), "GET", verifyPath, nil, 401)
-	call(makeClient("spiffe://example.org/agent"),"POST",api.PlanTurnPath,request,401)
-	bad:=request;bad.Evidence=append([]decision.EvidenceRef{},refs...);bad.Evidence[0].SHA256=strings.Repeat("a",64)
-	call(runtime,"POST",api.PlanTurnPath,bad,403)
-	bad=request;bad.InvocationID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	call(runtime,"POST",api.PlanTurnPath,bad,403)
+	call(makeClient("spiffe://example.org/agent"), "POST", api.PlanTurnPath, request, 401)
+	bad := request
+	bad.Evidence = append([]decision.EvidenceRef{}, refs...)
+	bad.Evidence[0].SHA256 = strings.Repeat("a", 64)
+	call(runtime, "POST", api.PlanTurnPath, bad, 403)
+	bad = request
+	bad.InvocationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	call(runtime, "POST", api.PlanTurnPath, bad, 403)
 	// The real network transport receives the committed 201 and drops
 	// it before the Runtime caller can observe any response. The next
 	// operation is authenticated Inspect, not another Plan submission.
 	lost := &lostDecisionResponse{upstream: runtime.Transport}
 	lostClient := &http.Client{Transport: lost, Timeout: 40 * time.Second}
 	rawRequest, err := json.Marshal(request)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	plan, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+api.PlanTurnPath, bytes.NewReader(rawRequest))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	plan.Header.Set("Content-Type", "application/json")
 	plan.GetBody = nil
 	if res, err := lostClient.Do(plan); err == nil || res != nil || !lost.dropped || lost.calls != 1 {
 		t.Fatalf("real committed response loss was not observed: %v calls=%d", err, lost.calls)
 	}
-	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Status!="FOUND"||inspection.Record==nil{
+	if err := json.Unmarshal(call(runtime, "GET", inspectPath, nil, 200), &inspection); err != nil || inspection.Status != "FOUND" || inspection.Record == nil {
 		t.Fatal("committed DecisionRecord not independently recoverable")
 	}
-	record:=inspection.Record
-	if record.RunID!=runID||record.InvocationID!=invocation||record.Status!=decision.StatusProposed||
-		len(record.Plan.Steps)!=3||len(record.Evidence)!=3||record.Plan.PlanHash==""{
-		t.Fatalf("real Decision Core did not create same-Run read-only proposal: %+v",record)
+	record := inspection.Record
+	if record.RunID != runID || record.InvocationID != invocation || record.Status != decision.StatusProposed ||
+		len(record.Plan.Steps) != 3 || len(record.Evidence) != 3 || record.Plan.PlanHash == "" {
+		t.Fatalf("real Decision Core did not create same-Run read-only proposal: %+v", record)
 	}
-	for _,step:=range record.Plan.Steps{if !step.ReadOnly||len(step.EvidenceRefs)==0{t.Fatal("unsafe plan")}}
-	var rows,events int
-	if err:=admin.QueryRowContext(ctx,"SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows,&events);err!=nil||rows!=1||events!=1{
-		t.Fatalf("DecisionRecord/outbox atomic count %d/%d %v",rows,events,err)
+	for _, step := range record.Plan.Steps {
+		if !step.ReadOnly || len(step.EvidenceRefs) == 0 {
+			t.Fatal("unsafe plan")
+		}
+	}
+	var rows, events int
+	if err := admin.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+schema+".decision_records),(SELECT count(*) FROM "+schema+".outbox_events)").Scan(&rows, &events); err != nil || rows != 1 || events != 1 {
+		t.Fatalf("DecisionRecord/outbox atomic count %d/%d %v", rows, events, err)
 	}
 	// A fresh continuation receipt is not historical inspection or a Permit.
 	type continuationReceipt struct {
-		SchemaVersion string `json:"schema_version"`
-		Authority decision.RuntimeDecisionAuthority `json:"authority"`
-		DecisionID string `json:"decision_id"`
-		RecordSHA256 string `json:"record_sha256"`
-		PlanHash string `json:"plan_hash"`
+		SchemaVersion string                            `json:"schema_version"`
+		Authority     decision.RuntimeDecisionAuthority `json:"authority"`
+		DecisionID    string                            `json:"decision_id"`
+		RecordSHA256  string                            `json:"record_sha256"`
+		PlanHash      string                            `json:"plan_hash"`
 	}
 	var verified continuationReceipt
 	if err := json.Unmarshal(call(runtime, "GET", verifyPath, nil, 200), &verified); err != nil ||
@@ -349,7 +500,9 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	guardHandler, err := api.NewTrustedGuardPlanHandler(store, authority, guardCaller, tenant, func(ctx context.Context) error {
 		return decision.VerifyInstalledCatalogInSchema(ctx, att, schema)
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	guardServer := listen(guardHandler, "spiffe://example.org/decision-guard-api", inboundRoots)
 	guardClient := makeClient(guardCaller)
 	guardStep := record.Plan.Steps[0]
@@ -360,7 +513,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		PlanID: record.Plan.PlanID, PlanHash: record.Plan.PlanHash,
 		StepID: guardStep.StepID, CapabilityID: guardStep.Capability.ID,
 		CapabilityVersion: guardStep.Capability.Version,
-		ResourceRef: guardStep.TargetRef, Arguments: json.RawMessage(`{}`),
+		ResourceRef:       guardStep.TargetRef, Arguments: json.RawMessage(`{}`),
 		BreakerEpoch: verified.Authority.BreakerEpoch, BreakerVersion: verified.Authority.BreakerVersion,
 	}
 	// Independently compiled EngageGuard module binary uses the exact
@@ -379,51 +532,57 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 			})...)
 		}
 		secret, err := x509.MarshalPKCS8PrivateKey(clientCredential.PrivateKey)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		write := func(name string, raw []byte) string {
 			t.Helper()
-			path := filepath.Join(dir,name)
-			if err := os.WriteFile(path,raw,0600); err != nil { t.Fatal(err) }
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
 			return path
 		}
 		clientCertPath := write("guard-client.pem", chain)
-		clientKeyPath := write("guard-key.pem",certpem.EncodeToMemory(&certpem.Block{Type:"PRIVATE KEY",Bytes:secret}))
-		trustPath := write("guard-roots.pem",certpem.EncodeToMemory(&certpem.Block{Type:"CERTIFICATE",Bytes:der}))
+		clientKeyPath := write("guard-key.pem", certpem.EncodeToMemory(&certpem.Block{Type: "PRIVATE KEY", Bytes: secret}))
+		trustPath := write("guard-roots.pem", certpem.EncodeToMemory(&certpem.Block{Type: "CERTIFICATE", Bytes: der}))
 		runExternalGuard = func(expect string) {
 			t.Helper()
-			cmd := exec.CommandContext(ctx,executable,"-test.v","-test.run=^TestExternalLiveDecisionPlanClient$","-test.timeout=25s")
+			cmd := exec.CommandContext(ctx, executable, "-test.v", "-test.run=^TestExternalLiveDecisionPlanClient$", "-test.timeout=25s")
 			cmd.Env = []string{
-				"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+				"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
 				"GUARD_EXTERNAL_LIVE_PLAN=1",
-				"GUARD_LIVE_EXPECT="+expect,
-				"GUARD_LIVE_ORIGIN="+guardServer.URL,
+				"GUARD_LIVE_EXPECT=" + expect,
+				"GUARD_LIVE_ORIGIN=" + guardServer.URL,
 				"GUARD_LIVE_PEER=spiffe://example.org/decision-guard-api",
-				"GUARD_LIVE_ROOTS="+trustPath,
-				"GUARD_LIVE_CLIENT_CERT="+clientCertPath,
-				"GUARD_LIVE_CLIENT_KEY="+clientKeyPath,
-				"GUARD_LIVE_TENANT="+tenant,
-				"GUARD_LIVE_RUN="+runID,
-				"GUARD_LIVE_AGENT="+record.AgentID,
-				"GUARD_LIVE_RELEASE="+verified.Authority.AgentReleaseID,
-				"GUARD_LIVE_SESSION="+record.SessionID,
-				"GUARD_LIVE_DECISION="+record.DecisionID,
-				"GUARD_LIVE_PLAN="+record.Plan.PlanID,
-				"GUARD_LIVE_PLAN_HASH="+record.Plan.PlanHash,
-				"GUARD_LIVE_STEP="+guardStep.StepID,
-				"GUARD_LIVE_CAPABILITY="+guardStep.Capability.ID,
-				"GUARD_LIVE_CAPABILITY_VERSION="+guardStep.Capability.Version,
-				"GUARD_LIVE_RESOURCE="+guardStep.TargetRef,
-				"GUARD_LIVE_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
-				"GUARD_LIVE_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+				"GUARD_LIVE_ROOTS=" + trustPath,
+				"GUARD_LIVE_CLIENT_CERT=" + clientCertPath,
+				"GUARD_LIVE_CLIENT_KEY=" + clientKeyPath,
+				"GUARD_LIVE_TENANT=" + tenant,
+				"GUARD_LIVE_RUN=" + runID,
+				"GUARD_LIVE_AGENT=" + record.AgentID,
+				"GUARD_LIVE_RELEASE=" + verified.Authority.AgentReleaseID,
+				"GUARD_LIVE_SESSION=" + record.SessionID,
+				"GUARD_LIVE_DECISION=" + record.DecisionID,
+				"GUARD_LIVE_PLAN=" + record.Plan.PlanID,
+				"GUARD_LIVE_PLAN_HASH=" + record.Plan.PlanHash,
+				"GUARD_LIVE_STEP=" + guardStep.StepID,
+				"GUARD_LIVE_CAPABILITY=" + guardStep.Capability.ID,
+				"GUARD_LIVE_CAPABILITY_VERSION=" + guardStep.Capability.Version,
+				"GUARD_LIVE_RESOURCE=" + guardStep.TargetRef,
+				"GUARD_LIVE_BREAKER_EPOCH=" + strconv.FormatInt(verified.Authority.BreakerEpoch, 10),
+				"GUARD_LIVE_BREAKER_VERSION=" + strconv.FormatInt(verified.Authority.BreakerVersion, 10),
 			}
 			output, err := cmd.CombinedOutput()
-			expected := "real EngageGuard DecisionPlanClient verified same-Run "+runID
-			if expect=="revoked" { expected="real EngageGuard DecisionPlanClient denied revoked same-Run "+runID }
-			if err != nil || !bytes.Contains(output,[]byte("--- PASS: TestExternalLiveDecisionPlanClient ")) ||
-				!bytes.Contains(output,[]byte(expected)) {
-				t.Fatalf("actual independently compiled Guard client failed %s: %v %s",expect,err,output)
+			expected := "real EngageGuard DecisionPlanClient verified same-Run " + runID
+			if expect == "revoked" {
+				expected = "real EngageGuard DecisionPlanClient denied revoked same-Run " + runID
 			}
-			t.Logf("independent real Guard client evidence: %s",output)
+			if err != nil || !bytes.Contains(output, []byte("--- PASS: TestExternalLiveDecisionPlanClient ")) ||
+				!bytes.Contains(output, []byte(expected)) {
+				t.Fatalf("actual independently compiled Guard client failed %s: %v %s", expect, err, output)
+			}
+			t.Logf("independent real Guard client evidence: %s", output)
 		}
 		if os.Getenv("DECISION_LIVE_GUARD_COMPOSED_RUNTIME_ORIGIN") != "" {
 			// The actual Guard driver has no DB handle or test-side effect
@@ -432,43 +591,49 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 			runComposedGuard = func(expect string) {
 				t.Helper()
 				cmd := exec.CommandContext(ctx, executable, "-test.v", "-test.run=^TestExternalLiveComposedRunVerifier$", "-test.timeout=35s")
-				cmd.Env = []string{"PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
-					"GUARD_EXTERNAL_LIVE_COMPOSED=1", "GUARD_COMPOSED_EXPECT="+expect,
-					"GUARD_COMPOSED_TENANT="+tenant, "GUARD_COMPOSED_RUN="+runID,
-					"GUARD_COMPOSED_DECISION_ORIGIN="+guardServer.URL,
+				cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
+					"GUARD_EXTERNAL_LIVE_COMPOSED=1", "GUARD_COMPOSED_EXPECT=" + expect,
+					"GUARD_COMPOSED_TENANT=" + tenant, "GUARD_COMPOSED_RUN=" + runID,
+					"GUARD_COMPOSED_DECISION_ORIGIN=" + guardServer.URL,
 					"GUARD_COMPOSED_DECISION_PEER=spiffe://example.org/decision-guard-api",
-					"GUARD_COMPOSED_DECISION_ROOTS="+trustPath,
-					"GUARD_COMPOSED_DECISION_CERT="+clientCertPath,
-					"GUARD_COMPOSED_DECISION_KEY="+clientKeyPath,
-					"GUARD_COMPOSED_AGENT="+record.AgentID,
-					"GUARD_COMPOSED_RELEASE="+verified.Authority.AgentReleaseID,
-					"GUARD_COMPOSED_SESSION="+record.SessionID,
-					"GUARD_COMPOSED_DECISION_ID="+record.DecisionID,
-					"GUARD_COMPOSED_PLAN_ID="+record.Plan.PlanID,
-					"GUARD_COMPOSED_PLAN_HASH="+record.Plan.PlanHash,
-					"GUARD_COMPOSED_STEP_ID="+guardStep.StepID,
-					"GUARD_COMPOSED_CAP_ID="+guardStep.Capability.ID,
-					"GUARD_COMPOSED_CAP_VERSION="+guardStep.Capability.Version,
-					"GUARD_COMPOSED_RESOURCE="+guardStep.TargetRef,
-					"GUARD_COMPOSED_BREAKER_EPOCH="+strconv.FormatInt(verified.Authority.BreakerEpoch,10),
-					"GUARD_COMPOSED_BREAKER_VERSION="+strconv.FormatInt(verified.Authority.BreakerVersion,10),
+					"GUARD_COMPOSED_DECISION_ROOTS=" + trustPath,
+					"GUARD_COMPOSED_DECISION_CERT=" + clientCertPath,
+					"GUARD_COMPOSED_DECISION_KEY=" + clientKeyPath,
+					"GUARD_COMPOSED_AGENT=" + record.AgentID,
+					"GUARD_COMPOSED_RELEASE=" + verified.Authority.AgentReleaseID,
+					"GUARD_COMPOSED_SESSION=" + record.SessionID,
+					"GUARD_COMPOSED_DECISION_ID=" + record.DecisionID,
+					"GUARD_COMPOSED_PLAN_ID=" + record.Plan.PlanID,
+					"GUARD_COMPOSED_PLAN_HASH=" + record.Plan.PlanHash,
+					"GUARD_COMPOSED_STEP_ID=" + guardStep.StepID,
+					"GUARD_COMPOSED_CAP_ID=" + guardStep.Capability.ID,
+					"GUARD_COMPOSED_CAP_VERSION=" + guardStep.Capability.Version,
+					"GUARD_COMPOSED_RESOURCE=" + guardStep.TargetRef,
+					"GUARD_COMPOSED_BREAKER_EPOCH=" + strconv.FormatInt(verified.Authority.BreakerEpoch, 10),
+					"GUARD_COMPOSED_BREAKER_VERSION=" + strconv.FormatInt(verified.Authority.BreakerVersion, 10),
 				}
 				for _, name := range []string{
 					"RUNTIME_ORIGIN", "RUNTIME_PEER", "RUNTIME_ROOTS",
 					"RUNTIME_CERT", "RUNTIME_KEY", "ACP_ORIGIN", "ACP_PEER",
 					"ACP_ROOTS", "ACP_CERT", "ACP_KEY", "SYNC_DIR",
 				} {
-					value := os.Getenv("DECISION_LIVE_GUARD_COMPOSED_"+name)
-					if value == "" { t.Fatalf("missing externally authenticated composed source %s",name) }
+					value := os.Getenv("DECISION_LIVE_GUARD_COMPOSED_" + name)
+					if value == "" {
+						t.Fatalf("missing externally authenticated composed source %s", name)
+					}
 					cmd.Env = append(cmd.Env, "GUARD_COMPOSED_"+name+"="+value)
 				}
 				output, err := cmd.CombinedOutput()
-				marker := "real ComposedRunVerifier verified three authorities on same-Run "+runID
-				if expect == "postflight" { marker = "real ComposedRunVerifier denied live postflight breaker drift same-Run "+runID }
-				if expect == "revoked" { marker = "real ComposedRunVerifier denied revoked source same-Run "+runID }
+				marker := "real ComposedRunVerifier verified three authorities on same-Run " + runID
+				if expect == "postflight" {
+					marker = "real ComposedRunVerifier denied live postflight breaker drift same-Run " + runID
+				}
+				if expect == "revoked" {
+					marker = "real ComposedRunVerifier denied revoked source same-Run " + runID
+				}
 				if err != nil || !bytes.Contains(output, []byte("--- PASS: TestExternalLiveComposedRunVerifier ")) ||
 					!bytes.Contains(output, []byte(marker)) {
-					t.Fatalf("real independent three-source Guard composition failed %s: %v %s",expect,err,output)
+					t.Fatalf("real independent three-source Guard composition failed %s: %v %s", expect, err, output)
 				}
 				t.Logf("actual triple-authority Guard evidence: %s", output)
 			}
@@ -477,13 +642,19 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	guardCall := func(client *http.Client, request decision.GuardPlanStepRequest, want int) []byte {
 		t.Helper()
 		body, err := json.Marshal(request)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		r, err := http.NewRequestWithContext(ctx, http.MethodPost, guardServer.URL+api.GuardPlanPath, bytes.NewReader(body))
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-Forwarded-Client-Cert", guardCaller)
 		res, err := client.Do(r)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer res.Body.Close()
 		got, err := io.ReadAll(res.Body)
 		if err != nil || res.StatusCode != want || res.Header.Get("Cache-Control") != "no-store" {
@@ -501,7 +672,7 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 		t.Fatalf("mTLS Guard did not verify the committed Plan/Step: %+v %v", guardVerified, err)
 	}
 	badGuard := guardReq
-	badGuard.PlanHash = strings.Repeat("f",64)
+	badGuard.PlanHash = strings.Repeat("f", 64)
 	guardCall(guardClient, badGuard, http.StatusForbidden)
 	badGuard = guardReq
 	badGuard.ResourceRef = "wrong-target"
@@ -514,11 +685,17 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	guardCall(guardClient, badGuard, http.StatusForbidden)
 	// Even with fresh authority, weakened PostgreSQL catalog integrity
 	// cannot become an implicit Permit or a successful Step verification.
-	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records DISABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records DISABLE TRIGGER decision_records_no_update"); err != nil {
+		t.Fatal(err)
+	}
 	guardCall(guardClient, guardReq, http.StatusServiceUnavailable)
-	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records ENABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+schema+".decision_records ENABLE TRIGGER decision_records_no_update"); err != nil {
+		t.Fatal(err)
+	}
 	guardCall(guardClient, guardReq, http.StatusOK)
-	if runExternalGuard != nil { runExternalGuard("verified") }
+	if runExternalGuard != nil {
+		runExternalGuard("verified")
+	}
 	if runComposedGuard != nil {
 		runComposedGuard("verified")
 		runComposedGuard("postflight")
@@ -531,34 +708,44 @@ func TestExternalLiveDecisionCore(t *testing.T) {
 	revoke()
 	call(runtime, "GET", verifyPath, nil, 403)
 	guardCall(guardClient, guardReq, http.StatusForbidden)
-	if runExternalGuard != nil { runExternalGuard("revoked") }
-	if runComposedGuard != nil { runComposedGuard("revoked") }
+	if runExternalGuard != nil {
+		runExternalGuard("revoked")
+	}
+	if runComposedGuard != nil {
+		runComposedGuard("revoked")
+	}
 	if continuationDir != "" {
 		writeFixture("source-revoked", []byte("revoked"))
 		waitMarker("runtime-denied")
 	}
-	call(runtime,"POST",api.PlanTurnPath,request,403)
-	if err:=json.Unmarshal(call(runtime,"GET",inspectPath,nil,200),&inspection);err!=nil||inspection.Record==nil||inspection.Record.DecisionID!=record.DecisionID{t.Fatal("historical record lost")}
+	call(runtime, "POST", api.PlanTurnPath, request, 403)
+	if err := json.Unmarshal(call(runtime, "GET", inspectPath, nil, 200), &inspection); err != nil || inspection.Record == nil || inspection.Record.DecisionID != record.DecisionID {
+		t.Fatal("historical record lost")
+	}
 	t.Logf("real Guard Plan Step mTLS verified same-Run %s and source revocation denied", runID)
-	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery",record.DecisionID,invocation)
+	t.Logf("actual same-Run DecisionRecord %s invocation %s PROPOSED with three real observations, one outbox and inspect recovery", record.DecisionID, invocation)
 }
 
 type lostDecisionResponse struct {
 	upstream http.RoundTripper
-	calls int
-	dropped bool
+	calls    int
+	dropped  bool
 }
 
 func (l *lostDecisionResponse) RoundTrip(r *http.Request) (*http.Response, error) {
 	l.calls++
 	res, err := l.upstream.RoundTrip(r)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if res.StatusCode != http.StatusCreated {
 		return res, nil
 	}
 	_, err = io.Copy(io.Discard, res.Body)
 	_ = res.Body.Close()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	l.dropped = true
 	return nil, io.ErrUnexpectedEOF
 }

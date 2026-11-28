@@ -3,11 +3,11 @@ package decision
 type hypothesisAbstentionReason string
 
 const (
-	hypothesisAbstentionMissingSymptomObservation hypothesisAbstentionReason = "MISSING_SYMPTOM_OBSERVATION"
-	hypothesisAbstentionMissingDeploymentObservation hypothesisAbstentionReason = "MISSING_DEPLOYMENT_OBSERVATION"
-	hypothesisAbstentionConflictingSymptomObservations hypothesisAbstentionReason = "CONFLICTING_SYMPTOM_OBSERVATIONS"
+	hypothesisAbstentionMissingSymptomObservation         hypothesisAbstentionReason = "MISSING_SYMPTOM_OBSERVATION"
+	hypothesisAbstentionMissingDeploymentObservation      hypothesisAbstentionReason = "MISSING_DEPLOYMENT_OBSERVATION"
+	hypothesisAbstentionConflictingSymptomObservations    hypothesisAbstentionReason = "CONFLICTING_SYMPTOM_OBSERVATIONS"
 	hypothesisAbstentionConflictingDeploymentObservations hypothesisAbstentionReason = "CONFLICTING_DEPLOYMENT_OBSERVATIONS"
-	hypothesisAbstentionNoRelevantEvidence hypothesisAbstentionReason = "NO_RELEVANT_EVIDENCE"
+	hypothesisAbstentionNoRelevantEvidence                hypothesisAbstentionReason = "NO_RELEVANT_EVIDENCE"
 )
 
 func hypothesisAbstentionReasonRank(reason hypothesisAbstentionReason) int {

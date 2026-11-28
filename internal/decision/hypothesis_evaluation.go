@@ -8,82 +8,82 @@ import (
 
 const (
 	hypothesisEvaluationReportSchema = "sre.hypothesis-evaluation-report.v2"
-	hypothesisEvaluationFixtureOnly = "SYNTHETIC_CONTRACT_FIXTURES_ONLY"
+	hypothesisEvaluationFixtureOnly  = "SYNTHETIC_CONTRACT_FIXTURES_ONLY"
 )
 
 type hypothesisEvaluationSplit string
 
 const (
-	hypothesisEvaluationGoldFixture hypothesisEvaluationSplit = "GOLD_FIXTURE"
+	hypothesisEvaluationGoldFixture    hypothesisEvaluationSplit = "GOLD_FIXTURE"
 	hypothesisEvaluationHoldoutFixture hypothesisEvaluationSplit = "HOLDOUT_FIXTURE"
 )
 
 type hypothesisEvaluationCase struct {
-	ID string
-	Split hypothesisEvaluationSplit
-	Principal Principal
-	Request Request
-	Publications []signedHypothesisPublication
-	From, To, Now time.Time
-	ExpectedStatus hypothesisStatus
-	ExpectedError error
-	ExpectedBindingsBound bool
+	ID                        string
+	Split                     hypothesisEvaluationSplit
+	Principal                 Principal
+	Request                   Request
+	Publications              []signedHypothesisPublication
+	From, To, Now             time.Time
+	ExpectedStatus            hypothesisStatus
+	ExpectedError             error
+	ExpectedBindingsBound     bool
 	ExpectedAbstentionReasons []hypothesisAbstentionReason
 }
 
 type hypothesisEvaluationCaseResult struct {
-	ID string `json:"id"`
-	Split hypothesisEvaluationSplit `json:"split"`
-	ExpectedStatus hypothesisStatus `json:"expected_status,omitempty"`
-	ActualStatus string `json:"actual_status"`
-	ExpectedErrorClass string `json:"expected_error_class,omitempty"`
-	ActualErrorClass string `json:"actual_error_class,omitempty"`
-	AbstentionReasons []hypothesisAbstentionReason `json:"abstention_reasons"`
-	Passed bool `json:"passed"`
-	EvidenceBindingChecked bool `json:"evidence_binding_checked"`
-	ExpectedBindingsBound bool `json:"expected_bindings_bound"`
-	ActualBindingsBound bool `json:"actual_bindings_bound"`
+	ID                     string                       `json:"id"`
+	Split                  hypothesisEvaluationSplit    `json:"split"`
+	ExpectedStatus         hypothesisStatus             `json:"expected_status,omitempty"`
+	ActualStatus           string                       `json:"actual_status"`
+	ExpectedErrorClass     string                       `json:"expected_error_class,omitempty"`
+	ActualErrorClass       string                       `json:"actual_error_class,omitempty"`
+	AbstentionReasons      []hypothesisAbstentionReason `json:"abstention_reasons"`
+	Passed                 bool                         `json:"passed"`
+	EvidenceBindingChecked bool                         `json:"evidence_binding_checked"`
+	ExpectedBindingsBound  bool                         `json:"expected_bindings_bound"`
+	ActualBindingsBound    bool                         `json:"actual_bindings_bound"`
 }
 
 type hypothesisEvaluationStatusCount struct {
 	Status string `json:"status"`
-	Count int `json:"count"`
+	Count  int    `json:"count"`
 }
 
 type hypothesisEvaluationSplitSummary struct {
-	Split hypothesisEvaluationSplit `json:"split"`
-	ScenarioCount int `json:"scenario_count"`
-	PassedCount int `json:"passed_count"`
-	FailedCount int `json:"failed_count"`
-	AcceptedCount int `json:"accepted_count"`
-	RejectedCount int `json:"rejected_count"`
-	AbstentionCount int `json:"abstention_count"`
+	Split           hypothesisEvaluationSplit `json:"split"`
+	ScenarioCount   int                       `json:"scenario_count"`
+	PassedCount     int                       `json:"passed_count"`
+	FailedCount     int                       `json:"failed_count"`
+	AcceptedCount   int                       `json:"accepted_count"`
+	RejectedCount   int                       `json:"rejected_count"`
+	AbstentionCount int                       `json:"abstention_count"`
 }
 
 type hypothesisEvaluationReport struct {
-	SchemaVersion string `json:"schema_version"`
-	DatasetID string `json:"dataset_id"`
-	DatasetKind string `json:"dataset_kind"`
-	ScenarioCount int `json:"scenario_count"`
-	PassedCount int `json:"passed_count"`
-	FailedCount int `json:"failed_count"`
-	ScenarioPassRateBasisPoints int `json:"scenario_pass_rate_basis_points"`
-	AcceptedCount int `json:"accepted_count"`
-	RejectedCount int `json:"rejected_count"`
-	AbstentionCount int `json:"abstention_count"`
-	AbstentionReasonCaseCount int `json:"abstention_reason_case_count"`
-	AbstentionReasonCaseMatches int `json:"abstention_reason_case_matches"`
-	AbstentionReasonAccuracyMeasured bool `json:"abstention_reason_accuracy_measured"`
-	AbstentionReasonAccuracyBasisPoints int `json:"abstention_reason_accuracy_basis_points"`
-	AbstentionRateMeasured bool `json:"abstention_rate_measured"`
-	AbstentionRateBasisPoints int `json:"abstention_rate_basis_points"`
-	EvidenceBindingCaseCount int `json:"evidence_binding_case_count"`
-	EvidenceBindingCaseMatches int `json:"evidence_binding_case_matches"`
-	EvidenceBindingAccuracyMeasured bool `json:"evidence_binding_accuracy_measured"`
-	EvidenceBindingAccuracyBasisPoints int `json:"evidence_binding_accuracy_basis_points"`
-	StatusCounts []hypothesisEvaluationStatusCount `json:"status_counts"`
-	SplitSummaries []hypothesisEvaluationSplitSummary `json:"split_summaries"`
-	Cases []hypothesisEvaluationCaseResult `json:"cases"`
+	SchemaVersion                       string                             `json:"schema_version"`
+	DatasetID                           string                             `json:"dataset_id"`
+	DatasetKind                         string                             `json:"dataset_kind"`
+	ScenarioCount                       int                                `json:"scenario_count"`
+	PassedCount                         int                                `json:"passed_count"`
+	FailedCount                         int                                `json:"failed_count"`
+	ScenarioPassRateBasisPoints         int                                `json:"scenario_pass_rate_basis_points"`
+	AcceptedCount                       int                                `json:"accepted_count"`
+	RejectedCount                       int                                `json:"rejected_count"`
+	AbstentionCount                     int                                `json:"abstention_count"`
+	AbstentionReasonCaseCount           int                                `json:"abstention_reason_case_count"`
+	AbstentionReasonCaseMatches         int                                `json:"abstention_reason_case_matches"`
+	AbstentionReasonAccuracyMeasured    bool                               `json:"abstention_reason_accuracy_measured"`
+	AbstentionReasonAccuracyBasisPoints int                                `json:"abstention_reason_accuracy_basis_points"`
+	AbstentionRateMeasured              bool                               `json:"abstention_rate_measured"`
+	AbstentionRateBasisPoints           int                                `json:"abstention_rate_basis_points"`
+	EvidenceBindingCaseCount            int                                `json:"evidence_binding_case_count"`
+	EvidenceBindingCaseMatches          int                                `json:"evidence_binding_case_matches"`
+	EvidenceBindingAccuracyMeasured     bool                               `json:"evidence_binding_accuracy_measured"`
+	EvidenceBindingAccuracyBasisPoints  int                                `json:"evidence_binding_accuracy_basis_points"`
+	StatusCounts                        []hypothesisEvaluationStatusCount  `json:"status_counts"`
+	SplitSummaries                      []hypothesisEvaluationSplitSummary `json:"split_summaries"`
+	Cases                               []hypothesisEvaluationCaseResult   `json:"cases"`
 }
 
 // buildHypothesisEvaluationReport evaluates explicitly labelled offline
@@ -124,8 +124,8 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 
 	report := hypothesisEvaluationReport{
 		SchemaVersion: hypothesisEvaluationReportSchema,
-		DatasetID: datasetID,
-		DatasetKind: hypothesisEvaluationFixtureOnly,
+		DatasetID:     datasetID,
+		DatasetKind:   hypothesisEvaluationFixtureOnly,
 		ScenarioCount: len(cases),
 		StatusCounts: []hypothesisEvaluationStatusCount{
 			{Status: string(hypothesisSupported)},
@@ -146,7 +146,7 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 		statusIndex[report.StatusCounts[i].Status] = i
 	}
 	splitIndex := map[hypothesisEvaluationSplit]int{
-		hypothesisEvaluationGoldFixture: 0,
+		hypothesisEvaluationGoldFixture:    0,
 		hypothesisEvaluationHoldoutFixture: 1,
 	}
 
@@ -215,17 +215,17 @@ func buildHypothesisEvaluationReport(datasetID string, cases []hypothesisEvaluat
 		}
 
 		report.Cases = append(report.Cases, hypothesisEvaluationCaseResult{
-			ID: item.ID,
-			Split: item.Split,
-			ExpectedStatus: item.ExpectedStatus,
-			ActualStatus: actualStatus,
-			ExpectedErrorClass: hypothesisEvaluationErrorClass(item.ExpectedError),
-			ActualErrorClass: hypothesisEvaluationErrorClass(evalErr),
-			AbstentionReasons: actualReasons,
-			Passed: passed,
+			ID:                     item.ID,
+			Split:                  item.Split,
+			ExpectedStatus:         item.ExpectedStatus,
+			ActualStatus:           actualStatus,
+			ExpectedErrorClass:     hypothesisEvaluationErrorClass(item.ExpectedError),
+			ActualErrorClass:       hypothesisEvaluationErrorClass(evalErr),
+			AbstentionReasons:      actualReasons,
+			Passed:                 passed,
 			EvidenceBindingChecked: bindingChecked,
-			ExpectedBindingsBound: item.ExpectedBindingsBound,
-			ActualBindingsBound: actualBound,
+			ExpectedBindingsBound:  item.ExpectedBindingsBound,
+			ActualBindingsBound:    actualBound,
 		})
 	}
 

@@ -16,9 +16,13 @@ type jsonSchema map[string]any
 func loadSchema(t *testing.T, path string) jsonSchema {
 	t.Helper()
 	data, err := os.ReadFile(path)
-	if err != nil { t.Fatalf("read schema %s: %v", path, err) }
+	if err != nil {
+		t.Fatalf("read schema %s: %v", path, err)
+	}
 	var schema jsonSchema
-	if err := json.Unmarshal(data, &schema); err != nil { t.Fatalf("decode schema %s: %v", path, err) }
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("decode schema %s: %v", path, err)
+	}
 	return schema
 }
 
@@ -28,7 +32,9 @@ func schemaTypeMatches(schema jsonSchema, want string) bool {
 		return value == want
 	case []any:
 		for _, candidate := range value {
-			if candidate == want { return true }
+			if candidate == want {
+				return true
+			}
 		}
 	}
 	return false
@@ -37,19 +43,29 @@ func schemaTypeMatches(schema jsonSchema, want string) bool {
 func resolveSchema(t *testing.T, root jsonSchema, node jsonSchema) jsonSchema {
 	t.Helper()
 	ref, ok := node["$ref"].(string)
-	if !ok { return node }
+	if !ok {
+		return node
+	}
 	const prefix = "#/$defs/"
-	if !strings.HasPrefix(ref, prefix) { t.Fatalf("unsupported local schema ref %q", ref) }
+	if !strings.HasPrefix(ref, prefix) {
+		t.Fatalf("unsupported local schema ref %q", ref)
+	}
 	defs, ok := root["$defs"].(map[string]any)
-	if !ok { t.Fatalf("schema has no $defs for %q", ref) }
+	if !ok {
+		t.Fatalf("schema has no $defs for %q", ref)
+	}
 	resolved, ok := defs[strings.TrimPrefix(ref, prefix)].(map[string]any)
-	if !ok { t.Fatalf("schema definition %q not found", ref) }
+	if !ok {
+		t.Fatalf("schema definition %q not found", ref)
+	}
 	return resolved
 }
 
 func assertGoTypeMatchesSchema(t *testing.T, root jsonSchema, typ reflect.Type, node jsonSchema, path string) {
 	t.Helper()
-	for typ.Kind() == reflect.Pointer { typ = typ.Elem() }
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
 	node = resolveSchema(t, root, node)
 
 	if typ == reflect.TypeOf(time.Time{}) {
@@ -59,43 +75,77 @@ func assertGoTypeMatchesSchema(t *testing.T, root jsonSchema, typ reflect.Type, 
 		return
 	}
 	if typ.Kind() == reflect.Slice {
-		if !schemaTypeMatches(node, "array") { t.Errorf("%s: expected array schema", path); return }
+		if !schemaTypeMatches(node, "array") {
+			t.Errorf("%s: expected array schema", path)
+			return
+		}
 		items, ok := node["items"].(map[string]any)
-		if !ok { t.Errorf("%s: array items schema missing", path); return }
+		if !ok {
+			t.Errorf("%s: array items schema missing", path)
+			return
+		}
 		assertGoTypeMatchesSchema(t, root, typ.Elem(), items, path+"[]")
 		return
 	}
 	if typ.Kind() != reflect.Struct {
-		want := map[reflect.Kind]string{reflect.String:"string", reflect.Int:"integer", reflect.Int64:"integer", reflect.Bool:"boolean"}[typ.Kind()]
-		if want != "" && !schemaTypeMatches(node, want) { t.Errorf("%s: Go %s does not match JSON Schema type %s", path, typ.Kind(), want) }
+		want := map[reflect.Kind]string{reflect.String: "string", reflect.Int: "integer", reflect.Int64: "integer", reflect.Bool: "boolean"}[typ.Kind()]
+		if want != "" && !schemaTypeMatches(node, want) {
+			t.Errorf("%s: Go %s does not match JSON Schema type %s", path, typ.Kind(), want)
+		}
 		return
 	}
 
 	properties, ok := node["properties"].(map[string]any)
-	if !ok { t.Fatalf("%s: object properties missing", path) }
-	if node["additionalProperties"] != false { t.Errorf("%s: object must reject additional properties", path) }
+	if !ok {
+		t.Fatalf("%s: object properties missing", path)
+	}
+	if node["additionalProperties"] != false {
+		t.Errorf("%s: object must reject additional properties", path)
+	}
 	required := map[string]bool{}
 	if fields, ok := node["required"].([]any); ok {
-		for _, field := range fields { if name, ok := field.(string); ok { required[name] = true } }
+		for _, field := range fields {
+			if name, ok := field.(string); ok {
+				required[name] = true
+			}
+		}
 	}
-	for i:=0; i<typ.NumField(); i++ {
+	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		tag := field.Tag.Get("json")
-		if tag == "-" { continue }
+		if tag == "-" {
+			continue
+		}
 		parts := strings.Split(tag, ",")
 		name := parts[0]
-		if name == "" { name = field.Name }
+		if name == "" {
+			name = field.Name
+		}
 		child, exists := properties[name]
-		if !exists { t.Errorf("%s: Go field %s missing from schema properties", path, name); continue }
+		if !exists {
+			t.Errorf("%s: Go field %s missing from schema properties", path, name)
+			continue
+		}
 		optional := false
-		for _, option := range parts[1:] { if option == "omitempty" { optional = true } }
-		if required[name] == optional { t.Errorf("%s.%s: required mismatch (omitempty=%v, schema-required=%v)", path, name, optional, required[name]) }
+		for _, option := range parts[1:] {
+			if option == "omitempty" {
+				optional = true
+			}
+		}
+		if required[name] == optional {
+			t.Errorf("%s.%s: required mismatch (omitempty=%v, schema-required=%v)", path, name, optional, required[name])
+		}
 		childSchema, ok := child.(map[string]any)
-		if !ok { t.Errorf("%s.%s: invalid property schema", path, name); continue }
+		if !ok {
+			t.Errorf("%s.%s: invalid property schema", path, name)
+			continue
+		}
 		assertGoTypeMatchesSchema(t, root, field.Type, childSchema, path+"."+name)
 	}
 	for name := range required {
-		if _, exists := properties[name]; !exists { t.Errorf("%s: required field %s has no property", path, name) }
+		if _, exists := properties[name]; !exists {
+			t.Errorf("%s: required field %s has no property", path, name)
+		}
 	}
 }
 
@@ -129,7 +179,9 @@ const StringRawSemverPattern = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
 
 func TestOpenAPIContractReferencesVersionedSchemas(t *testing.T) {
 	data, err := os.ReadFile("../../api/openapi.yaml")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	spec := string(data)
 	for _, required := range []string{
 		"openapi: 3.1.0",
@@ -144,7 +196,9 @@ func TestOpenAPIContractReferencesVersionedSchemas(t *testing.T) {
 		"/healthz:",
 		"INVOCATION_ID_REUSED",
 	} {
-		if !strings.Contains(spec, required) { t.Errorf("OpenAPI contract is missing %q", required) }
+		if !strings.Contains(spec, required) {
+			t.Errorf("OpenAPI contract is missing %q", required)
+		}
 	}
 }
 

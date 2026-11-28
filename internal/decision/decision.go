@@ -17,38 +17,38 @@ import (
 )
 
 const (
-	PolicyVersion = "sre-readonly-v1"
-	SchemaVersion = "decision.v1"
-	StatusProposed = "PROPOSED"
+	PolicyVersion   = "sre-readonly-v1"
+	SchemaVersion   = "decision.v1"
+	StatusProposed  = "PROPOSED"
 	StatusAbstained = "ABSTAINED"
 )
 
 var (
-	ErrConflict = errors.New("invocation_id reused with different request")
-	ErrUnauthenticated = errors.New("authenticated principal required")
-	ErrUnauthorized = errors.New("principal is not authorized for this decision request")
+	ErrConflict             = errors.New("invocation_id reused with different request")
+	ErrUnauthenticated      = errors.New("authenticated principal required")
+	ErrUnauthorized         = errors.New("principal is not authorized for this decision request")
 	ErrAuthorityUnavailable = errors.New("authoritative snapshot verifier unavailable")
-	ErrAuthorityRejected = errors.New("authoritative snapshot verification rejected")
-	ErrInvalidRequest = errors.New("invalid decision request")
-	ErrNotFound = errors.New("decision record not found")
-	ErrInvalidCursor = errors.New("invalid decision page cursor")
+	ErrAuthorityRejected    = errors.New("authoritative snapshot verification rejected")
+	ErrInvalidRequest       = errors.New("invalid decision request")
+	ErrNotFound             = errors.New("decision record not found")
+	ErrInvalidCursor        = errors.New("invalid decision page cursor")
 )
 
 var (
-	nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
-	digestRe = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	semverRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	nameRe       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+	digestRe     = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	semverRe     = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 	decisionIDRe = regexp.MustCompile(`^dec_[a-f0-9]{64}$`)
 )
 
 // Principal is supplied by a trusted OIDC/mTLS gateway, never decoded from the
 // DecisionRequest body. CallerID is expected to be the Runtime service identity.
 type Principal struct {
-	TenantID string `json:"tenant_id"`
+	TenantID  string `json:"tenant_id"`
 	SubjectID string `json:"subject_id"`
-	AgentID string `json:"agent_id"`
+	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id"`
-	CallerID string `json:"caller_id"`
+	CallerID  string `json:"caller_id"`
 }
 
 func (p Principal) Validate() error {
@@ -61,108 +61,108 @@ func (p Principal) Validate() error {
 }
 
 type Identity struct {
-	AgentID string `json:"agent_id"`
+	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id"`
-	RunID string `json:"run_id"`
+	RunID     string `json:"run_id"`
 }
 
 type Input struct {
 	Objective string `json:"objective"`
-	Service string `json:"service"`
-	Signal string `json:"signal"`
+	Service   string `json:"service"`
+	Signal    string `json:"signal"`
 }
 
 type Constraints struct {
-	DeadlineMS int `json:"deadline_ms"`
-	MaxTokens int `json:"max_tokens"`
+	DeadlineMS    int   `json:"deadline_ms"`
+	MaxTokens     int   `json:"max_tokens"`
 	MaxCostMicros int64 `json:"max_cost_micros"`
-	MaxCandidates int `json:"max_candidates"`
+	MaxCandidates int   `json:"max_candidates"`
 }
 
 type VersionSet struct {
 	CapabilityCatalogVersion string `json:"capability_catalog_version"`
-	StrategyVersion string `json:"strategy_version"`
-	PromptVersion string `json:"prompt_version"`
-	ModelProfile string `json:"model_profile"`
+	StrategyVersion          string `json:"strategy_version"`
+	PromptVersion            string `json:"prompt_version"`
+	ModelProfile             string `json:"model_profile"`
 }
 
 // SnapshotRef is a reference to an immutable, externally owned snapshot.
 // The fields are claims until AuthorityVerifier validates signature, owner,
 // expiry, revocation and content digest against the authoritative source.
 type SnapshotRef struct {
-	ID string `json:"id"`
-	Version string `json:"version"`
-	SHA256 string `json:"sha256"`
-	Source string `json:"source"`
-	AttestationRef string `json:"attestation_ref"`
-	TrustLevel string `json:"trust_level"`
-	IssuedAt time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID             string    `json:"id"`
+	Version        string    `json:"version"`
+	SHA256         string    `json:"sha256"`
+	Source         string    `json:"source"`
+	AttestationRef string    `json:"attestation_ref"`
+	TrustLevel     string    `json:"trust_level"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 // EvidenceRef is a versioned, scoped evidence envelope. All fields are claims
 // until AuthorityVerifier verifies tenant ownership, digest, attestation, and revocation.
 type EvidenceRef struct {
-	Ref string `json:"ref"`
-	EvidenceType string `json:"evidence_type"`
-	SchemaVersion string `json:"schema_version"`
-	TenantID string `json:"tenant_id"`
-	AgentID string `json:"agent_id"`
-	RunID string `json:"run_id"`
-	Service string `json:"service"`
-	ResourceRef string `json:"resource_ref"`
-	SourceID string `json:"source_id"`
-	Source string `json:"source"`
-	SourceVersion string `json:"source_version"`
-	SHA256 string `json:"sha256"`
-	AttestationRef string `json:"attestation_ref"`
-	TrustLevel string `json:"trust_level"`
-	ObservedFrom time.Time `json:"observed_from"`
-	ObservedTo time.Time `json:"observed_to"`
-	ObservedAt time.Time `json:"observed_at"`
-	CollectedAt time.Time `json:"collected_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	RevocationState string `json:"revocation_state"`
+	Ref             string    `json:"ref"`
+	EvidenceType    string    `json:"evidence_type"`
+	SchemaVersion   string    `json:"schema_version"`
+	TenantID        string    `json:"tenant_id"`
+	AgentID         string    `json:"agent_id"`
+	RunID           string    `json:"run_id"`
+	Service         string    `json:"service"`
+	ResourceRef     string    `json:"resource_ref"`
+	SourceID        string    `json:"source_id"`
+	Source          string    `json:"source"`
+	SourceVersion   string    `json:"source_version"`
+	SHA256          string    `json:"sha256"`
+	AttestationRef  string    `json:"attestation_ref"`
+	TrustLevel      string    `json:"trust_level"`
+	ObservedFrom    time.Time `json:"observed_from"`
+	ObservedTo      time.Time `json:"observed_to"`
+	ObservedAt      time.Time `json:"observed_at"`
+	CollectedAt     time.Time `json:"collected_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	RevocationState string    `json:"revocation_state"`
 }
 
 // CapabilityRef is published and versioned by Agent Control Plane.
 // Endpoint, credential and executor configuration are intentionally absent.
 type CapabilityRef struct {
-	ID string `json:"id"`
-	Version string `json:"version"`
-	ContractSHA256 string `json:"contract_sha256"`
-	InputSchemaRef string `json:"input_schema_ref"`
+	ID              string `json:"id"`
+	Version         string `json:"version"`
+	ContractSHA256  string `json:"contract_sha256"`
+	InputSchemaRef  string `json:"input_schema_ref"`
 	OutputSchemaRef string `json:"output_schema_ref"`
-	EffectClass string `json:"effect_class"`
-	Idempotency string `json:"idempotency"`
-	TenantScoped bool `json:"tenant_scoped"`
+	EffectClass     string `json:"effect_class"`
+	Idempotency     string `json:"idempotency"`
+	TenantScoped    bool   `json:"tenant_scoped"`
 }
 
 type ReplanContext struct {
 	ParentDecisionID string `json:"parent_decision_id"`
-	Sequence int `json:"sequence"`
-	MaxReplans int `json:"max_replans"`
-	Trigger string `json:"trigger"`
+	Sequence         int    `json:"sequence"`
+	MaxReplans       int    `json:"max_replans"`
+	Trigger          string `json:"trigger"`
 	PriorDisposition string `json:"prior_disposition"`
 }
 
 type Request struct {
-	SchemaVersion string `json:"schema_version"`
-	Identity Identity `json:"identity"`
-	InvocationID string `json:"invocation_id"`
-	Input Input `json:"input"`
-	Constraints Constraints `json:"constraints"`
-	Versions VersionSet `json:"versions"`
-	ContextSnapshot SnapshotRef `json:"context_snapshot"`
-	CapabilitySnapshot SnapshotRef `json:"capability_snapshot"`
-	Capabilities []CapabilityRef `json:"capabilities"`
-	Evidence []EvidenceRef `json:"evidence_refs"`
-	Replan *ReplanContext `json:"replan,omitempty"`
+	SchemaVersion      string          `json:"schema_version"`
+	Identity           Identity        `json:"identity"`
+	InvocationID       string          `json:"invocation_id"`
+	Input              Input           `json:"input"`
+	Constraints        Constraints     `json:"constraints"`
+	Versions           VersionSet      `json:"versions"`
+	ContextSnapshot    SnapshotRef     `json:"context_snapshot"`
+	CapabilitySnapshot SnapshotRef     `json:"capability_snapshot"`
+	Capabilities       []CapabilityRef `json:"capabilities"`
+	Evidence           []EvidenceRef   `json:"evidence_refs"`
+	Replan             *ReplanContext  `json:"replan,omitempty"`
 }
 
 type EvidenceBinding struct {
 	SourceID string `json:"source_id"`
-	Ref string `json:"ref"`
+	Ref      string `json:"ref"`
 }
 
 func evidenceBindingKey(binding EvidenceBinding) string {
@@ -171,46 +171,46 @@ func evidenceBindingKey(binding EvidenceBinding) string {
 }
 
 type PlanStep struct {
-	StepID string `json:"step_id"`
-	Kind string `json:"kind"`
-	Capability CapabilityRef `json:"capability"`
-	TargetRef string `json:"target_ref"`
-	InputSchemaRef string `json:"input_schema_ref"`
-	OutputSchemaRef string `json:"output_schema_ref"`
-	EvidenceRefs []EvidenceBinding `json:"evidence_refs"`
-	ReadOnly bool `json:"read_only"`
+	StepID          string            `json:"step_id"`
+	Kind            string            `json:"kind"`
+	Capability      CapabilityRef     `json:"capability"`
+	TargetRef       string            `json:"target_ref"`
+	InputSchemaRef  string            `json:"input_schema_ref"`
+	OutputSchemaRef string            `json:"output_schema_ref"`
+	EvidenceRefs    []EvidenceBinding `json:"evidence_refs"`
+	ReadOnly        bool              `json:"read_only"`
 }
 
 type PlanCandidate struct {
-	PlanID string `json:"plan_id"`
-	SchemaVersion string `json:"schema_version"`
-	Steps []PlanStep `json:"steps"`
-	PlanHash string `json:"plan_hash"`
+	PlanID        string     `json:"plan_id"`
+	SchemaVersion string     `json:"schema_version"`
+	Steps         []PlanStep `json:"steps"`
+	PlanHash      string     `json:"plan_hash"`
 }
 
 type Record struct {
-	DecisionID string `json:"decision_id"`
-	TenantID string `json:"tenant_id"`
-	SubjectID string `json:"subject_id"`
-	AgentID string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	RunID string `json:"run_id"`
-	InvocationID string `json:"invocation_id"`
-	RequestSHA256 string `json:"request_sha256"`
-	StrategyVersion string `json:"strategy_version"`
-	PromptVersion string `json:"prompt_version"`
-	ModelProfile string `json:"model_profile"`
-	CapabilityCatalogVersion string `json:"capability_catalog_version"`
-	Status string `json:"status"`
-	ReasonCodes []string `json:"reason_codes"`
-	ParentDecisionID string `json:"parent_decision_id,omitempty"`
-	ReplanSequence int `json:"replan_sequence"`
-	MaxReplans int `json:"max_replans"`
-	ContextSnapshot SnapshotRef `json:"context_snapshot"`
-	CapabilitySnapshot SnapshotRef `json:"capability_snapshot"`
-	Evidence []EvidenceRef `json:"evidence_refs"`
-	Plan PlanCandidate `json:"plan"`
-	CreatedAt time.Time `json:"created_at"`
+	DecisionID               string        `json:"decision_id"`
+	TenantID                 string        `json:"tenant_id"`
+	SubjectID                string        `json:"subject_id"`
+	AgentID                  string        `json:"agent_id"`
+	SessionID                string        `json:"session_id"`
+	RunID                    string        `json:"run_id"`
+	InvocationID             string        `json:"invocation_id"`
+	RequestSHA256            string        `json:"request_sha256"`
+	StrategyVersion          string        `json:"strategy_version"`
+	PromptVersion            string        `json:"prompt_version"`
+	ModelProfile             string        `json:"model_profile"`
+	CapabilityCatalogVersion string        `json:"capability_catalog_version"`
+	Status                   string        `json:"status"`
+	ReasonCodes              []string      `json:"reason_codes"`
+	ParentDecisionID         string        `json:"parent_decision_id,omitempty"`
+	ReplanSequence           int           `json:"replan_sequence"`
+	MaxReplans               int           `json:"max_replans"`
+	ContextSnapshot          SnapshotRef   `json:"context_snapshot"`
+	CapabilitySnapshot       SnapshotRef   `json:"capability_snapshot"`
+	Evidence                 []EvidenceRef `json:"evidence_refs"`
+	Plan                     PlanCandidate `json:"plan"`
+	CreatedAt                time.Time     `json:"created_at"`
 }
 
 func validOpaque(s string) bool {
@@ -329,7 +329,7 @@ type Store interface {
 }
 
 type MemoryStore struct {
-	mu sync.Mutex
+	mu    sync.Mutex
 	byKey map[string]Record
 }
 
@@ -371,10 +371,10 @@ func (s *MemoryStore) SaveOrGet(ctx context.Context, r Record) (Record, bool, er
 }
 
 type Service struct {
-	store Store
+	store     Store
 	authority AuthorityVerifier
-	strategy Strategy
-	now func() time.Time
+	strategy  Strategy
+	now       func() time.Time
 }
 
 func NewService(store Store, authority AuthorityVerifier) *Service {
@@ -482,7 +482,7 @@ func recordFromVerifiedRequest(principal Principal, req Request, strategy Strate
 		ModelProfile: req.Versions.ModelProfile, CapabilityCatalogVersion: req.Versions.CapabilityCatalogVersion,
 		Status: StatusProposed, ReasonCodes: []string{}, ContextSnapshot: req.ContextSnapshot,
 		CapabilitySnapshot: req.CapabilitySnapshot, Evidence: append([]EvidenceRef{}, req.Evidence...),
-		Plan: PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		Plan:      PlanCandidate{PlanID: "plan_" + digest(struct{ DecisionID string }{decisionID})[:32], SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 		CreatedAt: createdAt,
 	}
 	if req.Replan != nil {

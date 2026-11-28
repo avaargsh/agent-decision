@@ -14,7 +14,7 @@ var ErrStoreUnavailable = errors.New("decision store unavailable")
 // PostgresStore persists immutable DecisionRecords. The database primary key
 // enforces tenant-scoped idempotency across processes and replicas.
 type PostgresStore struct {
-	db *sql.DB
+	db    *sql.DB
 	bound *tenantTransactionBinding
 }
 
@@ -23,8 +23,8 @@ type PostgresStore struct {
 // pool routing, policy attestation and dispatcher separation are complete.
 type tenantTransactionBinding struct {
 	tenantID string
-	schema string
-	login runtimeLoginBinding
+	schema   string
+	login    runtimeLoginBinding
 }
 
 func newBoundPostgresStore(db *sql.DB, schema, tenantID string, login runtimeLoginBinding) (*PostgresStore, error) {

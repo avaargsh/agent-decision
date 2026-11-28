@@ -101,8 +101,8 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	// PostgreSQL triggers are still enabled. Fail closed on disabled append-only
 	// protections even when all schema_migrations rows remain unchanged.
 	for _, tc := range []struct {
-		name string
-		table string
+		name    string
+		table   string
 		trigger string
 	}{
 		{name: "DecisionRecord UPDATE", table: "decision_records", trigger: "decision_records_no_update"},
@@ -151,7 +151,7 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct {
-		name string
+		name        string
 		replacement string
 	}{
 		{"conditional_when_false", `BEFORE UPDATE ON decision_records
@@ -238,18 +238,18 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 		// PostgreSQL must undo both writes; a same-invocation retry after
 		// removing the fault must produce one durable record and one event.
 		faulty := decision.Record{
-			DecisionID: "dec_" + strings.Repeat("f", 64),
-			TenantID: fmt.Sprintf("outbox-rollback-%d", time.Now().UnixNano()),
-			AgentID: "agent-1",
-			SessionID: "session-1",
-			RunID: "run-1",
-			InvocationID: "outbox-insert-fault",
+			DecisionID:    "dec_" + strings.Repeat("f", 64),
+			TenantID:      fmt.Sprintf("outbox-rollback-%d", time.Now().UnixNano()),
+			AgentID:       "agent-1",
+			SessionID:     "session-1",
+			RunID:         "run-1",
+			InvocationID:  "outbox-insert-fault",
 			RequestSHA256: strings.Repeat("e", 64),
-			CreatedAt: time.Now().UTC(),
-			Status: decision.StatusProposed,
-			ReasonCodes: []string{},
-			Evidence: []decision.EvidenceRef{},
-			Plan: decision.PlanCandidate{PlanID: "fault-plan", SchemaVersion: decision.SchemaVersion, Steps: []decision.PlanStep{}},
+			CreatedAt:     time.Now().UTC(),
+			Status:        decision.StatusProposed,
+			ReasonCodes:   []string{},
+			Evidence:      []decision.EvidenceRef{},
+			Plan:          decision.PlanCandidate{PlanID: "fault-plan", SchemaVersion: decision.SchemaVersion, Steps: []decision.PlanStep{}},
 		}
 		if _, err := db.ExecContext(ctx, `CREATE FUNCTION reject_outbox_insert_test()
 			RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''injected outbox insert failure''; END;'`); err != nil {
@@ -316,18 +316,18 @@ func TestPostgresOutboxClaimLeaseRetryAndAck(t *testing.T) {
 	})
 
 	record := decision.Record{
-		DecisionID: "dec_" + strings.Repeat("a", 64),
-		TenantID: "outbox-test-" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		AgentID: "agent-1",
-		SessionID: "session-1",
-		RunID: "run-1",
-		InvocationID: "invocation-1",
+		DecisionID:    "dec_" + strings.Repeat("a", 64),
+		TenantID:      "outbox-test-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		AgentID:       "agent-1",
+		SessionID:     "session-1",
+		RunID:         "run-1",
+		InvocationID:  "invocation-1",
 		RequestSHA256: strings.Repeat("b", 64),
-		CreatedAt: time.Now().UTC(),
-		Status: decision.StatusProposed,
-		ReasonCodes: []string{},
-		Evidence: []decision.EvidenceRef{},
-		Plan: decision.PlanCandidate{PlanID: "plan-1", SchemaVersion: decision.SchemaVersion, Steps: []decision.PlanStep{}},
+		CreatedAt:     time.Now().UTC(),
+		Status:        decision.StatusProposed,
+		ReasonCodes:   []string{},
+		Evidence:      []decision.EvidenceRef{},
+		Plan:          decision.PlanCandidate{PlanID: "plan-1", SchemaVersion: decision.SchemaVersion, Steps: []decision.PlanStep{}},
 	}
 	if _, created, err := store.SaveOrGet(ctx, record); err != nil || !created {
 		t.Fatalf("SaveOrGet: created=%v err=%v", created, err)
@@ -721,7 +721,6 @@ type fakePublisher struct{ err error }
 
 func (p fakePublisher) Publish(context.Context, outbox.Event) error { return p.err }
 
-
 // TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL exercises the
 // exact DROP/CREATE TRUNCATE-guard restoration path that historically
 // preceded an intermittent tenant LOGIN mapping-constraint attestation
@@ -945,7 +944,6 @@ func TestPostgresOutboxTruncateGuardRestoreUnderSameSchemaDDL(t *testing.T) {
 		t.Logf("stress completed: TRUNCATE guard restore cycles=%d; same-schema DDL=%d workers x %d add/drop pairs; read-only attestation=%d workers x %d checks", restoreIterations, ddlWorkers, ddlIterations, attestationWorkers, attestationsPerWorker)
 	}
 }
-
 
 // TestPostgresOutboxHandlerRestoreUnderSameSchemaDDL reproduces the exact
 // rewritten_trigger_function path from TestPostgresOutboxClaimLeaseRetryAndAck

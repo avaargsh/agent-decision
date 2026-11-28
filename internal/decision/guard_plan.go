@@ -35,15 +35,15 @@ type GuardPlanStepRequest struct {
 // GuardPlanStepReceipt represents a fresh source check, never authorization
 // for a protected effect. No bearer or Permit material is included.
 type GuardPlanStepReceipt struct {
-	SchemaVersion string `json:"schema_version"`
-	RunID         string `json:"run_id"`
-	DecisionID    string `json:"decision_id"`
-	PlanHash      string `json:"plan_hash"`
-	StepID        string `json:"step_id"`
-	RecordSHA256  string `json:"record_sha256"`
-	BreakerEpoch  int64  `json:"breaker_epoch"`
-	BreakerVersion int64 `json:"breaker_version"`
-	Status        string `json:"status"`
+	SchemaVersion  string `json:"schema_version"`
+	RunID          string `json:"run_id"`
+	DecisionID     string `json:"decision_id"`
+	PlanHash       string `json:"plan_hash"`
+	StepID         string `json:"step_id"`
+	RecordSHA256   string `json:"record_sha256"`
+	BreakerEpoch   int64  `json:"breaker_epoch"`
+	BreakerVersion int64  `json:"breaker_version"`
+	Status         string `json:"status"`
 }
 
 // matchGuardPlanStep checks all untrusted selectors against one immutable

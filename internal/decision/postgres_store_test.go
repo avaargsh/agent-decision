@@ -3,13 +3,13 @@ package decision
 import (
 	"context"
 	"database/sql"
-	"strings"
-	"time"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -50,18 +50,18 @@ func TestPostgresStoreRecordsAreAppendOnly(t *testing.T) {
 	}
 	store := NewPostgresStore(db)
 	record := Record{
-		DecisionID: "dec_" + strings.Repeat("d", 64),
-		TenantID: fmt.Sprintf("append-only-%d", time.Now().UnixNano()),
-		AgentID: "agent-1",
-		SessionID: "session-1",
-		RunID: "run-17",
-		InvocationID: "append-only-key",
+		DecisionID:    "dec_" + strings.Repeat("d", 64),
+		TenantID:      fmt.Sprintf("append-only-%d", time.Now().UnixNano()),
+		AgentID:       "agent-1",
+		SessionID:     "session-1",
+		RunID:         "run-17",
+		InvocationID:  "append-only-key",
 		RequestSHA256: strings.Repeat("e", 64),
-		CreatedAt: time.Now().UTC(),
-		Status: StatusProposed,
-		ReasonCodes: []string{},
-		Evidence: []EvidenceRef{},
-		Plan: PlanCandidate{PlanID: "plan_append_only", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		CreatedAt:     time.Now().UTC(),
+		Status:        StatusProposed,
+		ReasonCodes:   []string{},
+		Evidence:      []EvidenceRef{},
+		Plan:          PlanCandidate{PlanID: "plan_append_only", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 	}
 	if _, created, err := store.SaveOrGet(ctx, record); err != nil || !created {
 		t.Fatalf("save append-only record: created=%v err=%v", created, err)
@@ -192,18 +192,18 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 
 	store := NewPostgresStore(db)
 	record := Record{
-		DecisionID: "dec_"+strings.Repeat("a",64),
-		AgentID: "agent-1",
-		SessionID: "session-1",
-		RunID: "run-17",
-		CreatedAt: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC),
-		TenantID: fmt.Sprintf("store-integration-%d", time.Now().UnixNano()),
-		InvocationID: "same-key",
+		DecisionID:    "dec_" + strings.Repeat("a", 64),
+		AgentID:       "agent-1",
+		SessionID:     "session-1",
+		RunID:         "run-17",
+		CreatedAt:     time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC),
+		TenantID:      fmt.Sprintf("store-integration-%d", time.Now().UnixNano()),
+		InvocationID:  "same-key",
 		RequestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Status: StatusProposed,
-		ReasonCodes: []string{},
-		Evidence: []EvidenceRef{},
-		Plan: PlanCandidate{PlanID: "plan_integration_001", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		Status:        StatusProposed,
+		ReasonCodes:   []string{},
+		Evidence:      []EvidenceRef{},
+		Plan:          PlanCandidate{PlanID: "plan_integration_001", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 	}
 	first, created, err := store.SaveOrGet(ctx, record)
 	if err != nil || !created {
@@ -241,7 +241,7 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 
 	otherTenant := record
 	otherTenant.TenantID = record.TenantID + "-other"
-	otherTenant.DecisionID = "dec_"+strings.Repeat("c",64)
+	otherTenant.DecisionID = "dec_" + strings.Repeat("c", 64)
 	if _, created, err := store.SaveOrGet(ctx, otherTenant); err != nil || !created {
 		t.Fatalf("tenant isolation: created=%v err=%v", created, err)
 	}
@@ -255,9 +255,9 @@ func TestPostgresStoreIdempotencyAndTenantIsolation(t *testing.T) {
 	const workers = 64
 	start := make(chan struct{})
 	type result struct {
-		record Record
+		record  Record
 		created bool
-		err error
+		err     error
 	}
 	results := make(chan result, workers)
 	var wg sync.WaitGroup

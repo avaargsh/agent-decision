@@ -31,12 +31,12 @@ type hypothesisObservation struct {
 }
 
 type hypothesisResult struct {
-	ID               string
-	Status           hypothesisStatus
-	Assumptions      []string
-	Supporting       []hypothesisObservation
-	Contradicting    []hypothesisObservation
-	Missing          []string
+	ID                string
+	Status            hypothesisStatus
+	Assumptions       []string
+	Supporting        []hypothesisObservation
+	Contradicting     []hypothesisObservation
+	Missing           []string
 	AbstentionReasons []hypothesisAbstentionReason
 }
 
@@ -73,8 +73,8 @@ func evaluateDeploymentHypothesis(p Principal, req Request, observations []hypot
 			"Typed observations refer to the same service, symptom and investigation window.",
 			"Deployment correlation is a hypothesis, not proof of causation.",
 		},
-		Supporting:    []hypothesisObservation{},
-		Contradicting: []hypothesisObservation{},
+		Supporting:        []hypothesisObservation{},
+		Contradicting:     []hypothesisObservation{},
 		Missing:           []string{},
 		AbstentionReasons: []hypothesisAbstentionReason{},
 	}

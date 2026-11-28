@@ -69,17 +69,17 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 			input := Input{Objective: "sre_incident_triage", Service: "payments", Signal: "errors"}
 			runtime := RuntimeDecisionAuthority{
 				SchemaVersion: "runtime.decision-authority.v1",
-				TenantID: "tenant-a", RunID: "11111111-1111-4111-8111-111111111111",
-				RunIntentID: "22222222-2222-4222-8222-222222222222",
-				ExecutionID: "33333333-3333-4333-8333-333333333333",
-				AttemptID: "44444444-4444-4444-8444-444444444444",
-				TurnID: "55555555-5555-4555-8555-555555555555",
+				TenantID:      "tenant-a", RunID: "11111111-1111-4111-8111-111111111111",
+				RunIntentID:  "22222222-2222-4222-8222-222222222222",
+				ExecutionID:  "33333333-3333-4333-8333-333333333333",
+				AttemptID:    "44444444-4444-4444-8444-444444444444",
+				TurnID:       "55555555-5555-4555-8555-555555555555",
 				InvocationID: "55555555-5555-4555-8555-555555555555",
-				AgentID: "agent-1", AgentReleaseID: "release-1", ProjectID: "project-1",
+				AgentID:      "agent-1", AgentReleaseID: "release-1", ProjectID: "project-1",
 				SessionID: "session-1", SubjectID: "runtime", ActorID: "runtime",
 				PolicyRevision: "policy-1", RequestDigest: "sha256:" + acpHash([]byte("request")),
 				InputDigest: "sha256:" + acpHash(marshal(input)),
-				Status: "RUNNING", Phase: "WAITING_AUTHORITY", BreakerState: "CLOSED",
+				Status:      "RUNNING", Phase: "WAITING_AUTHORITY", BreakerState: "CLOSED",
 				BreakerEpoch: 1, BreakerVersion: 1,
 			}
 			runtime.WorkflowID = "agent-run/v1/" + runtime.RunID
@@ -100,9 +100,9 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 				release.Capabilities = append(release.Capabilities, contract)
 				caps = append(caps, CapabilityRef{
 					ID: id, Version: contract.Version, ContractSHA256: acpHash(marshal(contract)),
-					InputSchemaRef: "sha256:" + acpHash(contract.InputSchema),
+					InputSchemaRef:  "sha256:" + acpHash(contract.InputSchema),
 					OutputSchemaRef: "sha256:" + acpHash(contract.OutputSchema),
-					EffectClass: "read_only", Idempotency: "safe", TenantScoped: true,
+					EffectClass:     "read_only", Idempotency: "safe", TenantScoped: true,
 				})
 			}
 			releaseBytes := marshal(release)
@@ -127,9 +127,9 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 			}
 			payload := marshal(acpPublication{
 				SchemaVersion: "acp.decision-publication.v1", Authority: binding, Context: contextValue,
-				ContextSnapshot: snapshot("ctx", "acp-context-v1", contextBytes),
+				ContextSnapshot:    snapshot("ctx", "acp-context-v1", contextBytes),
 				CapabilitySnapshot: snapshot("cap", release.CatalogVersion, releaseBytes),
-				Capabilities: caps, ContextContent: contextBytes, CapabilityContent: releaseBytes,
+				Capabilities:       caps, ContextContent: contextBytes, CapabilityContent: releaseBytes,
 			})
 			acpWire := marshal(signedACP{KeyID: keyID, Payload: payload, Signature: ed25519.Sign(acpKey, payload)})
 			scope := EvidenceSourceScope{
@@ -190,7 +190,7 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 						now = start.Add(tc.delay)
 					}
 				}),
-				acp: client(acpWire, nil),
+				acp:     client(acpWire, nil),
 				sources: sources,
 			}
 			ctx := context.Background()
@@ -231,7 +231,7 @@ func testFinalFreshness(t *testing.T, continuation, guard bool) {
 					step := record.Plan.Steps[0]
 					request := GuardPlanStepRequest{
 						SchemaVersion: GuardPlanStepSchema,
-						RunID: runtime.RunID, AgentID: runtime.AgentID,
+						RunID:         runtime.RunID, AgentID: runtime.AgentID,
 						AgentReleaseID: runtime.AgentReleaseID, SessionID: runtime.SessionID,
 						DecisionID: record.DecisionID, PlanID: record.Plan.PlanID,
 						PlanHash: record.Plan.PlanHash, StepID: step.StepID,

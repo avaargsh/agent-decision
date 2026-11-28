@@ -293,7 +293,7 @@ func validateJSONObjects(body []byte) error {
 					return fmt.Errorf("duplicate JSON key %q", key)
 				}
 				seen[key] = struct{}{}
-				if err := walk(depth+1); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -301,7 +301,7 @@ func validateJSONObjects(body []byte) error {
 			return err
 		case '[':
 			for decoder.More() {
-				if err := walk(depth+1); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}

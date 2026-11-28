@@ -24,18 +24,18 @@ func validTestManifest(now time.Time) Manifest {
 	windowTo := now.Add(-70 * time.Hour)
 	return Manifest{
 		SchemaVersion: ManifestSchemaV1,
-		DatasetID: "sre-incidents-pilot",
-		DatasetKind: DatasetKindHumanAdjudicatedSRE,
+		DatasetID:     "sre-incidents-pilot",
+		DatasetKind:   DatasetKindHumanAdjudicatedSRE,
 		Authorization: Authorization{
-			SourceOwner: "source-owner-01",
-			GrantRef: "grant-2026-001",
-			GrantSHA256: testDigest("grant-artifact"),
-			ApprovedAt: approved,
-			ExpiresAt: now.Add(30 * 24 * time.Hour),
-			ScopeSHA256: testDigest("approved-scope"),
-			DeidentificationRef: "deid-attestation-001",
+			SourceOwner:            "source-owner-01",
+			GrantRef:               "grant-2026-001",
+			GrantSHA256:            testDigest("grant-artifact"),
+			ApprovedAt:             approved,
+			ExpiresAt:              now.Add(30 * 24 * time.Hour),
+			ScopeSHA256:            testDigest("approved-scope"),
+			DeidentificationRef:    "deid-attestation-001",
 			DeidentificationSHA256: testDigest("deidentification-attestation"),
-			DeidentifiedAt: approved.Add(time.Hour),
+			DeidentifiedAt:         approved.Add(time.Hour),
 		},
 		Cases: []Case{validTestCase("case-dev-001", SplitDevelopment, "incident-dev-001", "evidence-dev-001", now, windowFrom, windowTo)},
 	}
@@ -44,18 +44,18 @@ func validTestManifest(now time.Time) Manifest {
 func validTestCase(id string, split Split, incident string, artifact string, now, from, to time.Time) Case {
 	label := testDigest("final-label-" + id)
 	return Case{
-		CaseID: id,
-		Split: split,
-		IncidentRef: incident,
-		EvidenceSHA256: testDigest(artifact),
+		CaseID:          id,
+		Split:           split,
+		IncidentRef:     incident,
+		EvidenceSHA256:  testDigest(artifact),
 		ObservationFrom: from,
-		ObservationTo: to,
+		ObservationTo:   to,
 		Adjudication: Adjudication{
-			ReviewerIDs: []string{"reviewer-a", "reviewer-b"},
+			ReviewerIDs:            []string{"reviewer-a", "reviewer-b"},
 			IndependentLabelSHA256: []string{label, label},
-			Consensus: true,
-			FinalLabelSHA256: label,
-			AdjudicatedAt: to.Add(time.Hour),
+			Consensus:              true,
+			FinalLabelSHA256:       label,
+			AdjudicatedAt:          to.Add(time.Hour),
 		},
 	}
 }
@@ -113,7 +113,7 @@ func TestValidateManifestRejectsInvalidAuthorizationAndReviewProvenance(t *testi
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	base := validTestManifest(now)
 	tests := []struct {
-		name string
+		name   string
 		mutate func(*Manifest)
 	}{
 		{"expired_grant", func(m *Manifest) { m.Authorization.ExpiresAt = now }},
@@ -123,7 +123,9 @@ func TestValidateManifestRejectsInvalidAuthorizationAndReviewProvenance(t *testi
 		{"missing_deidentification_attestation", func(m *Manifest) { m.Authorization.DeidentificationRef = "" }},
 		{"deidentification_before_approval", func(m *Manifest) { m.Authorization.DeidentifiedAt = m.Authorization.ApprovedAt.Add(-time.Minute) }},
 		{"duplicate_reviewers", func(m *Manifest) { m.Cases[0].Adjudication.ReviewerIDs[1] = m.Cases[0].Adjudication.ReviewerIDs[0] }},
-		{"missing_independent_review", func(m *Manifest) { m.Cases[0].Adjudication.IndependentLabelSHA256 = m.Cases[0].Adjudication.IndependentLabelSHA256[:1] }},
+		{"missing_independent_review", func(m *Manifest) {
+			m.Cases[0].Adjudication.IndependentLabelSHA256 = m.Cases[0].Adjudication.IndependentLabelSHA256[:1]
+		}},
 		{"consensus_label_mismatch", func(m *Manifest) { m.Cases[0].Adjudication.IndependentLabelSHA256[1] = testDigest("different-label") }},
 		{"consensus_with_adjudicator", func(m *Manifest) { m.Cases[0].Adjudication.AdjudicatorID = "reviewer-c" }},
 		{"disagreement_without_adjudicator", func(m *Manifest) {
@@ -161,7 +163,7 @@ func TestValidateManifestRejectsCrossSplitLeakageAndDuplicateCases(t *testing.T)
 	gold := validTestCase("case-gold-001", SplitGold, "incident-gold-001", "evidence-gold-001", now, now.Add(-72*time.Hour), now.Add(-70*time.Hour))
 	holdout := validTestCase("case-holdout-001", SplitHoldout, "incident-holdout-001", "evidence-holdout-001", now, now.Add(-72*time.Hour), now.Add(-70*time.Hour))
 	tests := []struct {
-		name string
+		name  string
 		cases []Case
 	}{
 		{"duplicate_case_id", []Case{base.Cases[0], base.Cases[0]}},
@@ -190,7 +192,7 @@ func TestParseManifestRejectsDuplicateKeysUnknownFieldsAndTrailingJSON(t *testin
 	withUnknown := strings.TrimSuffix(string(encoded), "}") + `,"unexpected":true}`
 	duplicate := strings.Replace(string(encoded), `"dataset_id":"sre-incidents-pilot"`,
 		`"dataset_id":"first","dataset_id":"second"`, 1)
-	for _, tc := range []struct{name, raw string}{
+	for _, tc := range []struct{ name, raw string }{
 		{"duplicate_key", duplicate},
 		{"nested_duplicate_key", strings.Replace(string(encoded), `"source_owner":"source-owner-01"`, `"source_owner":"first","source_owner":"second"`, 1)},
 		{"case_insensitive_duplicate_key", strings.Replace(string(encoded), `"source_owner":"source-owner-01"`, `"source_owner":"first","SOURCE_OWNER":"second"`, 1)},
@@ -225,7 +227,6 @@ func TestParseManifestReturnsExactRawManifestDigest(t *testing.T) {
 		t.Fatalf("manifest digest mismatch: got %s", report.ManifestSHA256)
 	}
 }
-
 
 func TestSplitUseKeepsGoldAndHoldoutOutOfTraining(t *testing.T) {
 	if err := ValidateSplitUse(SplitDevelopment, PurposeTraining); err != nil {
@@ -322,9 +323,9 @@ func TestVerifyArtifactsRejectsMissingExtraAndMismatchedBytes(t *testing.T) {
 		manifest.Cases[0].Adjudication.FinalLabelSHA256,
 	}
 	tests := []struct {
-		name string
+		name     string
 		evidence map[string]io.Reader
-		labels map[string]io.Reader
+		labels   map[string]io.Reader
 	}{
 		{"missing_evidence", map[string]io.Reader{}, map[string]io.Reader{"case-dev-001": bytes.NewReader(labels)}},
 		{"extra_evidence", map[string]io.Reader{"case-dev-001": bytes.NewReader(evidence), "unexpected": bytes.NewReader(evidence)}, map[string]io.Reader{"case-dev-001": bytes.NewReader(labels)}},

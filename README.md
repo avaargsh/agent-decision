@@ -4,6 +4,36 @@ Go-first Decision Intelligence Core for Open Agent Infrastructure.
 
 Agent Decision turns authenticated, evidence-backed context into deterministic and auditable decision records. The initial vertical is read-only SRE incident investigation planning.
 
+## Quickstart
+
+Prerequisites:
+
+- Go 1.22 or newer, the version declared by `go 1.22` in `go.mod`.
+- Docker is optional. The Kubernetes policy baseline later in this file runs Conftest with Docker.
+- PostgreSQL 16 is optional. Integration tests use it when `DATABASE_URL` is set. `make test` does not start PostgreSQL, and those tests skip when `DATABASE_URL` is unset.
+
+The root Makefile sets `GOTOOLCHAIN=local` and uses the Go toolchain already on `PATH`. When `go` is missing, or older than the `go` line in `go.mod`, `make build`, `make test`, and `make run` print an error and stop.
+
+```bash
+git clone https://github.com/avaargsh/agent-decision
+cd agent-decision
+make build
+make test
+make run
+```
+
+`make build` writes `bin/agent-decision`, `bin/decision-catalog-attest`, and `bin/decision-role-audit`. `make test` runs `go test -race -count=1 ./...`. `make run` runs `go run ./cmd/agent-decision --port 8080` and listens on `127.0.0.1`. Another port is `PORT=8081 make run`.
+
+Leave `make run` in that terminal. In a second terminal:
+
+```bash
+curl http://127.0.0.1:8080/healthz
+```
+
+`GET /healthz` returns HTTP 204 and an empty body, so that `curl` command prints nothing and exits 0. The development server listens on `127.0.0.1` only. `POST /v1/decisions` is denied by design until a trusted principal resolver and an authoritative snapshot verifier are configured. This dev server starts with neither. A POST returns HTTP 401 `UNAUTHENTICATED` and `trusted principal resolver is required`. `GET /healthz` still answers.
+
+`make clean` removes `bin/`.
+
 ## Responsibilities
 
 - Validate versioned DecisionRequest contracts.
@@ -40,6 +70,8 @@ go test -race ./...
 go vet ./...
 go run ./cmd/agent-decision
 ```
+
+`make test` runs `go test -race -count=1 ./...`. `make vet` runs `go vet ./...`. `make run` runs `go run ./cmd/agent-decision` and passes `--port` from `PORT` (default `8080`). `make lint` requires `gofmt -l .` to be empty and fails when `gofmt` itself exits with an error.
 
 If port 8080 is occupied, run `go run ./cmd/agent-decision --port 8081`. Use
 `--port 0` to select a free port and read the loopback address from the startup log.

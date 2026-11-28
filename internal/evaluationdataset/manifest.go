@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	ManifestSchemaV1 = "sre.incident-dataset-manifest.v1"
+	ManifestSchemaV1               = "sre.incident-dataset-manifest.v1"
 	DatasetKindHumanAdjudicatedSRE = "HUMAN_ADJUDICATED_SRE_INCIDENTS"
 
-	MinimumGoldCasesForCohortReadiness = 30
+	MinimumGoldCasesForCohortReadiness    = 30
 	MinimumHoldoutCasesForCohortReadiness = 20
 
 	MaximumManifestBytes = 1 << 20
@@ -42,10 +42,10 @@ const (
 )
 
 var (
-	ErrInvalidManifest = errors.New("invalid incident dataset manifest")
-	ErrDatasetLeakage  = errors.New("incident dataset split leakage")
+	ErrInvalidManifest   = errors.New("invalid incident dataset manifest")
+	ErrDatasetLeakage    = errors.New("incident dataset split leakage")
 	ErrArtifactIntegrity = errors.New("incident dataset artifact integrity failure")
-	ErrSplitUseDenied = errors.New("incident dataset split use denied")
+	ErrSplitUseDenied    = errors.New("incident dataset split use denied")
 
 	identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
@@ -62,15 +62,15 @@ type Manifest struct {
 // provenance. References and digests are required metadata; this package does
 // not verify their signatures or replace the production AuthorityVerifier.
 type Authorization struct {
-	SourceOwner               string    `json:"source_owner"`
-	GrantRef                  string    `json:"grant_ref"`
-	GrantSHA256               string    `json:"grant_sha256"`
-	ApprovedAt                time.Time `json:"approved_at"`
-	ExpiresAt                 time.Time `json:"expires_at"`
-	ScopeSHA256               string    `json:"scope_sha256"`
-	DeidentificationRef       string    `json:"deidentification_ref"`
-	DeidentificationSHA256    string    `json:"deidentification_sha256"`
-	DeidentifiedAt            time.Time `json:"deidentified_at"`
+	SourceOwner            string    `json:"source_owner"`
+	GrantRef               string    `json:"grant_ref"`
+	GrantSHA256            string    `json:"grant_sha256"`
+	ApprovedAt             time.Time `json:"approved_at"`
+	ExpiresAt              time.Time `json:"expires_at"`
+	ScopeSHA256            string    `json:"scope_sha256"`
+	DeidentificationRef    string    `json:"deidentification_ref"`
+	DeidentificationSHA256 string    `json:"deidentification_sha256"`
+	DeidentifiedAt         time.Time `json:"deidentified_at"`
 }
 
 type Case struct {
@@ -84,24 +84,24 @@ type Case struct {
 }
 
 type Adjudication struct {
-	ReviewerIDs              []string  `json:"reviewer_ids"`
-	IndependentLabelSHA256   []string  `json:"independent_label_sha256"`
-	Consensus                bool      `json:"consensus"`
-	AdjudicatorID            string    `json:"adjudicator_id,omitempty"`
-	FinalLabelSHA256         string    `json:"final_label_sha256"`
-	AdjudicatedAt            time.Time `json:"adjudicated_at"`
+	ReviewerIDs            []string  `json:"reviewer_ids"`
+	IndependentLabelSHA256 []string  `json:"independent_label_sha256"`
+	Consensus              bool      `json:"consensus"`
+	AdjudicatorID          string    `json:"adjudicator_id,omitempty"`
+	FinalLabelSHA256       string    `json:"final_label_sha256"`
+	AdjudicatedAt          time.Time `json:"adjudicated_at"`
 }
 
 type AdmissionReport struct {
-	DatasetID                   string   `json:"dataset_id"`
-	ManifestSHA256              string   `json:"manifest_sha256,omitempty"`
-	CaseCount                   int      `json:"case_count"`
-	DevelopmentCount            int      `json:"development_count"`
-	GoldCount                   int      `json:"gold_count"`
-	HoldoutCount                int      `json:"holdout_count"`
-	ProvenanceReferencesComplete bool    `json:"provenance_references_complete"`
-	CohortSizeReady             bool     `json:"cohort_size_ready"`
-	ReadinessBlockers           []string `json:"readiness_blockers"`
+	DatasetID                    string   `json:"dataset_id"`
+	ManifestSHA256               string   `json:"manifest_sha256,omitempty"`
+	CaseCount                    int      `json:"case_count"`
+	DevelopmentCount             int      `json:"development_count"`
+	GoldCount                    int      `json:"gold_count"`
+	HoldoutCount                 int      `json:"holdout_count"`
+	ProvenanceReferencesComplete bool     `json:"provenance_references_complete"`
+	CohortSizeReady              bool     `json:"cohort_size_ready"`
+	ReadinessBlockers            []string `json:"readiness_blockers"`
 }
 
 // ParseManifest strictly decodes a bounded JSON manifest, rejects duplicate
@@ -147,10 +147,10 @@ func ValidateManifest(manifest Manifest, now time.Time) (AdmissionReport, error)
 	}
 
 	report := AdmissionReport{
-		DatasetID: manifest.DatasetID,
-		CaseCount: len(manifest.Cases),
+		DatasetID:                    manifest.DatasetID,
+		CaseCount:                    len(manifest.Cases),
 		ProvenanceReferencesComplete: true,
-		ReadinessBlockers: []string{},
+		ReadinessBlockers:            []string{},
 	}
 	seenCaseIDs := make(map[string]struct{}, len(manifest.Cases))
 	seenIncidentRefs := make(map[string]struct{}, len(manifest.Cases))

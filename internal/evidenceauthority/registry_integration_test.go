@@ -119,8 +119,8 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 		}
 		roles = append(roles, role)
 		for _, grant := range []string{
-			"GRANT USAGE ON SCHEMA "+schema+" TO "+role,
-			"GRANT SELECT ON "+schema+".evidence_publications,"+schema+".evidence_revocations TO "+role,
+			"GRANT USAGE ON SCHEMA " + schema + " TO " + role,
+			"GRANT SELECT ON " + schema + ".evidence_publications," + schema + ".evidence_revocations TO " + role,
 		} {
 			if _, err := db.ExecContext(ctx, grant); err != nil {
 				t.Fatal("source role grant failed")
@@ -196,11 +196,11 @@ func TestIndependentSourceRegistryLiveObservationAndRevocation(t *testing.T) {
 		t.Fatalf("replay reactivated revoked evidence: %v", err)
 	}
 	for _, stmt := range []string{
-		"UPDATE "+schema+".evidence_publications SET proof=proof",
-		"DELETE FROM "+schema+".evidence_publications",
-		"TRUNCATE "+schema+".evidence_publications CASCADE",
-		"DELETE FROM "+schema+".evidence_revocations",
-		"TRUNCATE "+schema+".evidence_revocations",
+		"UPDATE " + schema + ".evidence_publications SET proof=proof",
+		"DELETE FROM " + schema + ".evidence_publications",
+		"TRUNCATE " + schema + ".evidence_publications CASCADE",
+		"DELETE FROM " + schema + ".evidence_revocations",
+		"TRUNCATE " + schema + ".evidence_revocations",
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err == nil {
 			t.Fatal("source immutable publication/revocation guard allowed mutation")
