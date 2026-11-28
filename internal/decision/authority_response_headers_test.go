@@ -11,9 +11,9 @@ import (
 
 func TestAuthorityClientRequiresExactSingletonResponseHeaders(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name                        string
 		contentTypes, cacheControls []string
-		reject bool
+		reject                      bool
 	}{
 		{"canonical", []string{"application/json"}, []string{"no-store"}, false},
 		{"duplicate media", []string{"application/json", "application/json"}, []string{"no-store"}, true},
@@ -28,8 +28,12 @@ func TestAuthorityClientRequiresExactSingletonResponseHeaders(t *testing.T) {
 			client := &authorityClient{origin: "https://fixture.invalid", client: &http.Client{
 				Transport: freshnessTransport(func(*http.Request) (*http.Response, error) {
 					h := make(http.Header)
-					for _, v := range tc.contentTypes { h.Add("Content-Type", v) }
-					for _, v := range tc.cacheControls { h.Add("Cache-Control", v) }
+					for _, v := range tc.contentTypes {
+						h.Add("Content-Type", v)
+					}
+					for _, v := range tc.cacheControls {
+						h.Add("Cache-Control", v)
+					}
 					return &http.Response{StatusCode: http.StatusOK, Header: h,
 						Body: io.NopCloser(strings.NewReader("{}"))}, nil
 				}),

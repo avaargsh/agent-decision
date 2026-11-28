@@ -38,6 +38,32 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      - name: Makefile lint and build
+        run: make lint build
+      - name: Smoke GET /healthz on loopback
+        run: |
+          set -euo pipefail
+          port=18080
+          ./bin/agent-decision --port "$port" >"$RUNNER_TEMP/agent-decision.log" 2>&1 &
+          pid=$!
+          cleanup() {
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          code=""
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/healthz" 2>/dev/null || true)"
+            if [ "$code" = "204" ]; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "GET /healthz failed (last status: ${code:-none})" >&2
+          cat "$RUNNER_TEMP/agent-decision.log" >&2 || true
+          exit 1
       - name: Validate OpenAPI YAML
         run: |
           ruby -e 'require "yaml"; document = YAML.load_file("api/openapi.yaml"); abort "invalid OpenAPI structure" unless document["openapi"] == "3.1.0" && document.fetch("paths").key?("/v1/decisions")'

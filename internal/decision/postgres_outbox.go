@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/avaargsh/agent-decision/internal/outbox"
-	"github.com/jackc/pgx/v5/pgconn"
 	schemamigrations "github.com/avaargsh/agent-decision/migrations"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrCatalogDrift means migration checksums match but the live PostgreSQL
@@ -101,9 +101,9 @@ func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
 	}
 
 	migrations := []struct {
-		version int
-		name string
-		source []byte
+		version  int
+		name     string
+		source   []byte
 		checksum string
 	}{
 		{version: 1, name: "0001_create_decision_records.sql"},
@@ -177,14 +177,13 @@ func MigrateInSchema(ctx context.Context, db *sql.DB, schema string) error {
 	return nil
 }
 
-
 // verifyLedgerProtectionTriggers fails closed if a named trigger is disabled,
 // conditional, limited to UPDATE OF a subset of columns, or rebound. Handler
 // source and execution attributes are checked by verifyDecisionCatalog.
 func verifyLedgerProtectionTriggers(ctx context.Context, tx *sql.Tx) error {
 	required := []struct {
 		table, name, function string
-		triggerType int
+		triggerType           int
 	}{
 		{"decision_records", "decision_records_no_update", "reject_decision_record_mutation()", 19},
 		{"decision_records", "decision_records_no_delete", "reject_decision_record_mutation()", 11},
@@ -254,9 +253,9 @@ func catalogAttestationMissing(check string) error {
 // decision.tenant_id is only a transaction-local equality guard.
 func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	for _, expected := range []struct {
-		table string
+		table   string
 		enabled bool
-		forced bool
+		forced  bool
 	}{
 		{"decision_records", true, false},
 		{"outbox_events", true, false},
@@ -404,36 +403,36 @@ func verifyTenantRLSPolicies(ctx context.Context, tx *sql.Tx) error {
 	}
 
 	type expectedPolicy struct {
-		command string
-		andCount int
-		qualTokens []string
+		command     string
+		andCount    int
+		qualTokens  []string
 		checkTokens []string
 	}
 	expected := map[string]expectedPolicy{
 		"decision_records_tenant_select": {
-			command: "r",
-			andCount: 3,
+			command:    "r",
+			andCount:   3,
 			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"decision_records_tenant_insert": {
-			command: "a",
-			andCount: 3,
+			command:     "a",
+			andCount:    3,
 			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "decision_records.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_tenant_insert": {
-			command: "a",
-			andCount: 3,
+			command:     "a",
+			andCount:    3,
 			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'application'", "login.tenant_id =", "outbox_events.tenant_id", "tenant_id = nullif", "current_setting('decision.tenant_id'"},
 		},
 		"outbox_events_dispatcher_select": {
-			command: "r",
-			andCount: 2,
+			command:    "r",
+			andCount:   2,
 			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 		},
 		"outbox_events_dispatcher_update": {
-			command: "w",
-			andCount: 2,
-			qualTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
+			command:     "w",
+			andCount:    2,
+			qualTokens:  []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 			checkTokens: []string{"decision_tenant_logins", "login.login_role = session_user", "login.login_kind = 'dispatcher'", "login.tenant_id is null"},
 		},
 	}
@@ -610,7 +609,6 @@ func verifyDecisionCatalogReadOnly(ctx context.Context, tx *sql.Tx) error {
 	if !identityConstraintOK {
 		return catalogAttestationMismatch("Decision JSON identity CHECK missing")
 	}
-
 
 	// Same-name CHECK constraints can be recreated with a permissive body.
 	// Pin critical expressions to the reviewed v1/v2 SQL as parsed by PG16.

@@ -10,9 +10,9 @@ import (
 )
 
 type offlineHypothesisFixture struct {
-	principal Principal
-	request Request
-	publications []signedHypothesisPublication
+	principal     Principal
+	request       Request
+	publications  []signedHypothesisPublication
 	from, to, now time.Time
 }
 
@@ -31,7 +31,7 @@ func newOfflineHypothesisFixture(t *testing.T) offlineHypothesisFixture {
 	return offlineHypothesisFixture{
 		principal: principal, request: request,
 		publications: []signedHypothesisPublication{symptom, change},
-		from: from, to: to, now: now,
+		from:         from, to: to, now: now,
 	}
 }
 
@@ -102,11 +102,11 @@ func TestOfflineVerifiedDeploymentHypothesis(t *testing.T) {
 	conflictingPublications := append(append([]signedHypothesisPublication{}, fixture.publications...), conflicting)
 
 	for _, tc := range []struct {
-		name string
-		request Request
+		name         string
+		request      Request
 		publications []signedHypothesisPublication
-		want hypothesisStatus
-		missing int
+		want         hypothesisStatus
+		missing      int
 	}{
 		{"supported", fixture.request, fixture.publications, hypothesisSupported, 0},
 		{"missing_change", fixture.request, fixture.publications[:1], hypothesisInsufficient, 1},
@@ -147,10 +147,10 @@ func TestOfflineVerifiedDeploymentHypothesisRejectsUnboundOrInvalidProof(t *test
 	wrongSigner.PublicKey = ed25519.NewKeyFromSeed(bytesOf(9, ed25519.SeedSize)).Public().(ed25519.PublicKey)
 	wrongWindowFrom := fixture.from.Add(-time.Second)
 	for _, tc := range []struct {
-		name string
+		name         string
 		publications []signedHypothesisPublication
-		from time.Time
-		want error
+		from         time.Time
+		want         error
 	}{
 		{"unknown_request_reference", []signedHypothesisPublication{extra}, fixture.from, ErrInvalidRequest},
 		{"wrong_source_scope", []signedHypothesisPublication{wrongScope}, fixture.from, ErrAuthorityRejected},

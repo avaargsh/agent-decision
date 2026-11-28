@@ -8,9 +8,9 @@ import (
 )
 
 type cancellationStore struct {
-	events []Event
-	claims int
-	acks []string
+	events  []Event
+	claims  int
+	acks    []string
 	retries []string
 	onClaim func()
 }
@@ -39,9 +39,9 @@ func (f cancellationPublisher) Publish(ctx context.Context, event Event) error {
 
 func TestDispatchOnceStopsBeforeNextPublishWhenCanceled(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name         string
 		cancelBefore bool
-		failFirst bool
+		failFirst    bool
 	}{
 		{name: "already canceled", cancelBefore: true},
 		{name: "cancel after publish"},
@@ -95,7 +95,7 @@ func TestDispatchOnceDoesNotPublishClaimsReturnedAfterCancellation(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := &cancellationStore{
-		events: []Event{{ID: "leased", Attempts: 1}},
+		events:  []Event{{ID: "leased", Attempts: 1}},
 		onClaim: cancel,
 	}
 	calls := 0

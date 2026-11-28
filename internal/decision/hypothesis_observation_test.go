@@ -17,27 +17,29 @@ func TestVerifiedHypothesisObservation(t *testing.T) {
 		TenantID: "tenant-a", AgentID: "agent-1", RunID: "11111111-1111-4111-8111-111111111111",
 		Service: "payment-api", ResourceRef: "service:payment-api", SourceID: "collector-1",
 		Source: "collector", SourceVersion: "1.0.0", EvidenceType: "metrics", SchemaVersion: "1.0.0",
-		MaxAge: 15*time.Minute, MaxLifetime: 10*time.Minute,
+		MaxAge: 15 * time.Minute, MaxLifetime: 10 * time.Minute,
 	}
 	meta := EvidenceObservation{Ref: "sample-1", ObservedFrom: from, ObservedTo: to,
-		ObservedAt: to, CollectedAt: now, ExpiresAt: now.Add(5*time.Minute)}
+		ObservedAt: to, CollectedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
 	encode := func(signal, fact string, start, end time.Time) []byte {
 		t.Helper()
 		raw, err := json.Marshal(struct {
-			Schema string `json:"schema_version"`
-			Signal string `json:"signal"`
-			From time.Time `json:"observed_from"`
-			To time.Time `json:"observed_to"`
-			Fact string `json:"fact"`
+			Schema string    `json:"schema_version"`
+			Signal string    `json:"signal"`
+			From   time.Time `json:"observed_from"`
+			To     time.Time `json:"observed_to"`
+			Fact   string    `json:"fact"`
 		}{"sre.hypothesis-observation.v1", signal, start, end, fact})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		return raw
 	}
 	valid := encode("latency", "SYMPTOM_INCREASED", from, to)
 	for _, tc := range []struct {
 		name, kind string
-		content []byte
-		want hypothesisFact
+		content    []byte
+		want       hypothesisFact
 	}{
 		{"metric", "metrics", valid, symptomIncreased},
 		{"slo_negative", "slo", encode("latency", "SYMPTOM_NOT_INCREASED", from, to), symptomNotIncreased},
@@ -57,7 +59,9 @@ func TestVerifiedHypothesisObservation(t *testing.T) {
 			s := scope
 			s.EvidenceType = tc.kind
 			ref, wire, err := PublishEvidence(s, meta, tc.content, key, now)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			got, err := decodeVerifiedHypothesisObservation(wire, pub, s, ref, "latency", from, to, now)
 			if tc.want == "" {
 				if !errors.Is(err, ErrAuthorityRejected) || got != (hypothesisObservation{}) {
@@ -71,11 +75,13 @@ func TestVerifiedHypothesisObservation(t *testing.T) {
 		})
 	}
 	ref, wire, err := PublishEvidence(scope, meta, valid, key, now)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		name string
-		key ed25519.PublicKey
-		ref EvidenceRef
+		name            string
+		key             ed25519.PublicKey
+		ref             EvidenceRef
 		from, to, clock time.Time
 	}{
 		{"wrong_signer", ed25519.NewKeyFromSeed(append([]byte{1}, make([]byte, 31)...)).Public().(ed25519.PublicKey), ref, from, to, now},

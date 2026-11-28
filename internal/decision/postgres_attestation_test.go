@@ -23,33 +23,53 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 	}
 	ctx := context.Background()
 	admin, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer admin.Close()
 
 	schema := fmt.Sprintf("decision_attest_%d", time.Now().UnixNano())
 	role := fmt.Sprintf("decision_attest_role_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil { t.Fatal(err) }
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
 	defer admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-	if _, err := admin.ExecContext(ctx, "CREATE ROLE "+role+" NOLOGIN"); err != nil { t.Fatal(err) }
+	if _, err := admin.ExecContext(ctx, "CREATE ROLE "+role+" NOLOGIN"); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		// Grants on the test schema/table are dependencies of the role.
 		// Revoke them before dropping the role to avoid leaking CI roles.
 		_, _ = admin.ExecContext(context.Background(), "DROP OWNED BY "+role)
 		_, _ = admin.ExecContext(context.Background(), "DROP ROLE "+role)
 	}()
-	if err := MigrateInSchema(ctx, admin, schema); err != nil { t.Fatal(err) }
-	if _, err := admin.ExecContext(ctx, "GRANT USAGE ON SCHEMA "+schema+" TO "+role); err != nil { t.Fatal(err) }
-	if _, err := admin.ExecContext(ctx, "GRANT SELECT ON "+schema+".schema_migrations TO "+role); err != nil { t.Fatal(err) }
+	if err := MigrateInSchema(ctx, admin, schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "GRANT USAGE ON SCHEMA "+schema+" TO "+role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "GRANT SELECT ON "+schema+".schema_migrations TO "+role); err != nil {
+		t.Fatal(err)
+	}
 
 	restricted, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer restricted.Close()
 	restricted.SetMaxOpenConns(1)
-	if _, err := restricted.ExecContext(ctx, "SET ROLE "+role); err != nil { t.Fatal(err) }
+	if _, err := restricted.ExecContext(ctx, "SET ROLE "+role); err != nil {
+		t.Fatal(err)
+	}
 	defer restricted.ExecContext(context.Background(), "RESET ROLE")
 	var canCreate bool
-	if err := restricted.QueryRowContext(ctx, "SELECT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')", schema).Scan(&canCreate); err != nil { t.Fatal(err) }
-	if canCreate { t.Fatal("test attestation role unexpectedly can CREATE objects") }
+	if err := restricted.QueryRowContext(ctx, "SELECT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE')", schema).Scan(&canCreate); err != nil {
+		t.Fatal(err)
+	}
+	if canCreate {
+		t.Fatal("test attestation role unexpectedly can CREATE objects")
+	}
 
 	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
 		t.Fatalf("read-only restricted attestation should pass: %v", err)
@@ -68,17 +88,17 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 			changes := []struct {
 				name, install, restore string
 			}{
-				{"extra_policy", "CREATE POLICY unreviewed_policy ON "+target+" FOR SELECT USING (true)", "DROP POLICY unreviewed_policy ON "+target},
+				{"extra_policy", "CREATE POLICY unreviewed_policy ON " + target + " FOR SELECT USING (true)", "DROP POLICY unreviewed_policy ON " + target},
 			}
 			if table == "decision_records" || table == "outbox_events" {
 				changes = append(changes,
-					struct{ name, install, restore string }{"disabled", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY"},
-					struct{ name, install, restore string }{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"disabled", "ALTER TABLE " + target + " DISABLE ROW LEVEL SECURITY", "ALTER TABLE " + target + " ENABLE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"forced", "ALTER TABLE " + target + " FORCE ROW LEVEL SECURITY", "ALTER TABLE " + target + " NO FORCE ROW LEVEL SECURITY"},
 				)
 			} else {
 				changes = append(changes,
-					struct{ name, install, restore string }{"enabled", "ALTER TABLE "+target+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+target+" DISABLE ROW LEVEL SECURITY"},
-					struct{ name, install, restore string }{"forced", "ALTER TABLE "+target+" FORCE ROW LEVEL SECURITY", "ALTER TABLE "+target+" NO FORCE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"enabled", "ALTER TABLE " + target + " ENABLE ROW LEVEL SECURITY", "ALTER TABLE " + target + " DISABLE ROW LEVEL SECURITY"},
+					struct{ name, install, restore string }{"forced", "ALTER TABLE " + target + " FORCE ROW LEVEL SECURITY", "ALTER TABLE " + target + " NO FORCE ROW LEVEL SECURITY"},
 				)
 			}
 			for _, tc := range changes {
@@ -169,20 +189,32 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 
 	// The same-name installed trigger must be checked without any DDL/repair
 	// by the restricted verifier. The owner deliberately tampers and restores.
-	target := schema+".decision_records"
-	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DISABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
+	target := schema + ".decision_records"
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" DISABLE TRIGGER decision_records_no_update"); err != nil {
+		t.Fatal(err)
+	}
 	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("disabled trigger must fail read-only attestation: %v", err)
 	}
-	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ENABLE TRIGGER decision_records_no_update"); err != nil { t.Fatal(err) }
-	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil { t.Fatalf("restored trigger: %v", err) }
+	if _, err := admin.ExecContext(ctx, "ALTER TABLE "+target+" ENABLE TRIGGER decision_records_no_update"); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+		t.Fatalf("restored trigger: %v", err)
+	}
 
-	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='tampered.sql' WHERE version=2"); err != nil { t.Fatal(err) }
+	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='tampered.sql' WHERE version=2"); err != nil {
+		t.Fatal(err)
+	}
 	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); !errors.Is(err, ErrCatalogDrift) {
 		t.Fatalf("tampered migration history must fail closed: %v", err)
 	}
-	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='0002_decision_outbox.sql' WHERE version=2"); err != nil { t.Fatal(err) }
-	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil { t.Fatalf("restored history: %v", err) }
+	if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".schema_migrations SET name='0002_decision_outbox.sql' WHERE version=2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyInstalledCatalogInSchema(ctx, restricted, schema); err != nil {
+		t.Fatalf("restored history: %v", err)
+	}
 
 	// A same-name CHECK can retain every expected keyword while adding an
 	// unconditional TRUE branch. The read-only attestor must compare the
@@ -288,7 +320,6 @@ func TestVerifyInstalledCatalogReadOnly(t *testing.T) {
 	})
 }
 
-
 // TestCatalogAttestationStableDuringUnrelatedDDL exercises the migration and
 // read-only attestation paths while PostgreSQL's shared catalogs are changing
 // in a different schema. A sequential baseline runs first so any failure is
@@ -386,7 +417,6 @@ func TestCatalogAttestationStableDuringUnrelatedDDL(t *testing.T) {
 	}
 }
 
-
 // TestCatalogAttestationPinsSchemaAcrossPooledConnections guards against
 // pgx prepared statements leaking unqualified relation bindings when one
 // database/sql pool migrates and attests multiple explicitly trusted schemas.
@@ -464,7 +494,6 @@ func TestCatalogAttestationPinsSchemaAcrossPooledConnections(t *testing.T) {
 		t.Fatalf("restored schema B migration re-entry failed: %v", err)
 	}
 }
-
 
 // TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL reproduces
 // the historical migration-reentry path while unrelated relations in the
@@ -676,11 +705,11 @@ func TestCatalogAttestationStableDuringTriggerRestoreAndSameSchemaDDL(t *testing
 }
 func TestCatalogAttestationQueryFailureRedactsPostgresDiagnostics(t *testing.T) {
 	pgErr := &pgconn.PgError{
-		Code: "XX000",
+		Code:    "XX000",
 		Message: "private tenant payload must not be logged",
-		Detail: "password=private-value",
-		Hint: "sensitive operator hint",
-		Where: "private function context",
+		Detail:  "password=private-value",
+		Hint:    "sensitive operator hint",
+		Where:   "private function context",
 	}
 	err := catalogAttestationQueryFailure(
 		"tenant LOGIN mapping constraints",
@@ -749,17 +778,17 @@ func TestCatalogAttestationReportsMissingObjectsAsMismatches(t *testing.T) {
 
 	cases := []struct {
 		name string
-		ddl string
+		ddl  string
 		want string
 	}{
 		{
 			name: "missing trigger",
-			ddl: "DROP TRIGGER decision_records_no_update ON %s.decision_records",
+			ddl:  "DROP TRIGGER decision_records_no_update ON %s.decision_records",
 			want: "trigger decision_records.decision_records_no_update missing",
 		},
 		{
 			name: "missing critical check",
-			ddl: "ALTER TABLE %s.outbox_events DROP CONSTRAINT outbox_lease_pair_ck",
+			ddl:  "ALTER TABLE %s.outbox_events DROP CONSTRAINT outbox_lease_pair_ck",
 			want: "critical CHECK outbox_events.outbox_lease_pair_ck missing",
 		},
 	}

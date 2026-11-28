@@ -3,10 +3,10 @@ package evidenceauthority
 import (
 	"bytes"
 	"crypto/ed25519"
-	"database/sql"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"

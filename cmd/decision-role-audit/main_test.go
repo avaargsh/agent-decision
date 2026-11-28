@@ -25,7 +25,9 @@ func TestAuditRejectsMissingOrUntrustedRoleConfiguration(t *testing.T) {
 
 func TestAuditRejectsPrivilegedMigrationLogin(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" { t.Skip("DATABASE_URL is not configured") }
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not configured")
+	}
 	for _, role := range []string{"application", "dispatcher"} {
 		if err := audit(context.Background(), dsn, "public", role); err == nil {
 			t.Fatalf("CI migrator/superuser accepted as %s", role)

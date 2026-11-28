@@ -22,9 +22,9 @@ func TestDeploymentHypothesisEvaluation(t *testing.T) {
 	noChange := observation(2, noDeploymentInWindow)
 	negative := observation(0, symptomNotIncreased)
 	for _, tc := range []struct {
-		name string
-		observations []hypothesisObservation
-		want hypothesisStatus
+		name                         string
+		observations                 []hypothesisObservation
+		want                         hypothesisStatus
 		support, contradict, missing int
 	}{
 		{"untested", nil, hypothesisUntested, 0, 0, 2},
@@ -62,7 +62,7 @@ func TestDeploymentHypothesisEvaluation(t *testing.T) {
 
 func TestDeploymentHypothesisRejectsUnboundObservation(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*hypothesisObservation)
 	}{
 		{"unknown_ref", func(o *hypothesisObservation) { o.Evidence.Ref = "unknown" }},
@@ -87,7 +87,7 @@ func TestDeploymentHypothesisRejectsUnboundObservation(t *testing.T) {
 
 func TestDeploymentHypothesisRejectsInvalidEvaluationContext(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*Principal, *Request, *[]hypothesisObservation, *time.Time)
 	}{
 		{"duplicate_observation", func(_ *Principal, _ *Request, o *[]hypothesisObservation, _ *time.Time) {

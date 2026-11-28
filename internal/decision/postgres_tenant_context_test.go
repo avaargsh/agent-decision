@@ -75,7 +75,7 @@ func TestPostgresStoreTransactionTenantContext(t *testing.T) {
 		return Record{
 			TenantID: tenant, InvocationID: "same-invocation",
 			DecisionID: "dec_" + strings.Repeat(digit, 64),
-			AgentID: "agent-1", SessionID: "session-1", RunID: "run-1",
+			AgentID:    "agent-1", SessionID: "session-1", RunID: "run-1",
 			RequestSHA256: strings.Repeat("b", 64), CreatedAt: time.Now().UTC(),
 			Status: StatusProposed, ReasonCodes: []string{}, Evidence: []EvidenceRef{},
 			Plan: PlanCandidate{PlanID: "plan_ctx", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
@@ -144,7 +144,7 @@ func TestPostgresStoreTransactionTenantContext(t *testing.T) {
 				t.Errorf("dirty session listing accepted: rows=%d err=%v", len(got), err)
 			}
 			fresh := makeRecord("tenant-a", "d")
-			fresh.InvocationID = "dirty-session-write-"+ambient
+			fresh.InvocationID = "dirty-session-write-" + ambient
 			if _, created, err := store.SaveOrGet(ctx, fresh); created || !errors.Is(err, ErrCatalogDrift) {
 				t.Errorf("dirty session fresh write accepted: created=%t err=%v", created, err)
 			}

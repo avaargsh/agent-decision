@@ -5,28 +5,28 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 )
 
 const (
 	defaultLedgerPageSize = 20
-	maxLedgerPageSize = 100
-	maxCursorBytes = 2048
+	maxLedgerPageSize     = 100
+	maxCursorBytes        = 2048
 )
 
 // DecisionCursor is an opaque continuation position for descending ledger order.
 type DecisionCursor struct {
-	CreatedAt time.Time `json:"created_at"`
-	DecisionID string `json:"decision_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	DecisionID string    `json:"decision_id"`
 }
 
 // DecisionPage is a tenant- and session-scoped page of immutable decisions.
 type DecisionPage struct {
-	Items []Record `json:"items"`
-	NextCursor string `json:"next_cursor,omitempty"`
+	Items      []Record `json:"items"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 func (s *Service) GetDecision(ctx context.Context, principal Principal, decisionID string) (Record, error) {

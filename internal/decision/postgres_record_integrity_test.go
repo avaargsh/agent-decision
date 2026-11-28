@@ -46,18 +46,18 @@ func TestPostgresStoreRejectsIndexedCreatedAtDrift(t *testing.T) {
 	defer db.Close()
 
 	record := Record{
-		TenantID: fmt.Sprintf("index-drift-%d", time.Now().UnixNano()),
-		InvocationID: "drift-invocation",
-		DecisionID: "dec_" + strings.Repeat("4", 64),
-		AgentID: "drift-agent",
-		SessionID: "drift-session",
-		RunID: "drift-run",
+		TenantID:      fmt.Sprintf("index-drift-%d", time.Now().UnixNano()),
+		InvocationID:  "drift-invocation",
+		DecisionID:    "dec_" + strings.Repeat("4", 64),
+		AgentID:       "drift-agent",
+		SessionID:     "drift-session",
+		RunID:         "drift-run",
 		RequestSHA256: strings.Repeat("5", 64),
-		Status: StatusProposed,
-		CreatedAt: time.Now().UTC().Truncate(time.Microsecond),
-		ReasonCodes: []string{},
-		Evidence: []EvidenceRef{},
-		Plan: PlanCandidate{PlanID: "plan_drift", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
+		Status:        StatusProposed,
+		CreatedAt:     time.Now().UTC().Truncate(time.Microsecond),
+		ReasonCodes:   []string{},
+		Evidence:      []EvidenceRef{},
+		Plan:          PlanCandidate{PlanID: "plan_drift", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
 	}
 	payload, err := json.Marshal(record)
 	if err != nil {

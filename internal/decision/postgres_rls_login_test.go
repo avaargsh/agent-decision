@@ -134,11 +134,11 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			Tenants: []TenantPostgresLogin{
 				{
 					TenantID: "tenant-a",
-					Login: PostgresLoginIdentity{Database: a.Database, RoleName: a.RoleName, RoleOID: a.RoleOID},
+					Login:    PostgresLoginIdentity{Database: a.Database, RoleName: a.RoleName, RoleOID: a.RoleOID},
 				},
 				{
 					TenantID: "tenant-b",
-					Login: PostgresLoginIdentity{Database: b.Database, RoleName: b.RoleName, RoleOID: b.RoleOID},
+					Login:    PostgresLoginIdentity{Database: b.Database, RoleName: b.RoleName, RoleOID: b.RoleOID},
 				},
 			},
 			MaxOpenPerTenant: 2,
@@ -174,9 +174,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		routedRecord := func(tenant, suffix, digit string) Record {
 			return Record{
 				DecisionID: "dec_" + strings.Repeat(digit, 64),
-				TenantID: tenant, SubjectID: "subject", AgentID: "agent-1",
+				TenantID:   tenant, SubjectID: "subject", AgentID: "agent-1",
 				SessionID: "session-1", RunID: "routed-run-" + suffix,
-				InvocationID: "routed-invocation-" + suffix,
+				InvocationID:  "routed-invocation-" + suffix,
 				RequestSHA256: strings.Repeat(digit, 64), CreatedAt: time.Now().UTC(),
 				Status: StatusProposed, ReasonCodes: []string{}, Evidence: []EvidenceRef{},
 				Plan: PlanCandidate{PlanID: "routed-plan-" + suffix, SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
@@ -296,7 +296,7 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		return Record{
 			TenantID: tenant, InvocationID: "same-invocation",
 			DecisionID: "dec_" + strings.Repeat(digit, 64),
-			AgentID: "agent-1", SessionID: "session-1", RunID: "run-1",
+			AgentID:    "agent-1", SessionID: "session-1", RunID: "run-1",
 			RequestSHA256: strings.Repeat("b", 64), CreatedAt: time.Now().UTC(),
 			Status: StatusProposed, ReasonCodes: []string{}, Evidence: []EvidenceRef{},
 			Plan: PlanCandidate{PlanID: "plan_login", SchemaVersion: SchemaVersion, Steps: []PlanStep{}},
@@ -333,7 +333,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			}
 		}
 		if tx, err := store.beginTenantTx(ctx, b.TenantID, true); tx != nil || !errors.Is(err, ErrAuthorityRejected) {
-			if tx != nil { _ = tx.Rollback() }
+			if tx != nil {
+				_ = tx.Rollback()
+			}
 			t.Fatalf("foreign tenant accepted: %v", err)
 		}
 		wrong, err := newBoundPostgresStore(dbB, schema, a.TenantID, pin)
@@ -353,15 +355,17 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			t.Fatalf("wrong login list: %v", err)
 		}
 		for _, altered := range []runtimeLoginBinding{
-			{Database: pin.Database+"_wrong", RoleName: pin.RoleName, RoleOID: pin.RoleOID},
-			{Database: pin.Database, RoleName: pin.RoleName, RoleOID: pin.RoleOID+1},
+			{Database: pin.Database + "_wrong", RoleName: pin.RoleName, RoleOID: pin.RoleOID},
+			{Database: pin.Database, RoleName: pin.RoleName, RoleOID: pin.RoleOID + 1},
 		} {
 			wrong, err := newBoundPostgresStore(dbA, schema, a.TenantID, altered)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if tx, err := wrong.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
-				if tx != nil { _ = tx.Rollback() }
+				if tx != nil {
+					_ = tx.Rollback()
+				}
 				t.Fatalf("wrong pin accepted: %v", err)
 			}
 		}
@@ -369,7 +373,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			t.Fatal(err)
 		}
 		if tx, err := store.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
-			if tx != nil { _ = tx.Rollback() }
+			if tx != nil {
+				_ = tx.Rollback()
+			}
 			t.Errorf("unsafe schema path accepted: %v", err)
 		}
 		if _, err := dbA.ExecContext(ctx, "SET search_path TO "+schema+", pg_catalog, pg_temp"); err != nil {
@@ -379,7 +385,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 			t.Fatal(err)
 		}
 		if tx, err := store.beginTenantTx(ctx, a.TenantID, true); tx != nil || !errors.Is(err, ErrCatalogDrift) {
-			if tx != nil { _ = tx.Rollback() }
+			if tx != nil {
+				_ = tx.Rollback()
+			}
 			t.Errorf("dirty context accepted by bound store: %v", err)
 		}
 		if _, err := dbA.ExecContext(ctx, "RESET decision.tenant_id"); err != nil {
@@ -420,9 +428,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		db *sql.DB
+		db         *sql.DB
 		own, other Record
-		otherRole string
+		otherRole  string
 	}{
 		{dbA, a, b, roleB},
 		{dbB, b, a, roleA},
@@ -433,9 +441,9 @@ func TestPostgresTenantLoginBoundRLS(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		db *sql.DB
+		db         *sql.DB
 		own, other Record
-		otherRole string
+		otherRole  string
 	}{
 		{dbA, a, b, roleB},
 		{dbB, b, a, roleA},

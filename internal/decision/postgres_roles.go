@@ -234,7 +234,6 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 		return fmt.Errorf("%w: unexpected effective access to unreviewed schema relation", ErrCatalogDrift)
 	}
 
-
 	// PostgreSQL grants EXECUTE on new routines to PUBLIC by default. An
 	// unreviewed SECURITY DEFINER routine can read DecisionRecords under its
 	// owner's privileges even when the dispatcher has no table SELECT grant.
@@ -356,7 +355,6 @@ func verifyRuntimeDatabaseRole(ctx context.Context, db *sql.DB, schema string, r
 	}
 	return nil
 }
-
 
 // verifyRuntimeTransactionIdentity verifies the actual backend of tx, not
 // a separate pool checkout. The role/ownership checks are shared with the

@@ -28,13 +28,25 @@ func TestAttestCommandCheckAgainstInstalledSchema(t *testing.T) {
 	}
 	ctx := context.Background()
 	db, err := sql.Open("pgx", dsn)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	schema := fmt.Sprintf("attest_cli_%d", time.Now().UnixNano())
-	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil { t.Fatal(err) }
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
 	defer db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-	if err := decision.MigrateInSchema(ctx, db, schema); err != nil { t.Fatal(err) }
-	if err := attest(ctx, dsn, schema); err != nil { t.Fatalf("approved schema: %v", err) }
-	if _, err := db.ExecContext(ctx, "ALTER TABLE "+schema+".outbox_events DISABLE TRIGGER outbox_events_no_truncate"); err != nil { t.Fatal(err) }
-	if err := attest(ctx, dsn, schema); err == nil { t.Fatal("CLI attestation accepted disabled TRUNCATE guard") }
+	if err := decision.MigrateInSchema(ctx, db, schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := attest(ctx, dsn, schema); err != nil {
+		t.Fatalf("approved schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE "+schema+".outbox_events DISABLE TRIGGER outbox_events_no_truncate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := attest(ctx, dsn, schema); err == nil {
+		t.Fatal("CLI attestation accepted disabled TRUNCATE guard")
+	}
 }

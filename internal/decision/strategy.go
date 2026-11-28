@@ -18,11 +18,11 @@ type StrategyResult struct {
 }
 
 var (
-	reasonCodeRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	reasonCodeRe         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 	requiredSREStepKinds = map[string]string{
-		"sre.metrics.read":  "OBSERVE_METRICS",
-		"sre.logs.read":     "INSPECT_LOGS",
-		"sre.changes.read":  "CORRELATE_CHANGE",
+		"sre.metrics.read": "OBSERVE_METRICS",
+		"sre.logs.read":    "INSPECT_LOGS",
+		"sre.changes.read": "CORRELATE_CHANGE",
 	}
 )
 
@@ -64,13 +64,13 @@ func evidenceBindingsFor(req Request, capabilityID string) []EvidenceBinding {
 // Each read step is bound to evidence of the corresponding source type.
 func (SREReadOnlyStrategy) Plan(req Request, decisionID string) StrategyResult {
 	result := StrategyResult{
-		Status: StatusProposed,
+		Status:      StatusProposed,
 		ReasonCodes: []string{},
-		Steps: []PlanStep{},
+		Steps:       []PlanStep{},
 	}
 	required := []struct {
-		id string
-		kind string
+		id                    string
+		kind                  string
 		missingEvidenceReason string
 	}{
 		{"sre.metrics.read", "OBSERVE_METRICS", "MISSING_REQUIRED_METRICS_EVIDENCE"},
@@ -88,16 +88,16 @@ func (SREReadOnlyStrategy) Plan(req Request, decisionID string) StrategyResult {
 		}
 		result.Steps = append(result.Steps, PlanStep{
 			StepID: "step_" + digest(struct {
-				DecisionID string
+				DecisionID   string
 				CapabilityID string
 			}{decisionID, item.id})[:24],
-			Kind: item.kind,
-			Capability: capability,
-			TargetRef: req.Input.Service,
-			InputSchemaRef: capability.InputSchemaRef,
+			Kind:            item.kind,
+			Capability:      capability,
+			TargetRef:       req.Input.Service,
+			InputSchemaRef:  capability.InputSchemaRef,
 			OutputSchemaRef: capability.OutputSchemaRef,
-			EvidenceRefs: bindings,
-			ReadOnly: true,
+			EvidenceRefs:    bindings,
+			ReadOnly:        true,
 		})
 	}
 	return result

@@ -56,7 +56,6 @@ func TestMigrateDoesNotFollowShadowSearchPath(t *testing.T) {
 	}
 }
 
-
 func TestMigrateResistsTemporaryTableShadow(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

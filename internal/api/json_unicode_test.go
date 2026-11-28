@@ -8,7 +8,7 @@ import (
 
 func TestHTTPRejectsLossyUnicodeBeforeDecisionPersistence(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name        string
 		replacement []byte
 	}{
 		{"invalid UTF-8", []byte{'r', 'e', 'f', 0xff}},

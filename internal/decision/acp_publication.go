@@ -96,14 +96,14 @@ type acpContext struct {
 }
 
 type acpPublication struct {
-	SchemaVersion      string         `json:"schema_version"`
-	Authority          acpWireBinding `json:"authority"`
-	Context            acpContext     `json:"context"`
-	ContextSnapshot    SnapshotRef    `json:"context_snapshot"`
-	CapabilitySnapshot SnapshotRef    `json:"capability_snapshot"`
+	SchemaVersion      string          `json:"schema_version"`
+	Authority          acpWireBinding  `json:"authority"`
+	Context            acpContext      `json:"context"`
+	ContextSnapshot    SnapshotRef     `json:"context_snapshot"`
+	CapabilitySnapshot SnapshotRef     `json:"capability_snapshot"`
 	Capabilities       []CapabilityRef `json:"capabilities"`
-	ContextContent     []byte         `json:"context_content"`
-	CapabilityContent  []byte         `json:"capability_content"`
+	ContextContent     []byte          `json:"context_content"`
+	CapabilityContent  []byte          `json:"capability_content"`
 }
 
 type signedACP struct {
@@ -282,7 +282,7 @@ func VerifyACPPublication(wire []byte, key ed25519.PublicKey, expected ACPRunBin
 		}
 	}
 	return VerifiedACPPublication{
-		Input: Input{Objective: p.Context.Objective, Service: p.Context.Service, Signal: p.Context.Signal},
+		Input:           Input{Objective: p.Context.Objective, Service: p.Context.Service, Signal: p.Context.Signal},
 		ContextSnapshot: p.ContextSnapshot, CapabilitySnapshot: p.CapabilitySnapshot,
 		Capabilities: append([]CapabilityRef{}, p.Capabilities...),
 	}, nil
